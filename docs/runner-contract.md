@@ -13,6 +13,8 @@ Every process uses a `RunnerSpec`:
 ```ts
 interface RunnerSpec {
   jobId: string;
+  runId?: string;
+  jobKey?: string;
   argv: readonly string[];
   stdin?: string;
   mode: "advise" | "work";
@@ -22,6 +24,7 @@ interface RunnerSpec {
   task?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }
 ```
 
@@ -35,6 +38,7 @@ interface RunnerSpec {
 - The effective output is stdout, stderr, or both in that order.
 - Exit code 0 is `succeeded`; a non-zero exit or spawn error is `failed`.
 - At timeout CueLine sends `SIGTERM`, then schedules `SIGKILL` after 250 ms if needed; the result is `timed_out`.
+- Cancellation uses the same owned-process termination path. `advise` becomes `cancelled`; started `work` becomes `ambiguous`.
 - Empty output is explicitly recorded instead of being replaced with invented content.
 - Results are never marked retryable by the process runner.
 
@@ -42,7 +46,9 @@ For an unsuccessful `work` job, `ambiguousSideEffects` is true because CueLine c
 
 ## Foreground and background
 
-A foreground `start` waits for the single execution and persists its terminal status. A background `start` persists and returns `running` immediately while the same completion promise continues. `waitForCompletion(jobId)` returns that completion or the last persisted status.
+A foreground `start` waits for the single execution and persists its terminal status. A background `start` persists and returns `running` immediately while the same completion promise continues. `waitForCompletion(jobId)` returns that completion or the last persisted status. The supervisor persists run ID, job key, lane, mode, and child PID after spawn. PID is observability, not stand-alone cancellation authority.
+
+`cancel(jobId)` and `cancelAll()` operate only on executions owned by the current supervisor. Cross-session CLI cancellation is a durable request consumed by that owner. CueLine does not kill an unverified process merely because a stale status file contains a PID.
 
 The controller loop derives deterministic job IDs from the run, `job_key`, and job specification. A duplicate dispatch already present in run state is recorded as a notice and skipped. This is the run-level at-most-once gate; it is not a distributed transaction across hosts.
 

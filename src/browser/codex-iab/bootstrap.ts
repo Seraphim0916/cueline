@@ -34,6 +34,9 @@ export interface IabTab {
   url(): Promise<string | undefined>;
   title?(): Promise<string>;
   playwright: IabPlaywright;
+  cua?: {
+    click(options: { x: number; y: number }): Promise<void>;
+  };
 }
 
 export interface IabOpenTab {

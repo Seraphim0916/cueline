@@ -1,10 +1,17 @@
 import type { JobMode } from "../protocol/types.js";
 
 export type JobExecution = "foreground" | "background";
-export type JobResultStatus = "succeeded" | "failed" | "timed_out" | "ambiguous";
+export type JobResultStatus =
+  | "succeeded"
+  | "failed"
+  | "timed_out"
+  | "cancelled"
+  | "ambiguous";
 
 export interface RunnerSpec {
   jobId: string;
+  runId?: string;
+  jobKey?: string;
   argv: readonly string[];
   stdin?: string;
   mode: JobMode;
@@ -14,6 +21,7 @@ export interface RunnerSpec {
   task?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }
 
 export interface JobResult {
@@ -24,14 +32,19 @@ export interface JobResult {
   output: string;
   emptyOutput: boolean;
   timedOut: boolean;
+  cancelled: boolean;
   ambiguousSideEffects: boolean;
   retryable: false;
   startedAt: string;
   finishedAt: string;
 }
 
+export interface RunnerRunHooks {
+  onSpawn?(pid: number): void | Promise<void>;
+}
+
 export interface RunnerAdapter {
-  run(spec: RunnerSpec): Promise<JobResult>;
+  run(spec: RunnerSpec, hooks?: RunnerRunHooks): Promise<JobResult>;
 }
 
 export function executionFor(spec: Pick<RunnerSpec, "background">): JobExecution {

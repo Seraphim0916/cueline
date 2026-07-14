@@ -44,15 +44,15 @@ ChatGPT Pro のサブスクリプションと、選択された Pro モデルは
 npm レジストリからインストールします。
 
 ```bash
-npm install -g cueline@0.1.2
+npm install -g cueline@0.1.3
 cueline install
 cueline doctor
 ```
 
-フォールバックとして、[v0.1.2 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.2) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
+フォールバックとして、[v0.1.3 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.3) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.2/cueline-0.1.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.3/cueline-0.1.3.tgz
 cueline install
 cueline doctor
 ```
@@ -89,7 +89,8 @@ import { createCodexIabAdapter, runCueLine } from "cueline";
 const result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
   browser: createCodexIabAdapter(),
-  // 任意：conversationUrl、routingConfig / routingConfigPath、home、cwd、limits。
+  // 任意：conversationUrl、routingConfig / routingConfigPath、home、cwd、
+  // runTimeoutMs、signal、ジョブごと／既定の期限。
 });
 
 if (result.status === "complete") {
@@ -99,7 +100,7 @@ if (result.status === "complete") {
 
 Codex のランタイムでは、`cueline api path` が出力する絶対パスのモジュールを import します。それがインストールしたパッケージのビルド済み API です。
 
-`startCueLineRun` が明示的な開始点です（`runCueLine` はその別名）。`continueCueLineRun({ runId })` は中断した実行を同じ会話で再開し、新しいアダプターを渡さないかぎり保存済みの会話 URL を再利用します。`loadCueLineRunState(runId)` は永続化された状態を読むだけで、何も駆動しません。すでに `complete` または `blocked` に達した実行はそのまま返され、二度とディスパッチされません。
+`startCueLineRun` が明示的な開始点です（`runCueLine` はその別名）。`continueCueLineRun({ runId })` は中断した実行を同じ会話で再開し、新しいアダプターを渡さないかぎり保存済みの会話 URL を再利用します。`loadCueLineRunState(runId)` は永続化された状態を読むだけで、何も駆動しません。すでに `complete`、`blocked`、または `cancelled` に達した実行はそのまま返され、二度とディスパッチされません。再開前に `cueline run status <run-id> --json` を実行してください。応答が受理済みで phase が `jobs_running` なら、ChatGPT の応答後にローカルジョブを実行中です。
 
 ## CLI
 
@@ -110,7 +111,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.2
+CueLine 0.1.3
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -125,6 +126,12 @@ default	codex-default	available
 
 $ cueline jobs
 No jobs.
+
+$ cueline run status run_... --json
+{"status":"running","phase":"jobs_running","runtime":{"ownership":"active"},...}
+
+$ cueline run cancel run_...
+run_...	requested	affected_jobs=0
 
 $ cueline config path
 /usr/local/lib/node_modules/cueline/config/routing.default.json
@@ -145,6 +152,8 @@ Node が古すぎる場合、あるいは解決できるレーンが一つもな
 
 ```text
 runs/<run-id>/events.jsonl    追記のみ、正本
+runs/<run-id>/runtime.json   ライブ owner の heartbeat 証拠
+runs/<run-id>/cancel.json    存在する場合は永続キャンセル要求
 runs/<run-id>/snapshot.json   リプレイの最適化、破棄可能
 jobs/<job-id>.json            ジョブごとの実行証拠
 ```

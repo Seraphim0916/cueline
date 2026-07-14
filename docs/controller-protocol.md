@@ -35,7 +35,7 @@ A stale or mismatched value is rejected. CueLine parses only the **last complete
 }
 ```
 
-Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, or `ambiguous`. Before browser submission, a single output/error field is bounded to 40,000 characters and only the most recent 20 notices are sent. The local event log remains the recovery record.
+Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, or `ambiguous`. Before browser submission, a single output/error field is bounded to 40,000 characters and only the most recent 20 notices are sent. The local event log remains the recovery record.
 
 ## Command envelope
 
@@ -81,7 +81,9 @@ Schedules one or more local jobs.
 }
 ```
 
-`job_key` must be unique inside the command and match the supported identifier form. `mode` is `advise` or `work`. Optional fields are `required`, `timeout_ms`, `runner`, `workdir`, and `background`. The local runtime—not ChatGPT—resolves the configured executable. `lane` must be a listed available lane; a runner ID is not a lane name. When `runner` is supplied, it must name an enabled, available candidate in the selected lane. CueLine validates every new route in the dispatch before registering or starting any job. One invalid route rejects the whole command and requests a corrected envelope with the same pending identity. Repeating an already persisted deterministic job is ignored rather than spawned again.
+`job_key` must be unique inside the command and match the supported identifier form. `mode` is `advise` or `work`. Optional fields are `required`, `timeout_ms`, `runner`, `workdir`, and `background`. `runner_id` is invalid and produces an explicit correction to use `runner`. The local runtime—not ChatGPT—resolves the configured executable. `lane` must be a listed available lane; a runner ID is not a lane name. When `runner` is supplied, it must name an enabled, available candidate in the selected lane. CueLine validates every new route in the dispatch before registering or starting any job. One invalid route rejects the whole command and requests a corrected envelope with the same pending identity. Repeating an already persisted deterministic job is ignored rather than spawned again.
+
+If every job in one dispatch is `advise`, CueLine starts them concurrently and then reports all results. If any job is `work`, the entire dispatch remains serial in command order.
 
 ### `wait`
 

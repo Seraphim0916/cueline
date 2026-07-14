@@ -1,8 +1,17 @@
 import type { ControllerJobSpec, JobObservation } from "../protocol/types.js";
 import type { RunEvent } from "../state/event-log.js";
 
-export type CueLineRunStatus = "running" | "complete" | "blocked" | "failed";
+export type CueLineRunStatus = "running" | "complete" | "blocked" | "cancelled" | "failed";
 export type StoredJobStatus = JobObservation["status"];
+const STORED_JOB_STATUSES = new Set<StoredJobStatus>([
+  "pending",
+  "running",
+  "succeeded",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "ambiguous",
+]);
 export type ControllerSubmissionState = "requested" | "possibly_sent" | "submitted";
 
 export interface PendingControllerTurn {
@@ -49,6 +58,7 @@ export interface CueLineRunState {
   commandHashes: string[];
   finalDeliveryText: string | null;
   blockedReason: string | null;
+  cancelledReason: string | null;
 }
 
 function recordPayload(event: RunEvent): Record<string, unknown> {
@@ -72,6 +82,7 @@ export function initialRunState(runId: string, request: string): CueLineRunState
     commandHashes: [],
     finalDeliveryText: null,
     blockedReason: null,
+    cancelledReason: null,
   };
 }
 
@@ -200,7 +211,13 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
   }
   if (event.type === "job_status" && typeof payload.job_id === "string") {
     const existing = state.jobs[payload.job_id];
-    if (!existing || typeof payload.status !== "string") return state;
+    if (
+      !existing ||
+      typeof payload.status !== "string" ||
+      !STORED_JOB_STATUSES.has(payload.status as StoredJobStatus)
+    ) {
+      return state;
+    }
     const status = payload.status as StoredJobStatus;
     return {
       ...state,
@@ -231,6 +248,14 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       blockedReason: payload.reason,
       finalDeliveryText:
         typeof payload.final_delivery_text === "string" ? payload.final_delivery_text : null,
+    };
+  }
+  if (event.type === "run_cancelled" && typeof payload.reason === "string") {
+    return {
+      ...state,
+      status: "cancelled",
+      pendingControllerTurns: [],
+      cancelledReason: payload.reason,
     };
   }
   if (event.type === "run_failed") {

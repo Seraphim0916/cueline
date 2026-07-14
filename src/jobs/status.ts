@@ -3,12 +3,18 @@ import path from "node:path";
 
 import { CueLineError } from "../core/errors.js";
 import { runtimePidTag } from "../core/runtime.js";
+import type { JobMode } from "../protocol/types.js";
 import type { JobExecution, JobResult, JobResultStatus } from "../runners/runner-adapter.js";
 
 export type JobStatusKind = "running" | JobResultStatus;
 
 export interface JobStatus {
   jobId: string;
+  runId?: string;
+  jobKey?: string;
+  lane?: string;
+  mode?: JobMode;
+  pid?: number;
   execution: JobExecution;
   status: JobStatusKind;
   startedAt: string;

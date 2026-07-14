@@ -10,6 +10,13 @@ import type {
   BrowserTurnInput,
   ControllerTurn,
 } from "../../src/browser/browser-adapter.js";
+import {
+  cancelCueLineJob,
+  cancelCueLineRun,
+  continueCueLineRun,
+  loadCueLineRunStatus,
+  startCueLineRun,
+} from "../../src/api.js";
 import { CueLineError } from "../../src/core/errors.js";
 import { jobId } from "../../src/core/ids.js";
 import { continueControllerLoop, runControllerLoop } from "../../src/core/controller-loop.js";
@@ -18,7 +25,9 @@ import type { ControllerJobSpec } from "../../src/protocol/types.js";
 import type { JobStatus } from "../../src/jobs/status.js";
 import type { RunnerSpec } from "../../src/runners/runner-adapter.js";
 import { readEvents } from "../../src/state/event-log.js";
+import { requestRunCancellation } from "../../src/state/cancellation.js";
 import { runPaths } from "../../src/state/paths.js";
+import { RuntimeLease } from "../../src/state/runtime-lease.js";
 import { RunStore } from "../../src/state/store.js";
 import { FakeBrowserAdapter } from "../fakes/fake-browser.js";
 import { FakeJobSupervisor } from "../fakes/fake-runner.js";
@@ -60,6 +69,7 @@ function terminalStatus(id: string, output = "WORKER_OK"): JobStatus {
       output,
       emptyOutput: output === "",
       timedOut: false,
+      cancelled: false,
       ambiguousSideEffects: false,
       retryable: false,
       startedAt: timestamp,
@@ -83,6 +93,41 @@ function resolver(id: string, job: ControllerJobSpec): RunnerSpec {
 
 async function home(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "cueline-loop-"));
+}
+
+function deferred<Value>(): {
+  promise: Promise<Value>;
+  resolve: (value: Value) => void;
+} {
+  let resolve!: (value: Value) => void;
+  const promise = new Promise<Value>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+async function observeCondition(
+  predicate: () => boolean,
+  timeoutMs = 1_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) return false;
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  return true;
+}
+
+async function observeAsyncCondition(
+  predicate: () => Promise<boolean>,
+  timeoutMs = 2_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) return false;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  return true;
 }
 
 test("controller dispatches one job, observes it, then completes", async () => {
@@ -140,6 +185,420 @@ test("controller dispatches one job, observes it, then completes", async () => {
       },
     ],
   );
+});
+
+test("one accepted dispatch starts independent jobs before awaiting their completion", async () => {
+  const runId = "run_parallel_dispatch";
+  const specs = [
+    {
+      job_key: "first",
+      lane: "triage",
+      mode: "advise",
+      task: "Inspect first",
+    },
+    {
+      job_key: "second",
+      lane: "triage",
+      mode: "advise",
+      task: "Inspect second",
+    },
+  ] as const;
+  const ids = specs.map((spec) => jobId(runId, spec.job_key, spec));
+  const completions = new Map(ids.map((id) => [id, deferred<JobStatus>()]));
+  const starts: string[] = [];
+  const supervisor = {
+    async start(spec: RunnerSpec): Promise<JobStatus> {
+      starts.push(spec.jobId);
+      const completion = completions.get(spec.jobId);
+      if (!completion) throw new Error(`UNEXPECTED_JOB: ${spec.jobId}`);
+      return completion.promise;
+    },
+    async waitForCompletion(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_WAIT: ${jobId}`);
+    },
+    async inspect(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_INSPECT: ${jobId}`);
+    },
+  };
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: specs })),
+    reply(() => ({ action: "complete", final_delivery_text: "PARALLEL_OK" })),
+  ]);
+
+  const running = runControllerLoop({
+    request: "Inspect both independently",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+  });
+  const bothStartedBeforeEitherCompleted = await observeCondition(() => starts.length === 2);
+  for (const id of ids) completions.get(id)?.resolve(terminalStatus(id));
+  const result = await running;
+
+  assert.equal(
+    bothStartedBeforeEitherCompleted,
+    true,
+    "dispatch serialized jobs behind the first completion",
+  );
+  assert.deepEqual(starts, ids);
+  assert.equal(result.status, "complete");
+});
+
+test("a dispatch containing work jobs preserves serial execution", async () => {
+  const runId = "run_serial_work_dispatch";
+  const specs = [
+    {
+      job_key: "first_work",
+      lane: "default",
+      mode: "work",
+      task: "Change first",
+    },
+    {
+      job_key: "second_work",
+      lane: "default",
+      mode: "work",
+      task: "Change second",
+    },
+  ] as const;
+  const ids = specs.map((spec) => jobId(runId, spec.job_key, spec));
+  const completions = new Map(ids.map((id) => [id, deferred<JobStatus>()]));
+  const starts: string[] = [];
+  const supervisor = {
+    async start(spec: RunnerSpec): Promise<JobStatus> {
+      starts.push(spec.jobId);
+      const completion = completions.get(spec.jobId);
+      if (!completion) throw new Error(`UNEXPECTED_JOB: ${spec.jobId}`);
+      return completion.promise;
+    },
+    async waitForCompletion(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_WAIT: ${jobId}`);
+    },
+    async inspect(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_INSPECT: ${jobId}`);
+    },
+  };
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: specs })),
+    reply(() => ({ action: "complete", final_delivery_text: "SERIAL_OK" })),
+  ]);
+
+  const running = runControllerLoop({
+    request: "Apply ordered changes",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+  });
+  assert.equal(await observeCondition(() => starts.length >= 1), true);
+  const secondStartedBeforeFirstCompleted = await observeCondition(() => starts.length === 2, 100);
+  completions.get(ids[0] as string)?.resolve(terminalStatus(ids[0] as string));
+  assert.equal(await observeCondition(() => starts.length === 2), true);
+  completions.get(ids[1] as string)?.resolve(terminalStatus(ids[1] as string));
+  const result = await running;
+
+  assert.equal(secondStartedBeforeFirstCompleted, false);
+  assert.deepEqual(starts, ids);
+  assert.equal(result.status, "complete");
+});
+
+test("a second session cannot continue a legacy running run without ownership evidence", async () => {
+  const runId = "run_active_owner";
+  const stateHome = await home();
+  const spec = {
+    job_key: "active",
+    lane: "triage",
+    mode: "advise",
+    task: "Still running",
+  } as const;
+  const id = jobId(runId, spec.job_key, spec);
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Keep the original loop authoritative" });
+  await store.append("controller_command_accepted", {
+    command_hash: "accepted-command",
+  });
+  await store.append("job_registered", {
+    job: {
+      jobId: id,
+      jobKey: spec.job_key,
+      required: true,
+      spec,
+      status: "pending",
+      output: null,
+      error: null,
+    },
+  });
+  await store.append("job_status", { job_id: id, status: "running" });
+  const eventsBefore = await readEvents(runPaths(stateHome, runId).events);
+  const browser = new FakeBrowserAdapter([]);
+
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      browser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "RUN_OWNERSHIP_UNVERIFIED",
+  );
+
+  assert.equal(browser.calls.length, 0);
+  assert.equal((await readEvents(runPaths(stateHome, runId).events)).length, eventsBefore.length);
+});
+
+test("a durable cancellation request forbids continuation before browser access", async () => {
+  const runId = "run_cancel_pending";
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Do not resurrect cancelled work" });
+  await store.append("run_failed", {
+    code: "INTERRUPTED",
+    message: "Original caller ended",
+    stage: "controller_loop",
+  });
+  await requestRunCancellation(stateHome, runId, "operator stopped the run");
+  const browser = new FakeBrowserAdapter([]);
+
+  const status = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(status.phase, "cancellation_pending");
+  assert.equal(status.continueAllowed, false);
+  await assert.rejects(
+    continueCueLineRun({ runId, home: stateHome, browser }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "RUN_CANCELLATION_PENDING",
+  );
+  assert.equal(browser.calls.length, 0);
+});
+
+test("a failed run with a live owner cannot be continued by another session", async () => {
+  const runId = "run_failed_but_owned";
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Keep the current owner authoritative" });
+  await store.append("run_failed", {
+    code: "WORKER_FAILED",
+    message: "Owner is still settling state",
+    stage: "controller_loop",
+  });
+  const lease = await RuntimeLease.claim({ home: stateHome, runId });
+  const browser = new FakeBrowserAdapter([]);
+  try {
+    const status = await loadCueLineRunStatus(runId, { home: stateHome });
+    assert.equal(status.phase, "runtime_active");
+    assert.equal(status.continueAllowed, false);
+    await assert.rejects(
+      continueCueLineRun({ runId, home: stateHome, browser }),
+      (error: unknown) => error instanceof CueLineError && error.code === "RUN_ALREADY_ACTIVE",
+    );
+    assert.equal(browser.calls.length, 0);
+  } finally {
+    await lease.release();
+  }
+});
+
+test("run cancel reaches the active owner, terminates advise work, and closes the run", async () => {
+  const runId = "run_active_cancel";
+  const stateHome = await home();
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "dispatch",
+      jobs: [
+        {
+          job_key: "long_audit",
+          lane: "default",
+          mode: "advise",
+          task: "Wait until cancelled",
+        },
+      ],
+    })),
+  ]);
+  const running = startCueLineRun({
+    request: "Start a cancellable audit",
+    runId,
+    home: stateHome,
+    browser,
+    defaultTimeoutMs: 500,
+    routingConfig: {
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [
+            {
+              id: "node",
+              argv: [process.execPath, "-e", "setInterval(() => {}, 1_000);"],
+              task_input: "stdin",
+            },
+          ],
+        },
+      },
+    },
+  });
+  assert.equal(
+    await observeAsyncCondition(async () => {
+      try {
+        return (await loadCueLineRunStatus(runId, { home: stateHome })).jobs.counts.running === 1;
+      } catch {
+        return false;
+      }
+    }),
+    true,
+  );
+  const activeStatus = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(activeStatus.runtime.ownership, "active");
+  assert.equal(activeStatus.phase, "jobs_running");
+  assert.equal(activeStatus.controller.responseAccepted, true);
+  assert.equal(activeStatus.controller.lastAcceptedAction, "dispatch");
+  assert.deepEqual(activeStatus.controller.lastAcceptedJobKeys, ["long_audit"]);
+  assert.equal(activeStatus.safeNextAction, "observe");
+  await assert.rejects(
+    continueCueLineRun({ runId, home: stateHome, browser: new FakeBrowserAdapter([]) }),
+    (error: unknown) => error instanceof CueLineError && error.code === "RUN_ALREADY_ACTIVE",
+  );
+
+  const cancellation = await cancelCueLineRun(runId, { home: stateHome });
+  assert.equal(cancellation.outcome, "requested");
+  const result = await running;
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.state.jobs[Object.keys(result.state.jobs)[0] as string]?.status, "cancelled");
+  assert.equal(browser.calls.length, 1);
+  const status = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(status.phase, "cancelled");
+  assert.equal(status.cancellation.runRequested, true);
+});
+
+test("job cancel reaches the active owner without cancelling the controller loop", async () => {
+  const runId = "run_active_job_cancel";
+  const stateHome = await home();
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "dispatch",
+      jobs: [
+        {
+          job_key: "long_audit",
+          lane: "default",
+          mode: "advise",
+          task: "Wait until cancelled",
+        },
+      ],
+    })),
+    reply(() => ({ action: "complete", final_delivery_text: "CANCEL_OBSERVED" })),
+  ]);
+  const running = startCueLineRun({
+    request: "Cancel only one audit",
+    runId,
+    home: stateHome,
+    browser,
+    defaultTimeoutMs: 1_000,
+    routingConfig: {
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [
+            {
+              id: "node",
+              argv: [process.execPath, "-e", "setInterval(() => {}, 1_000);"],
+              task_input: "stdin",
+            },
+          ],
+        },
+      },
+    },
+  });
+  let activeJobId: string | undefined;
+  assert.equal(
+    await observeAsyncCondition(async () => {
+      try {
+        const status = await loadCueLineRunStatus(runId, { home: stateHome });
+        activeJobId = status.jobs.items.find((job) => job.status === "running")?.jobId;
+        return activeJobId !== undefined;
+      } catch {
+        return false;
+      }
+    }),
+    true,
+  );
+
+  const cancellation = await cancelCueLineJob(runId, activeJobId as string, {
+    home: stateHome,
+  });
+  assert.equal(cancellation.outcome, "requested");
+  const result = await running;
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "CANCEL_OBSERVED");
+  assert.equal(result.state.jobs[activeJobId as string]?.status, "cancelled");
+  assert.equal(browser.calls.length, 2);
+});
+
+test("run timeout cancels owned work instead of abandoning the inner execution", async () => {
+  const runId = "run_owned_timeout";
+  const stateHome = await home();
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "dispatch",
+      jobs: [
+        {
+          job_key: "long_audit",
+          lane: "default",
+          mode: "advise",
+          task: "Wait past the run deadline",
+        },
+      ],
+    })),
+  ]);
+
+  await assert.rejects(
+    startCueLineRun({
+      request: "Bound the whole run",
+      runId,
+      home: stateHome,
+      browser,
+      runTimeoutMs: 100,
+      defaultTimeoutMs: 1_000,
+      routingConfig: {
+        version: 1,
+        lanes: {
+          default: {
+            enabled: true,
+            candidates: [
+              {
+                id: "node",
+                argv: [process.execPath, "-e", "setInterval(() => {}, 1_000);"],
+                task_input: "stdin",
+              },
+            ],
+          },
+        },
+      },
+    }),
+    (error: unknown) => error instanceof CueLineError && error.code === "RUN_TIMEOUT",
+  );
+  const status = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(status.status, "failed");
+  assert.equal(status.jobs.counts.cancelled, 1);
+  assert.equal(status.jobs.counts.running, 0);
 });
 
 test("repairs invalid controller output at most twice", async () => {

@@ -67,7 +67,14 @@ export interface JobObservation {
   job_id: string;
   job_key: string;
   required: boolean;
-  status: "pending" | "running" | "succeeded" | "failed" | "timed_out" | "ambiguous";
+  status:
+    | "pending"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "timed_out"
+    | "cancelled"
+    | "ambiguous";
   output?: string;
   error?: string;
 }

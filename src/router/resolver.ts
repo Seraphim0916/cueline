@@ -33,7 +33,20 @@ export function resolveRoute(
 ): ResolvedRoute {
   const laneConfig = config.lanes[lane];
   if (laneConfig === undefined) {
-    throw new CueLineError("ROUTE_LANE_UNKNOWN", `unknown routing lane: ${lane}`, { details: { lane } });
+    const runnerLanes = Object.entries(config.lanes)
+      .filter(([, candidateLane]) =>
+        candidateLane.candidates.some((candidate) => candidate.id === lane),
+      )
+      .map(([name]) => name);
+    const correction =
+      runnerLanes.length === 0
+        ? ""
+        : ` '${lane}' is a runner ID; use lane '${runnerLanes[0]}' with runner '${lane}'.`;
+    throw new CueLineError(
+      "ROUTE_LANE_UNKNOWN",
+      `unknown routing lane: ${lane}.${correction}`,
+      { details: { lane, ...(runnerLanes.length === 0 ? {} : { runner_lanes: runnerLanes }) } },
+    );
   }
   if (!laneConfig.enabled) {
     throw new CueLineError("ROUTE_LANE_DISABLED", `routing lane is disabled: ${lane}`, {

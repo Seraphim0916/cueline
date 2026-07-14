@@ -44,15 +44,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.1.2
+npm install -g cueline@0.1.3
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.1.2 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.2)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.1.3 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.3)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.2/cueline-0.1.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.3/cueline-0.1.3.tgz
 cueline install
 cueline doctor
 ```
@@ -89,7 +89,8 @@ import { createCodexIabAdapter, runCueLine } from "cueline";
 const result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
   browser: createCodexIabAdapter(),
-  // 선택: conversationUrl, routingConfig / routingConfigPath, home, cwd, limits.
+  // 선택: conversationUrl, routingConfig / routingConfigPath, home, cwd,
+  // runTimeoutMs, signal, 작업별/기본 제한 시간.
 });
 
 if (result.status === "complete") {
@@ -99,7 +100,7 @@ if (result.status === "complete") {
 
 Codex 런타임에서는 `cueline api path`가 출력하는 절대 경로 모듈을 import하세요. 그것이 설치한 패키지의 빌드된 API입니다.
 
-`startCueLineRun`이 명시적인 시작점입니다(`runCueLine`은 그 별칭). `continueCueLineRun({ runId })`은 중단된 실행을 같은 대화에서 재개하며, 새 어댑터를 넘기지 않는 한 저장된 대화 URL을 재사용합니다. `loadCueLineRunState(runId)`는 저장된 상태를 읽기만 하고 아무것도 구동하지 않습니다. 이미 `complete`나 `blocked`에 도달한 실행은 그대로 반환되며, 두 번 디스패치되지 않습니다.
+`startCueLineRun`이 명시적인 시작점입니다(`runCueLine`은 그 별칭). `continueCueLineRun({ runId })`은 중단된 실행을 같은 대화에서 재개하며, 새 어댑터를 넘기지 않는 한 저장된 대화 URL을 재사용합니다. `loadCueLineRunState(runId)`는 저장된 상태를 읽기만 하고 아무것도 구동하지 않습니다. 이미 `complete`, `blocked`, `cancelled`에 도달한 실행은 그대로 반환되며, 두 번 디스패치되지 않습니다. 재개 전 `cueline run status <run-id> --json`을 실행하십시오. 응답이 수락되었고 phase가 `jobs_running`이면 ChatGPT 응답은 끝났고 로컬 작업이 실행 중입니다.
 
 ## CLI
 
@@ -110,7 +111,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.2
+CueLine 0.1.3
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -125,6 +126,12 @@ default	codex-default	available
 
 $ cueline jobs
 No jobs.
+
+$ cueline run status run_... --json
+{"status":"running","phase":"jobs_running","runtime":{"ownership":"active"},...}
+
+$ cueline run cancel run_...
+run_...	requested	affected_jobs=0
 
 $ cueline config path
 /usr/local/lib/node_modules/cueline/config/routing.default.json
@@ -145,6 +152,8 @@ Node 버전이 너무 낮거나 해석 가능한 레인이 하나도 없으면 `
 
 ```text
 runs/<run-id>/events.jsonl    추가 전용, 정본
+runs/<run-id>/runtime.json   활성 owner의 heartbeat 증거
+runs/<run-id>/cancel.json    존재할 때 지속 취소 요청
 runs/<run-id>/snapshot.json   재생 최적화용, 버려도 무방
 jobs/<job-id>.json            작업별 실행 증거
 ```

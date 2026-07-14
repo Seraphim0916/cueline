@@ -44,15 +44,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.1.2
+npm install -g cueline@0.1.3
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.1.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.2), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.1.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.3), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.2/cueline-0.1.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.3/cueline-0.1.3.tgz
 cueline install
 cueline doctor
 ```
@@ -89,7 +89,8 @@ import { createCodexIabAdapter, runCueLine } from "cueline";
 const result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
   browser: createCodexIabAdapter(),
-  // Optional: conversationUrl, routingConfig / routingConfigPath, home, cwd, limits.
+  // Optional: conversationUrl, routingConfig / routingConfigPath, home, cwd,
+  // runTimeoutMs, signal, and per-job/default limits.
 });
 
 if (result.status === "complete") {
@@ -97,7 +98,7 @@ if (result.status === "complete") {
 }
 ```
 
-`startCueLineRun` is the explicit start (`runCueLine` is its alias). `continueCueLineRun({ runId })` resumes an interrupted run in the same conversation, and reuses the stored conversation URL unless you hand it a new adapter. `loadCueLineRunState(runId)` reads persisted state without driving anything. A run that already reached `complete` or `blocked` is returned as-is, never dispatched twice.
+`startCueLineRun` is the explicit start (`runCueLine` is its alias). `continueCueLineRun({ runId })` resumes an interrupted run in the same conversation, and reuses the stored conversation URL unless you hand it a new adapter. `loadCueLineRunState(runId)` reads persisted state without driving anything. A run that already reached `complete`, `blocked`, or `cancelled` is returned as-is, never dispatched twice. Before continuation, run `cueline run status <run-id> --json`: an accepted response plus `jobs_running` means ChatGPT already answered and local jobs are executing.
 
 Inside Codex's runtime, import the absolute module that `cueline api path` prints — that is the built API of the package you installed.
 
@@ -110,7 +111,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.2
+CueLine 0.1.3
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -125,6 +126,12 @@ default	codex-default	available
 
 $ cueline jobs
 No jobs.
+
+$ cueline run status run_... --json
+{"status":"running","phase":"jobs_running","runtime":{"ownership":"active"},...}
+
+$ cueline run cancel run_...
+run_...	requested	affected_jobs=0
 
 $ cueline config path
 /usr/local/lib/node_modules/cueline/config/routing.default.json
@@ -145,6 +152,8 @@ State lives under `CUELINE_HOME`:
 
 ```text
 runs/<run-id>/events.jsonl    append-only, authoritative
+runs/<run-id>/runtime.json   live-owner heartbeat evidence
+runs/<run-id>/cancel.json    durable cancellation request, when present
 runs/<run-id>/snapshot.json   a replay optimization, disposable
 jobs/<job-id>.json            per-job execution evidence
 ```

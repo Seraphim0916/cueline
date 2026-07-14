@@ -19,6 +19,7 @@ function errorText(error: unknown): string {
 export class JobSupervisor {
   readonly #locks: JobLocks;
   readonly #completions = new Map<string, Promise<JobStatus>>();
+  readonly #cancellations = new Map<string, AbortController>();
 
   constructor(
     private readonly runner: RunnerAdapter,
@@ -29,28 +30,54 @@ export class JobSupervisor {
 
   async start(spec: RunnerSpec): Promise<JobStatus> {
     const lock = this.#locks.acquire(spec.jobId);
-    const running: JobStatus = {
+    const running = { current: {
       jobId: spec.jobId,
+      ...(spec.runId === undefined ? {} : { runId: spec.runId }),
+      ...(spec.jobKey === undefined ? {} : { jobKey: spec.jobKey }),
+      ...(spec.lane === undefined ? {} : { lane: spec.lane }),
+      mode: spec.mode,
       execution: executionFor(spec),
       status: "running",
       startedAt: new Date().toISOString(),
-    };
+    } satisfies JobStatus };
+    const cancellation = new AbortController();
+    this.#cancellations.set(spec.jobId, cancellation);
+    const signal =
+      spec.signal === undefined
+        ? cancellation.signal
+        : AbortSignal.any([spec.signal, cancellation.signal]);
 
     try {
-      await this.options.statusStore.write(running);
+      await this.options.statusStore.write(running.current);
     } catch (error) {
+      this.#cancellations.delete(spec.jobId);
       lock.release();
       throw error;
     }
 
-    const completion = this.completeOnce(spec, running, lock.release);
+    const completion = this.completeOnce({ ...spec, signal }, running, lock.release);
     this.#completions.set(spec.jobId, completion);
 
     if (spec.background === true) {
       void completion.catch(() => undefined);
-      return running;
+      return running.current;
     }
     return completion;
+  }
+
+  cancel(jobId: string): boolean {
+    const cancellation = this.#cancellations.get(jobId);
+    if (cancellation === undefined || cancellation.signal.aborted) return false;
+    cancellation.abort();
+    return true;
+  }
+
+  cancelAll(): number {
+    let count = 0;
+    for (const jobId of this.#cancellations.keys()) {
+      if (this.cancel(jobId)) count += 1;
+    }
+    return count;
   }
 
   async waitForCompletion(jobId: string): Promise<JobStatus> {
@@ -76,16 +103,21 @@ export class JobSupervisor {
 
   private async completeOnce(
     spec: RunnerSpec,
-    running: JobStatus,
+    running: { current: JobStatus },
     release: () => void,
   ): Promise<JobStatus> {
     let terminal: JobStatus;
     try {
-      const result = await this.runner.run(spec);
-      terminal = this.withResult(running, result);
+      const result = await this.runner.run(spec, {
+        onSpawn: async (pid) => {
+          running.current = { ...running.current, pid };
+          await this.options.statusStore.write(running.current);
+        },
+      });
+      terminal = this.withResult(running.current, result);
     } catch (error) {
       terminal = {
-        ...running,
+        ...running.current,
         status: "failed",
         finishedAt: new Date().toISOString(),
         error: errorText(error),
@@ -97,6 +129,7 @@ export class JobSupervisor {
       return terminal;
     } finally {
       this.#completions.delete(spec.jobId);
+      this.#cancellations.delete(spec.jobId);
       release();
     }
   }

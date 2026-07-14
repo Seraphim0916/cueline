@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
+import { jobId } from "../../src/core/ids.js";
+import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
+import { JobStatusStore } from "../../src/jobs/status.js";
+import { RunStore } from "../../src/state/store.js";
+
 const cli = fileURLToPath(new URL("../../src/cli/main.js", import.meta.url));
 const packageRoot = fileURLToPath(new URL("../../..", import.meta.url));
 
@@ -64,6 +69,86 @@ async function fixture(): Promise<{ config: string; home: string; environment: N
   };
 }
 
+async function seedActiveRun(home: string): Promise<string> {
+  const runId = "run_cli_status";
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Inspect a large project" });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: "msg_cli_status",
+    prompt: "Persisted controller prompt",
+    prompt_hash: "prompt-hash",
+  });
+  await store.append("controller_response_received", {
+    request_id: "msg_cli_status",
+    selected_model_label: "Pro",
+    response_model_slug: "gpt-5-6-pro",
+    model_evidence_source: "composer_and_response",
+  });
+  await store.append("controller_command_accepted", {
+    command_hash: "accepted-command",
+  });
+  for (const [index, status] of ["timed_out", "timed_out", "timed_out", "running"].entries()) {
+    const spec = {
+      job_key: `audit_${index + 1}`,
+      lane: "default",
+      mode: "advise" as const,
+      task: `Audit ${index + 1}`,
+      required: true,
+    };
+    const id = jobId(runId, spec.job_key, spec);
+    await store.append("job_registered", {
+      job: {
+        jobId: id,
+        jobKey: spec.job_key,
+        required: true,
+        spec,
+        status: "pending",
+        output: null,
+        error: null,
+      },
+    });
+    await store.append("job_status", { job_id: id, status });
+  }
+  return runId;
+}
+
+async function seedOneRunningJob(home: string, runId: string): Promise<string> {
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Cancel one legacy job" });
+  const spec = {
+    job_key: "legacy_job",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Inspect",
+    required: true,
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  await store.append("job_registered", {
+    job: {
+      jobId: id,
+      jobKey: spec.job_key,
+      required: true,
+      spec,
+      status: "pending",
+      output: null,
+      error: null,
+    },
+  });
+  await store.append("job_status", { job_id: id, status: "running" });
+  return id;
+}
+
 test("config path prints the effective configuration path", async () => {
   const context = await fixture();
   const result = invoke(["config", "path"], context.environment);
@@ -105,6 +190,184 @@ test("jobs is read-only and reports an empty store", async () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /No jobs\./);
+});
+
+test("run status refuses to call a legacy running run active without ownership evidence", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  const jsonResult = invoke(["run", "status", runId, "--json"], context.environment);
+
+  assert.equal(jsonResult.status, 0, jsonResult.stderr);
+  const status = JSON.parse(jsonResult.stdout) as {
+    version: string;
+    runId: string;
+    status: string;
+    phase: string;
+    lastEventSequence: number;
+    runtime: { ownership: string };
+    controller: {
+      pendingTurns: number;
+      acceptedCommands: number;
+      responseAccepted: boolean;
+    };
+    jobs: {
+      total: number;
+      counts: Record<string, number>;
+    };
+    continueAllowed: boolean;
+    safeNextAction: string;
+  };
+  assert.equal(status.version, await packageVersion());
+  assert.equal(status.runId, runId);
+  assert.equal(status.status, "running");
+  assert.equal(status.phase, "runtime_ownership_unknown");
+  assert.equal(status.lastEventSequence, 12);
+  assert.equal(status.runtime.ownership, "missing");
+  assert.deepEqual(status.controller, {
+    pendingTurns: 0,
+    acceptedCommands: 1,
+    responseAccepted: true,
+    lastAcceptedAction: null,
+    lastAcceptedRequestId: null,
+    lastAcceptedJobKeys: [],
+  });
+  assert.equal(status.jobs.total, 4);
+  assert.equal(status.jobs.counts.timed_out, 3);
+  assert.equal(status.jobs.counts.running, 0);
+  assert.equal(status.jobs.counts.orphaned, 1);
+  assert.equal(status.continueAllowed, false);
+  assert.equal(status.safeNextAction, "inspect_runtime");
+
+  const humanResult = invoke(["run", "status", runId], context.environment);
+  assert.equal(humanResult.status, 0, humanResult.stderr);
+  assert.match(humanResult.stdout, /phase\s+runtime_ownership_unknown/);
+  assert.match(humanResult.stdout, /runtime\s+missing/);
+  assert.match(humanResult.stdout, /controller\s+response_accepted/);
+  assert.match(humanResult.stdout, /jobs\s+total=4\s+.*running=0\s+.*timed_out=3\s+.*orphaned=1/);
+  assert.match(humanResult.stdout, /next\s+inspect_runtime/);
+});
+
+test("run cancel safely closes an ownerless legacy run and marks running work ambiguous", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  const cancelResult = invoke(["run", "cancel", runId, "--json"], context.environment);
+
+  assert.equal(cancelResult.status, 0, cancelResult.stderr);
+  const cancellation = JSON.parse(cancelResult.stdout) as {
+    runId: string;
+    outcome: string;
+    affectedJobs: number;
+  };
+  assert.deepEqual(cancellation, {
+    runId,
+    outcome: "cancelled",
+    affectedJobs: 1,
+  });
+
+  const statusResult = invoke(["run", "status", runId, "--json"], context.environment);
+  assert.equal(statusResult.status, 0, statusResult.stderr);
+  const status = JSON.parse(statusResult.stdout) as {
+    status: string;
+    phase: string;
+    jobs: { counts: Record<string, number> };
+    safeNextAction: string;
+  };
+  assert.equal(status.status, "cancelled");
+  assert.equal(status.phase, "cancelled");
+  assert.equal(status.jobs.counts.running, 0);
+  assert.equal(status.jobs.counts.ambiguous, 1);
+  assert.equal(status.safeNextAction, "return_result");
+});
+
+test("job cancel marks an ownerless running job ambiguous without claiming it was killed", async () => {
+  const context = await fixture();
+  const runId = "run_cli_job_cancel";
+  const id = await seedOneRunningJob(context.home, runId);
+  const result = invoke(["job", "cancel", runId, id, "--json"], context.environment);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    runId,
+    jobId: id,
+    outcome: "ambiguous",
+  });
+  const statusResult = invoke(["run", "status", runId, "--json"], context.environment);
+  const status = JSON.parse(statusResult.stdout) as {
+    status: string;
+    jobs: { counts: Record<string, number> };
+  };
+  assert.equal(status.status, "failed");
+  assert.equal(status.jobs.counts.ambiguous, 1);
+});
+
+test("jobs reports run, job key, lane, mode, and PID metadata", async () => {
+  const context = await fixture();
+  const store = new JobStatusStore(context.home);
+  await store.write({
+    jobId: "job_observable",
+    runId: "run_observable",
+    jobKey: "audit",
+    lane: "default",
+    mode: "advise",
+    pid: 43210,
+    execution: "background",
+    status: "running",
+    startedAt: "2026-07-15T00:00:00.000Z",
+  });
+
+  const result = invoke(["jobs", "--json"], context.environment);
+  assert.equal(result.status, 0, result.stderr);
+  const jobs = JSON.parse(result.stdout) as Array<Record<string, unknown>>;
+  assert.deepEqual(jobs, [
+    {
+      jobId: "job_observable",
+      runId: "run_observable",
+      jobKey: "audit",
+      lane: "default",
+      mode: "advise",
+      pid: 43210,
+      execution: "background",
+      status: "running",
+      observedStatus: "orphaned",
+      startedAt: "2026-07-15T00:00:00.000Z",
+    },
+  ]);
+
+  const human = invoke(["jobs"], context.environment);
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(
+    human.stdout,
+    /job_observable\s+run_observable\s+audit\s+default\s+advise\s+43210\s+background\s+orphaned/,
+  );
+});
+
+test("jobs reconstructs legacy run metadata from the authoritative event log", async () => {
+  const context = await fixture();
+  const runId = "run_legacy_observable";
+  const id = await seedOneRunningJob(context.home, runId);
+  await new JobStatusStore(context.home).write({
+    jobId: id,
+    execution: "foreground",
+    status: "running",
+    startedAt: "2026-07-15T00:00:00.000Z",
+  });
+
+  const result = invoke(["jobs", "--json"], context.environment);
+  assert.equal(result.status, 0, result.stderr);
+  const jobs = JSON.parse(result.stdout) as Array<Record<string, unknown>>;
+  assert.deepEqual(jobs, [
+    {
+      runId,
+      jobKey: "legacy_job",
+      lane: "default",
+      mode: "advise",
+      jobId: id,
+      execution: "foreground",
+      status: "running",
+      startedAt: "2026-07-15T00:00:00.000Z",
+      observedStatus: "orphaned",
+    },
+  ]);
 });
 
 test("install and uninstall manage the Codex skill link idempotently", async () => {
@@ -153,6 +416,10 @@ test("help lists every command, the environment, and the exit codes", async () =
       "doctor",
       "routing",
       "jobs",
+      "run status",
+      "run cancel",
+      "run stop",
+      "job cancel",
       "api path",
       "config path",
       "version",

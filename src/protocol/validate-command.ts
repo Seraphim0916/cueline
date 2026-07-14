@@ -13,6 +13,17 @@ import {
 
 const JOB_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const LANE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const JOB_FIELDS = new Set([
+  "job_key",
+  "lane",
+  "mode",
+  "task",
+  "required",
+  "timeout_ms",
+  "runner",
+  "workdir",
+  "background",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -81,6 +92,19 @@ function optionalStringArray(record: Record<string, unknown>, key: string): stri
 function validateJob(value: unknown): ControllerJobSpec {
   if (!isRecord(value)) {
     return fail("Each dispatch job must be an object.");
+  }
+
+  const unknownField = Object.keys(value).find((key) => !JOB_FIELDS.has(key));
+  if (unknownField !== undefined) {
+    const correction =
+      unknownField === "runner_id"
+        ? " Use 'runner'; 'runner_id' is not part of the CueLine controller contract."
+        : "";
+    throw new CueLineError(
+      "CONTROL_JOB_FIELD_UNKNOWN",
+      `Unsupported dispatch job field '${unknownField}'.${correction}`,
+      { details: { field: unknownField } },
+    );
   }
 
   const jobKey = requiredString(value, "job_key");

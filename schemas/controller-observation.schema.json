@@ -20,7 +20,7 @@
           "job_id": { "type": "string" },
           "job_key": { "type": "string" },
           "required": { "type": "boolean" },
-          "status": { "enum": ["pending", "running", "succeeded", "failed", "timed_out", "ambiguous"] },
+          "status": { "enum": ["pending", "running", "succeeded", "failed", "timed_out", "cancelled", "ambiguous"] },
           "output": { "type": "string" },
           "error": { "type": "string" }
         },

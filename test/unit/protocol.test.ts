@@ -75,6 +75,28 @@ test("rejects unknown job modes", () => {
   );
 });
 
+test("rejects runner_id with an explicit runner field correction", () => {
+  const command = {
+    ...base("dispatch"),
+    jobs: [
+      {
+        job_key: "review",
+        lane: "triage",
+        mode: "advise",
+        task: "one",
+        runner_id: "codex-default",
+      },
+    ],
+  };
+  assert.throws(
+    () => parseControllerCommand(envelope(command), expected),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROL_JOB_FIELD_UNKNOWN" &&
+      /runner_id.*runner/.test(error.message),
+  );
+});
+
 test("parses only the last complete valid dispatch envelope", () => {
   const stale = envelope({ ...base("wait"), round: 1 });
   const valid = envelope({

@@ -15,6 +15,7 @@ class FakeLocator implements IabLocator {
   clicks = 0;
   countResult = 1;
   failFirstClick = false;
+  failEveryClick = false;
   firstClickError = "Playwright timeout: detached button";
 
   constructor(readonly onClick?: () => void) {}
@@ -33,7 +34,7 @@ class FakeLocator implements IabLocator {
 
   async click(): Promise<void> {
     this.clicks += 1;
-    if (this.failFirstClick && this.clicks === 1) {
+    if (this.failEveryClick || (this.failFirstClick && this.clicks === 1)) {
       throw new Error(this.firstClickError);
     }
     this.onClick?.();
@@ -51,6 +52,8 @@ function fakeBrowser(options: {
   initialUrl?: string;
   submittedUrl?: string;
   failFirstClick?: boolean;
+  failEverySendClick?: boolean;
+  cuaAvailable?: boolean;
   firstClickError?: string;
   failStateReadAt?: number;
   stateReadError?: string;
@@ -80,6 +83,10 @@ function fakeBrowser(options: {
   missingProOption.countResult = 0;
   sendButtons[0]!.failFirstClick = options.failFirstClick ?? false;
   sendButtons[0]!.firstClickError = options.firstClickError ?? sendButtons[0]!.firstClickError;
+  for (const sendButton of sendButtons) {
+    sendButton.failEveryClick = options.failEverySendClick ?? false;
+    sendButton.firstClickError = options.firstClickError ?? sendButton.firstClickError;
+  }
   const requestedRoles: Array<{ role: string; name: string }> = [];
   const requestedSelectors: string[] = [];
   let stateIndex = 0;
@@ -87,6 +94,7 @@ function fakeBrowser(options: {
   let url = options.initialUrl ?? "https://chatgpt.com/";
   let snapshots = 0;
   let sendLookup = 0;
+  let coordinateClicks = 0;
 
   const playwright = {
     locator(selector: string) {
@@ -127,6 +135,13 @@ function fakeBrowser(options: {
         const hasLegacyPicker = options.legacyModelPickerPresent !== false;
         return (hasLegacyPicker ? modelLabel : null) as Result;
       }
+      if (
+        typeof argument === "object" &&
+        argument !== null &&
+        "sendButtonNames" in argument
+      ) {
+        return { x: 1024, y: 398 } as Result;
+      }
       const currentRead = stateRead;
       stateRead += 1;
       if (options.failStateReadAt === currentRead) {
@@ -165,6 +180,14 @@ function fakeBrowser(options: {
     },
     playwright,
   };
+  if (options.cuaAvailable) {
+    tab.cua = {
+      async click({ x, y }) {
+        assert.deepEqual({ x, y }, { x: 1024, y: 398 });
+        coordinateClicks += 1;
+      },
+    };
+  }
   const browser: IabBrowser = {
     async documentation() {},
     tabs: { async new() { return tab; } },
@@ -179,6 +202,7 @@ function fakeBrowser(options: {
     requestedRoles,
     requestedSelectors,
     sendButtons,
+    coordinateClicks: () => coordinateClicks,
     snapshots: () => snapshots,
   };
 }
@@ -275,6 +299,39 @@ test("reacquires a replaced send button once after a transient click failure", a
   assert.equal(fixture.sendButtons[0]?.clicks, 1);
   assert.equal(fixture.sendButtons[1]?.clicks, 1);
   assert.equal(fixture.snapshots(), 1);
+  assert.equal(turn.text, "complete");
+});
+
+test("falls back to the visible send coordinate after a transient locator timeout", async () => {
+  const fixture = fakeBrowser({
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+    failEverySendClick: true,
+    cuaAvailable: true,
+    firstClickError: "Timed out running CDP command Runtime.evaluate",
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_coordinate_fallback",
+    round: 1,
+    requestId: "msg_coordinate_fallback",
+    prompt: "Submit through the visible button",
+  });
+
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendButtons[1]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 1);
   assert.equal(turn.text, "complete");
 });
 
@@ -738,6 +795,144 @@ test("refuses recovery when submission cannot be proven after reattaching", asyn
   assert.equal(getCalls, 1);
   assert.deepEqual(submitting.composer.fills, ["Never resend after an ambiguous click"]);
   assert.deepEqual(recovered.composer.fills, []);
+});
+
+test("retries a transient selected-tab attach failure before creating a tab", async () => {
+  const fixture = fakeBrowser({
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  let selectedCalls = 0;
+  let newCalls = 0;
+  const browser: IabBrowser = {
+    async documentation() {},
+    tabs: {
+      async selected() {
+        selectedCalls += 1;
+        if (selectedCalls === 1) throw new Error("Browser webview attach timeout");
+        return fixture.tab;
+      },
+      async new() {
+        newCalls += 1;
+        throw new Error("UNEXPECTED_NEW_TAB");
+      },
+    },
+  };
+  const adapter = createCodexIabAdapter({
+    browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_attach_retry",
+    round: 1,
+    requestId: "msg_attach_retry",
+    prompt: "Retry discovery only",
+  });
+
+  assert.equal(turn.text, "complete");
+  assert.equal(selectedCalls, 2);
+  assert.equal(newCalls, 0);
+});
+
+test("does not reinterpret a persistent tab-list attach failure as an empty list", async () => {
+  let listCalls = 0;
+  let newCalls = 0;
+  const browser: IabBrowser = {
+    async documentation() {},
+    tabs: {
+      async selected() {
+        return undefined;
+      },
+      async list() {
+        listCalls += 1;
+        throw new Error("Browser webview attach timeout");
+      },
+      async new() {
+        newCalls += 1;
+        throw new Error("UNEXPECTED_NEW_TAB");
+      },
+    },
+  };
+  const adapter = createCodexIabAdapter({ browser, timeoutMs: 1_000 });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_attach_failure",
+      round: 1,
+      requestId: "msg_attach_failure",
+      prompt: "Do not create from an unknown discovery failure",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "IAB_ATTACH_FAILED",
+  );
+  assert.equal(listCalls, 2);
+  assert.equal(newCalls, 0);
+});
+
+test("retries a new tab that disappears before load and caches only the healthy tab", async () => {
+  const healthy = fakeBrowser({
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  const vanished: IabTab = {
+    async goto() {},
+    async url() {
+      return "https://chatgpt.com/";
+    },
+    playwright: {
+      getByRole() {
+        return new FakeLocator();
+      },
+      async evaluate<Result>() {
+        return null as Result;
+      },
+      async domSnapshot() {
+        return {};
+      },
+      async waitForTimeout() {},
+      async waitForLoadState() {
+        throw new Error("Target closed while attaching webview");
+      },
+    },
+  };
+  let newCalls = 0;
+  const browser: IabBrowser = {
+    async documentation() {},
+    tabs: {
+      async new() {
+        newCalls += 1;
+        return newCalls === 1 ? vanished : healthy.tab;
+      },
+    },
+  };
+  const adapter = createCodexIabAdapter({
+    browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_new_tab_retry",
+    round: 1,
+    requestId: "msg_new_tab_retry",
+    prompt: "Retry before submit",
+  });
+
+  assert.equal(turn.text, "complete");
+  assert.equal(newCalls, 2);
+  assert.deepEqual(healthy.composer.fills, ["Retry before submit"]);
 });
 
 test("recovers an existing completed response from the exact conversation without sending", async () => {

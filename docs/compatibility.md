@@ -26,10 +26,12 @@ The v0.1 adapter relies on accessible textbox/button roles and assistant-message
 - text controller observations and commands
 - `dispatch`, `wait`, `inspect`, `complete`, and `blocked`
 - foreground and background local jobs
+- concurrent all-`advise` batches and serialized batches containing `work`
 - deterministic routing before spawn
 - append-only run recovery and atomic snapshots
 - continuation by run ID and stored conversation URL
 - read-only persisted-state loading through `loadCueLineRunState`
+- cross-session run status, runtime ownership, run/job cancellation, and optional run deadlines
 - injected fake browser/runner for offline tests
 
 ## Not supported in v0.1
@@ -46,7 +48,7 @@ The v0.1 adapter relies on accessible textbox/button roles and assistant-message
 
 ## CLI boundary
 
-`cueline doctor`, `routing`, `jobs`, and `config path` diagnose the local installation and state. They do not drive the ChatGPT page. Live orchestration is an imported API run inside Codex so that the IAB browser object can be injected or resolved.
+`cueline doctor`, `routing`, `jobs`, `run status`, `run cancel` / `run stop`, `job cancel`, and `config path` diagnose or control the local runtime state. They do not drive the ChatGPT page. Live orchestration is an imported API run inside Codex so that the IAB browser object can be injected or resolved.
 
 ## Live readiness checklist
 

@@ -74,6 +74,18 @@ test("rejects unknown lanes", () => {
   assert.throws(() => resolveRoute("missing", config(), {}), hasCode("ROUTE_LANE_UNKNOWN"));
 });
 
+test("explains when a runner ID was supplied as the lane", () => {
+  assert.throws(
+    () => resolveRoute("second", config(), {}),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "ROUTE_LANE_UNKNOWN" &&
+      /runner ID/i.test(error.message) &&
+      /lane 'triage'/.test(error.message) &&
+      /runner 'second'/.test(error.message),
+  );
+});
+
 test("rejects a lane when every candidate is unavailable before spawn", () => {
   assert.throws(
     () => resolveRoute("triage", config(), { first: false, second: false, third: false }),

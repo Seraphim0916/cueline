@@ -44,15 +44,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.1.2
+npm install -g cueline@0.1.3
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.1.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.2) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.1.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.3) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.2/cueline-0.1.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.3/cueline-0.1.3.tgz
 cueline install
 cueline doctor
 ```
@@ -89,7 +89,8 @@ import { createCodexIabAdapter, runCueLine } from "cueline";
 const result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
   browser: createCodexIabAdapter(),
-  // 可选：conversationUrl、routingConfig / routingConfigPath、home、cwd、limits。
+  // 可选：conversationUrl、routingConfig / routingConfigPath、home、cwd、
+  // runTimeoutMs、signal，以及作业/默认期限。
 });
 
 if (result.status === "complete") {
@@ -99,7 +100,7 @@ if (result.status === "complete") {
 
 在 Codex 的 runtime 里，import `cueline api path` 打印出的那个绝对路径模块——那就是你安装的那份包构建出来的 API。
 
-`startCueLineRun` 是显式的启动入口（`runCueLine` 是它的别名）。`continueCueLineRun({ runId })` 会在同一个会话中续跑被中断的运行，并复用已保存的会话链接，除非你传入新的 adapter。`loadCueLineRunState(runId)` 只读取已持久化的状态，不驱动任何东西。已经到达 `complete` 或 `blocked` 的运行会原样返回，绝不会被再次派发。
+`startCueLineRun` 是显式的启动入口（`runCueLine` 是它的别名）。`continueCueLineRun({ runId })` 会在同一个会话中续跑被中断的运行，并复用已保存的会话链接，除非你传入新的 adapter。`loadCueLineRunState(runId)` 只读取已持久化的状态，不驱动任何东西。已经到达 `complete`、`blocked` 或 `cancelled` 的运行会原样返回，绝不会被再次派发。续跑前先执行 `cueline run status <run-id> --json`；已接受回复且 phase 为 `jobs_running` 表示 ChatGPT 已回复，本地作业正在执行。
 
 ## CLI
 
@@ -110,7 +111,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.2
+CueLine 0.1.3
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -125,6 +126,12 @@ default	codex-default	available
 
 $ cueline jobs
 No jobs.
+
+$ cueline run status run_... --json
+{"status":"running","phase":"jobs_running","runtime":{"ownership":"active"},...}
+
+$ cueline run cancel run_...
+run_...	requested	affected_jobs=0
 
 $ cueline config path
 /usr/local/lib/node_modules/cueline/config/routing.default.json
@@ -145,6 +152,8 @@ CueLine skill removed: /Users/you/.codex/skills/cueline
 
 ```text
 runs/<run-id>/events.jsonl    仅追加、具权威性
+runs/<run-id>/runtime.json   活跃 owner 的 heartbeat 证据
+runs/<run-id>/cancel.json    存在时表示持久取消请求
 runs/<run-id>/snapshot.json   重放优化产物，可丢弃
 jobs/<job-id>.json            每个作业的执行证据
 ```

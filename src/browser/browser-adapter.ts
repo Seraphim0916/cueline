@@ -4,6 +4,7 @@ export interface BrowserTurnInput {
   requestId: string;
   prompt: string;
   repairAttempt?: number;
+  signal?: AbortSignal;
 }
 
 export interface ControllerTurn {

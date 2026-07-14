@@ -13,6 +13,12 @@ import {
 import { CueLineError } from "./core/errors.js";
 import { runtimeCwd, runtimeEnvironment } from "./core/runtime.js";
 import {
+  acceptedControllerCommandEvidence,
+  assertRunCanContinue,
+  summarizeCueLineRunState,
+  type CueLineRunStatusSummary,
+} from "./core/run-status.js";
+import {
   initialRunState,
   reduceRunState,
   type CueLineRunState,
@@ -27,7 +33,14 @@ import { resolveRoute } from "./router/resolver.js";
 import type { RoutingConfig } from "./router/types.js";
 import { ProcessRunner } from "./runners/process-runner.js";
 import { RunnerRegistry } from "./runners/registry.js";
-import { defaultCueLineHome } from "./state/paths.js";
+import {
+  readCancellationObservation,
+  requestJobCancellation,
+  requestRunCancellation,
+} from "./state/cancellation.js";
+import { readEvents } from "./state/event-log.js";
+import { defaultCueLineHome, runPaths } from "./state/paths.js";
+import { readRuntimeLease } from "./state/runtime-lease.js";
 import { RunStore } from "./state/store.js";
 
 export interface CueLineRuntimeOptions {
@@ -43,6 +56,9 @@ export interface CueLineRuntimeOptions {
   maxRounds?: number;
   maxRepairAttempts?: number;
   now?: () => Date;
+  signal?: AbortSignal;
+  cancellationPollIntervalMs?: number;
+  runTimeoutMs?: number;
 }
 
 export interface StartCueLineRunOptions extends CueLineRuntimeOptions {
@@ -54,6 +70,18 @@ export interface ContinueCueLineRunOptions extends CueLineRuntimeOptions {
   runId: string;
   reconcileRequestId?: string;
   abandonOtherPendingTurns?: boolean;
+}
+
+export interface CueLineRunCancellationResult {
+  runId: string;
+  outcome: "requested" | "cancelled" | "already_terminal";
+  affectedJobs: number;
+}
+
+export interface CueLineJobCancellationResult {
+  runId: string;
+  jobId: string;
+  outcome: "requested" | "ambiguous" | "already_terminal";
 }
 
 interface PreparedRuntime {
@@ -85,7 +113,10 @@ export function routingConfigPath(
   return explicitPath ?? environment.CUELINE_CONFIG ?? defaultRoutingConfigPath();
 }
 
-async function persistedRunState(home: string, runId: string): Promise<CueLineRunState> {
+async function persistedRunStore(
+  home: string,
+  runId: string,
+): Promise<RunStore<CueLineRunState>> {
   const store = await RunStore.load({
     home,
     runId,
@@ -96,11 +127,19 @@ async function persistedRunState(home: string, runId: string): Promise<CueLineRu
   if (state.request === "") {
     throw new CueLineError("RUN_NOT_FOUND", `No persisted CueLine run '${runId}' was found.`);
   }
-  return state;
+  return store;
+}
+
+async function persistedRunState(home: string, runId: string): Promise<CueLineRunState> {
+  return (await persistedRunStore(home, runId)).state;
 }
 
 function terminalResult(state: CueLineRunState): CueLineResult {
-  if (state.status !== "complete" && state.status !== "blocked") {
+  if (
+    state.status !== "complete" &&
+    state.status !== "blocked" &&
+    state.status !== "cancelled"
+  ) {
     throw new CueLineError("RUN_NOT_TERMINAL", "CueLine result requested before a terminal state.");
   }
   return {
@@ -108,6 +147,7 @@ function terminalResult(state: CueLineRunState): CueLineResult {
     status: state.status,
     ...(state.finalDeliveryText === null ? {} : { finalDeliveryText: state.finalDeliveryText }),
     ...(state.conversationUrl === null ? {} : { conversationUrl: state.conversationUrl }),
+    ...(state.cancelledReason === null ? {} : { cancelledReason: state.cancelledReason }),
     state,
   };
 }
@@ -118,6 +158,122 @@ export async function loadCueLineRunState(
 ): Promise<CueLineRunState> {
   const environment = options.environment ?? runtimeEnvironment();
   return persistedRunState(options.home ?? defaultCueLineHome(environment), runId);
+}
+
+export async function loadCueLineRunStatus(
+  runId: string,
+  options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> = {},
+): Promise<CueLineRunStatusSummary> {
+  const environment = options.environment ?? runtimeEnvironment();
+  const home = options.home ?? defaultCueLineHome(environment);
+  const store = await persistedRunStore(home, runId);
+  const runtime = await readRuntimeLease(home, runId, {
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  const cancellation = await readCancellationObservation(home, runId);
+  const acceptedCommand = acceptedControllerCommandEvidence(
+    await readEvents(runPaths(home, runId).events),
+  );
+  return summarizeCueLineRunState(
+    store.state,
+    store.lastSequence,
+    runtime,
+    cancellation,
+    acceptedCommand,
+  );
+}
+
+function isTerminalRun(state: CueLineRunState): boolean {
+  return (
+    state.status === "complete" || state.status === "blocked" || state.status === "cancelled"
+  );
+}
+
+export async function cancelCueLineRun(
+  runId: string,
+  options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> & {
+    reason?: string;
+  } = {},
+): Promise<CueLineRunCancellationResult> {
+  const environment = options.environment ?? runtimeEnvironment();
+  const home = options.home ?? defaultCueLineHome(environment);
+  const store = await persistedRunStore(home, runId);
+  if (isTerminalRun(store.state)) {
+    return { runId, outcome: "already_terminal", affectedJobs: 0 };
+  }
+  const reason = options.reason ?? "operator requested cancellation";
+  await requestRunCancellation(home, runId, reason, options.now);
+  const runtime = await readRuntimeLease(home, runId, {
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  if (
+    runtime.ownership === "active" ||
+    runtime.ownership === "stale" ||
+    runtime.ownership === "invalid"
+  ) {
+    return { runId, outcome: "requested", affectedJobs: 0 };
+  }
+  const active = Object.values(store.state.jobs).filter(
+    (job) => job.status === "pending" || job.status === "running",
+  );
+  for (const job of active) {
+    await store.append("job_status", {
+      job_id: job.jobId,
+      status: "ambiguous",
+      error: "Run cancelled without a verifiable active runtime; process outcome is unknown.",
+    });
+  }
+  await store.append("run_cancelled", { reason });
+  await store.snapshot();
+  return { runId, outcome: "cancelled", affectedJobs: active.length };
+}
+
+export async function cancelCueLineJob(
+  runId: string,
+  jobId: string,
+  options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> & {
+    reason?: string;
+  } = {},
+): Promise<CueLineJobCancellationResult> {
+  const environment = options.environment ?? runtimeEnvironment();
+  const home = options.home ?? defaultCueLineHome(environment);
+  const store = await persistedRunStore(home, runId);
+  const job = store.state.jobs[jobId];
+  if (job === undefined) {
+    throw new CueLineError("JOB_NOT_FOUND", `No job '${jobId}' exists in run '${runId}'.`);
+  }
+  if (
+    isTerminalRun(store.state) ||
+    (job.status !== "pending" && job.status !== "running")
+  ) {
+    return { runId, jobId, outcome: "already_terminal" };
+  }
+  const reason = options.reason ?? "operator requested job cancellation";
+  await requestJobCancellation(home, runId, jobId, reason, options.now);
+  const runtime = await readRuntimeLease(home, runId, {
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  if (
+    runtime.ownership === "active" ||
+    runtime.ownership === "stale" ||
+    runtime.ownership === "invalid"
+  ) {
+    return { runId, jobId, outcome: "requested" };
+  }
+  await store.append("job_status", {
+    job_id: jobId,
+    status: "ambiguous",
+    error: "Job cancelled without a verifiable active runtime; process outcome is unknown.",
+  });
+  if (store.state.status === "running") {
+    await store.append("run_failed", {
+      code: "JOB_CANCELLED_WITHOUT_ACTIVE_RUNTIME",
+      message: `Job '${jobId}' was marked ambiguous because no active owner could confirm termination.`,
+      stage: "job_cancellation",
+    });
+  }
+  await store.snapshot();
+  return { runId, jobId, outcome: "ambiguous" };
 }
 
 async function resolvedRoutingConfig(
@@ -158,7 +314,7 @@ function routingInstruction(
         .map((candidate) => candidate.id);
       return `${name} [${candidates.length > 0 ? candidates.join(", ") : "unavailable"}]`;
     });
-  return `Available routing lanes: ${lanes.join("; ")}. Use only a listed available lane and optional runner id.`;
+  return `Available routing lanes: ${lanes.join("; ")}. Use only a listed lane. Select an optional candidate with the field runner; never use runner_id or place a runner ID in lane.`;
 }
 
 async function prepareRuntime(
@@ -215,6 +371,11 @@ export async function startCueLineRun(
       ? {}
       : { maxRepairAttempts: options.maxRepairAttempts }),
     ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.cancellationPollIntervalMs === undefined
+      ? {}
+      : { cancellationPollIntervalMs: options.cancellationPollIntervalMs }),
+    ...(options.runTimeoutMs === undefined ? {} : { runTimeoutMs: options.runTimeoutMs }),
   });
 }
 
@@ -228,9 +389,16 @@ export async function continueCueLineRun(
   const environment = options.environment ?? runtimeEnvironment();
   const home = options.home ?? defaultCueLineHome(environment);
   const state = await persistedRunState(home, options.runId);
-  if (state.status === "complete" || state.status === "blocked") {
+  if (isTerminalRun(state)) {
     return terminalResult(state);
   }
+  assertRunCanContinue(
+    state,
+    await readRuntimeLease(home, options.runId, {
+      ...(options.now === undefined ? {} : { now: options.now }),
+    }),
+    await readCancellationObservation(home, options.runId),
+  );
   assertNotNested(environment);
   const runtime = await prepareRuntime(options, state.conversationUrl ?? undefined);
   return continueControllerLoop({
@@ -247,8 +415,20 @@ export async function continueCueLineRun(
       ? {}
       : { maxRepairAttempts: options.maxRepairAttempts }),
     ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.cancellationPollIntervalMs === undefined
+      ? {}
+      : { cancellationPollIntervalMs: options.cancellationPollIntervalMs }),
+    ...(options.runTimeoutMs === undefined ? {} : { runTimeoutMs: options.runTimeoutMs }),
   });
 }
 
 export { createCodexIabAdapter };
-export type { BrowserAdapter, CueLineResult, CueLineRunState, RoutingConfig };
+export { CUELINE_VERSION } from "./version.js";
+export type {
+  BrowserAdapter,
+  CueLineResult,
+  CueLineRunState,
+  CueLineRunStatusSummary,
+  RoutingConfig,
+};

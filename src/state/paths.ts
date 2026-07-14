@@ -10,6 +10,9 @@ export interface RunPaths {
   runsDir: string;
   runDir: string;
   events: string;
+  runtimeLease: string;
+  runCancellation: string;
+  jobCancellationsDir: string;
   snapshot: string;
 }
 
@@ -43,6 +46,9 @@ export function runPaths(home: string, runId: string): RunPaths {
     runsDir,
     runDir,
     events: path.join(runDir, "events.jsonl"),
+    runtimeLease: path.join(runDir, "runtime.json"),
+    runCancellation: path.join(runDir, "cancel.json"),
+    jobCancellationsDir: path.join(runDir, "job-cancellations"),
     snapshot: path.join(runDir, "snapshot.json"),
   };
 }

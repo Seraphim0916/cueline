@@ -132,6 +132,58 @@ test("does not retry a work job after its process exits unsuccessfully", async (
   assert.equal(await readFile(attemptsPath, "utf8"), "x");
 });
 
+test("cancels an advise process and reports its spawned PID", async () => {
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+  const controller = new AbortController();
+  let spawnedPid: number | undefined;
+  const running = runner.run(
+    spec("cancel-advise", "setInterval(() => {}, 1_000);", {
+      signal: controller.signal,
+    }),
+    {
+      onSpawn(pid) {
+        spawnedPid = pid;
+      },
+    },
+  );
+  while (spawnedPid === undefined) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  controller.abort();
+  const result = await running;
+
+  assert.equal(typeof spawnedPid, "number");
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.cancelled, true);
+  assert.equal(result.ambiguousSideEffects, false);
+});
+
+test("cancelling started work reports ambiguous side effects", async () => {
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+  const controller = new AbortController();
+  let spawned = false;
+  const running = runner.run(
+    spec("cancel-work", "setInterval(() => {}, 1_000);", {
+      mode: "work",
+      signal: controller.signal,
+    }),
+    {
+      onSpawn() {
+        spawned = true;
+      },
+    },
+  );
+  while (!spawned) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  controller.abort();
+  const result = await running;
+
+  assert.equal(result.status, "ambiguous");
+  assert.equal(result.cancelled, true);
+  assert.equal(result.ambiguousSideEffects, true);
+});
+
 test("persists distinct foreground and background job states", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-"));
   const store = new JobStatusStore(directory);
@@ -156,4 +208,34 @@ test("persists distinct foreground and background job states", async () => {
   assert.equal(completed.status, "succeeded");
   assert.equal((await store.read("background"))?.status, "succeeded");
   assert.equal((await supervisor.inspect("background")).status, "succeeded");
+});
+
+test("supervisor persists run metadata and cancels an owned background job", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-cancel-status-"));
+  const store = new JobStatusStore(directory);
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+  const supervisor = new JobSupervisor(runner, { statusStore: store });
+  const job = spec("owned-background", "setInterval(() => {}, 1_000);", {
+    background: true,
+    runId: "run_owned",
+    jobKey: "owned_job",
+    lane: "default",
+  });
+
+  await supervisor.start(job);
+  let persisted = await store.read(job.jobId);
+  for (let attempt = 0; attempt < 100 && persisted?.pid === undefined; attempt += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    persisted = await store.read(job.jobId);
+  }
+  assert.equal(persisted?.runId, "run_owned");
+  assert.equal(persisted?.jobKey, "owned_job");
+  assert.equal(persisted?.lane, "default");
+  assert.equal(persisted?.mode, "advise");
+  assert.equal(typeof persisted?.pid, "number");
+  assert.equal(supervisor.cancel(job.jobId), true);
+
+  const terminal = await supervisor.waitForCompletion(job.jobId);
+  assert.equal(terminal.status, "cancelled");
+  assert.equal(terminal.pid, persisted?.pid);
 });

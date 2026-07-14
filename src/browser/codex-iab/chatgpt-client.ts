@@ -33,6 +33,7 @@ const MODEL_PICKER_SELECTOR = "button.__composer-pill";
 const REQUIRED_MODEL_LABEL = "Pro";
 const MODEL_LABEL_READ_ATTEMPTS = 50;
 const MODEL_LABEL_RETRY_INTERVAL_MS = 100;
+const TAB_DISCOVERY_RETRY_MS = 100;
 
 type TurnStage = "pre_submit" | "submitting" | "submitted";
 
@@ -42,8 +43,31 @@ interface TurnAttemptContext {
   selectedModelLabel?: string;
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return;
+  if (signal.reason instanceof CueLineError) throw signal.reason;
+  throw new CueLineError("RUN_CANCELLED", "CueLine run cancellation was requested.", {
+    cause: signal.reason,
+  });
+}
+
+function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    throwIfCancelled(signal);
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      try {
+        throwIfCancelled(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function findUniqueLocator(
@@ -58,6 +82,56 @@ async function findUniqueLocator(
     }
   }
   return undefined;
+}
+
+async function clickVisibleSendButtonByCoordinates(tab: IabTab): Promise<boolean> {
+  if (!tab.cua?.click) return false;
+  const target = await tab.playwright.evaluate(
+    ({ sendButtonNames }) => {
+      const normalize = (value: unknown): string =>
+        String(value ?? "").trim().replace(/\s+/g, " ");
+      const candidates = Array.from(document.querySelectorAll("button")).filter((element) => {
+        const button = element as HTMLButtonElement;
+        const style = window.getComputedStyle(button);
+        const rect = button.getBoundingClientRect();
+        const label = normalize(
+          button.getAttribute("aria-label") ?? button.innerText ?? button.textContent,
+        );
+        return (
+          sendButtonNames.some((name) => name === label) &&
+          !button.disabled &&
+          button.getAttribute("aria-disabled") !== "true" &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          rect.right > 0 &&
+          rect.bottom > 0 &&
+          rect.left < window.innerWidth &&
+          rect.top < window.innerHeight
+        );
+      });
+      if (candidates.length !== 1) return null;
+      const rect = candidates[0]!.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      };
+    },
+    { sendButtonNames: [...SEND_BUTTON_NAMES] },
+  ).catch(() => null);
+  if (
+    target === null ||
+    !Number.isFinite(target.x) ||
+    !Number.isFinite(target.y) ||
+    target.x < 0 ||
+    target.y < 0
+  ) {
+    return false;
+  }
+  await tab.cua.click({ x: Math.round(target.x), y: Math.round(target.y) });
+  await tab.playwright.waitForTimeout(100);
+  return true;
 }
 
 async function findHydratedComposer(tab: IabTab): Promise<IabLocator | undefined> {
@@ -142,8 +216,12 @@ async function readComposerModelLabel(tab: IabTab): Promise<string | null> {
   );
 }
 
-async function readComposerModelLabelWhenReady(tab: IabTab): Promise<string | null> {
+async function readComposerModelLabelWhenReady(
+  tab: IabTab,
+  signal?: AbortSignal,
+): Promise<string | null> {
   for (let attempt = 0; attempt < MODEL_LABEL_READ_ATTEMPTS; attempt += 1) {
+    throwIfCancelled(signal);
     const label = await readComposerModelLabel(tab);
     if (label !== null) return label;
     if (attempt < MODEL_LABEL_READ_ATTEMPTS - 1) {
@@ -199,33 +277,47 @@ class CodexIabAdapter implements BrowserAdapter {
       targetUrl
         ? normalizedConversationUrl(url) === normalizedConversationUrl(targetUrl)
         : url.startsWith(CHATGPT_URL);
-    const selected = await browser.tabs.selected?.().catch(() => undefined);
-    if (selected && matchesTarget((await selected.url().catch(() => "")) ?? "")) {
-      this.#tab = selected;
-      return selected;
-    }
-    const sessionTabs = await browser.tabs.list?.().catch(() => []);
-    const sessionCandidate = sessionTabs?.find((tab) => matchesTarget(String(tab.url ?? "")));
     let tab: IabTab | undefined;
-    if (sessionCandidate?.id && browser.tabs.get) {
-      tab = await browser.tabs.get(sessionCandidate.id);
+    const canDiscover =
+      browser.tabs.selected !== undefined ||
+      browser.tabs.list !== undefined ||
+      browser.user?.openTabs !== undefined;
+    const discoveryPasses = canDiscover ? 2 : 1;
+    for (let pass = 0; pass < discoveryPasses && tab === undefined; pass += 1) {
+      const selected = await browser.tabs.selected?.();
+      if (selected && matchesTarget((await selected.url()) ?? "")) {
+        tab = selected;
+        break;
+      }
+      const sessionTabs = (await browser.tabs.list?.()) ?? [];
+      const sessionCandidate = sessionTabs.find((candidate) =>
+        matchesTarget(String(candidate.url ?? "")),
+      );
+      if (sessionCandidate?.id && browser.tabs.get) {
+        tab = await browser.tabs.get(sessionCandidate.id);
+      }
+      if (tab === undefined) {
+        const openTabs = (await browser.user?.openTabs?.()) ?? [];
+        const candidate = openTabs.find((openTab) =>
+          matchesTarget(String(openTab.url ?? "")),
+        );
+        if (candidate && browser.user?.claimTab) {
+          tab = await browser.user.claimTab(candidate);
+        }
+      }
+      if (tab === undefined && pass < discoveryPasses - 1) {
+        await delay(TAB_DISCOVERY_RETRY_MS);
+      }
     }
-    const openTabs = tab === undefined ? await browser.user?.openTabs?.().catch(() => []) : [];
-    const candidate = openTabs?.find((openTab) => {
-      const url = String(openTab.url ?? "");
-      return matchesTarget(url);
-    });
-    if (tab === undefined && candidate && browser.user?.claimTab) {
-      tab = await browser.user.claimTab(candidate);
-    } else if (tab === undefined) {
+    if (tab === undefined) {
       tab = await browser.tabs.new();
       await tab.goto(targetUrl ?? CHATGPT_URL);
     }
-    this.#tab = tab;
     await tab.playwright.waitForLoadState?.({
       state: "domcontentloaded",
       timeoutMs: 30_000,
     });
+    this.#tab = tab;
     return tab;
   }
 
@@ -290,36 +382,58 @@ class CodexIabAdapter implements BrowserAdapter {
 
   async #clickSend(tab: IabTab): Promise<void> {
     const previousUrl = (await tab.url()) ?? "";
+    let lastError: unknown;
+    let locatorClickAttempted = false;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const button = await findUniqueLocator(tab, "button", SEND_BUTTON_NAMES);
       if (!button) {
         if (attempt > 0 && await this.#submissionStarted(tab, previousUrl)) {
           return;
         }
-        throw new CueLineError("SEND_BUTTON_MISSING", "Could not find ChatGPT's send button.");
+        lastError = new CueLineError(
+          "SEND_BUTTON_MISSING",
+          "Could not find ChatGPT's send button.",
+        );
+        break;
       }
       try {
+        locatorClickAttempted = true;
         await button.click({ timeoutMs: 10_000 });
         return;
       } catch (error) {
         if (await this.#submissionStarted(tab, previousUrl)) {
           return;
         }
-        if (attempt === 1 || !isTransientClickError(error)) {
+        if (!isTransientClickError(error)) {
           throw error;
         }
-        await tab.playwright.domSnapshot();
-        await tab.playwright.waitForTimeout(250);
+        lastError = error;
+        if (attempt === 0) {
+          await tab.playwright.domSnapshot();
+          await tab.playwright.waitForTimeout(250);
+          if (await this.#submissionStarted(tab, previousUrl)) return;
+          if (await clickVisibleSendButtonByCoordinates(tab)) return;
+        }
       }
     }
+    if (!locatorClickAttempted && await clickVisibleSendButtonByCoordinates(tab)) return;
+    throw lastError ?? new CueLineError(
+      "SEND_BUTTON_MISSING",
+      "Could not find ChatGPT's send button.",
+    );
   }
 
-  async #waitForCompletion(tab: IabTab, baseline: PageChatState): Promise<PageChatState> {
+  async #waitForCompletion(
+    tab: IabTab,
+    baseline: PageChatState,
+    signal?: AbortSignal,
+  ): Promise<PageChatState> {
     const deadline = Date.now() + this.#options.timeoutMs;
     let stableText = "";
     let stableSince = 0;
     let responseStarted = false;
     while (Date.now() < deadline) {
+      throwIfCancelled(signal);
       const state = await readPageChatState(tab);
       if (state.isAnswering || state.assistantMessageCount > baseline.assistantMessageCount) {
         responseStarted = true;
@@ -336,7 +450,7 @@ class CodexIabAdapter implements BrowserAdapter {
         stableText = state.assistantText;
         stableSince = Date.now();
       }
-      await delay(this.#options.pollIntervalMs);
+      await delay(this.#options.pollIntervalMs, signal);
     }
     throw new CueLineError("CHATGPT_RESPONSE_TIMEOUT", "ChatGPT did not finish before timeout.");
   }
@@ -344,11 +458,13 @@ class CodexIabAdapter implements BrowserAdapter {
   async #waitForRecoveredCompletion(
     tab: IabTab,
     expectedPrompt: string,
+    signal?: AbortSignal,
   ): Promise<PageChatState> {
     const deadline = Date.now() + this.#options.timeoutMs;
     let stableText = "";
     let stableSince = 0;
     while (Date.now() < deadline) {
+      throwIfCancelled(signal);
       const state = await readPageChatState(tab);
       if (normalizedMessageText(state.lastUserText) !== normalizedMessageText(expectedPrompt)) {
         throw new CueLineError(
@@ -370,7 +486,7 @@ class CodexIabAdapter implements BrowserAdapter {
         stableText = "";
         stableSince = Date.now();
       }
-      await delay(this.#options.pollIntervalMs);
+      await delay(this.#options.pollIntervalMs, signal);
     }
     throw new CueLineError(
       "CONTROLLER_RECONCILIATION_TIMEOUT",
@@ -417,7 +533,9 @@ class CodexIabAdapter implements BrowserAdapter {
     context: TurnAttemptContext,
     hooks?: BrowserTurnHooks,
   ): Promise<ControllerTurn> {
+    throwIfCancelled(input.signal);
     const tab = await this.#getTab();
+    throwIfCancelled(input.signal);
     const composer =
       (await findHydratedComposer(tab)) ??
       (await findUniqueLocator(tab, "textbox", COMPOSER_TEXTBOX_NAMES));
@@ -427,12 +545,13 @@ class CodexIabAdapter implements BrowserAdapter {
     context.selectedModelLabel = await this.#ensureProModel(tab);
     context.baseline = await readPageChatState(tab);
     await composer.fill(input.prompt, {});
+    throwIfCancelled(input.signal);
     await this.#emitCheckpoint(tab, context, hooks, "possibly_sent");
     context.stage = "submitting";
     await this.#clickSend(tab);
     context.stage = "submitted";
     await this.#emitCheckpoint(tab, context, hooks, "submitted");
-    const completed = await this.#waitForCompletion(tab, context.baseline);
+    const completed = await this.#waitForCompletion(tab, context.baseline, input.signal);
     return this.#resultFromCompletedTurn(tab, context.selectedModelLabel, completed);
   }
 
@@ -492,6 +611,13 @@ class CodexIabAdapter implements BrowserAdapter {
       return await this.#sendTurnOnce(input, context, hooks);
     } catch (error) {
       if (!isTabUnavailableError(error)) throw this.#browserFailure(error, context, input);
+      this.#tab = undefined;
+      if (context.stage === "pre_submit") {
+        const retryContext: TurnAttemptContext = { stage: "pre_submit" };
+        return this.#sendTurnOnce(input, retryContext, hooks).catch((retryError) => {
+          throw this.#browserFailure(retryError, retryContext, input);
+        });
+      }
       if (this.#conversationUrl === undefined) {
         throw new CueLineError(
           "TAB_RECOVERY_UNSAFE",
@@ -505,13 +631,6 @@ class CodexIabAdapter implements BrowserAdapter {
             },
           },
         );
-      }
-      this.#tab = undefined;
-      if (context.stage === "pre_submit") {
-        const retryContext: TurnAttemptContext = { stage: "pre_submit" };
-        return this.#sendTurnOnce(input, retryContext, hooks).catch((retryError) => {
-          throw this.#browserFailure(retryError, retryContext, input);
-        });
       }
       if (!context.baseline || !context.selectedModelLabel) throw error;
       try {
@@ -534,7 +653,11 @@ class CodexIabAdapter implements BrowserAdapter {
             },
           );
         }
-        const completed = await this.#waitForCompletion(recoveredTab, context.baseline);
+        const completed = await this.#waitForCompletion(
+          recoveredTab,
+          context.baseline,
+          input.signal,
+        );
         return this.#resultFromCompletedTurn(
           recoveredTab,
           context.selectedModelLabel,
@@ -547,6 +670,7 @@ class CodexIabAdapter implements BrowserAdapter {
   }
 
   async recoverTurn(input: BrowserTurnInput): Promise<ControllerTurn> {
+    throwIfCancelled(input.signal);
     if (this.#conversationUrl === undefined) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_URL_REQUIRED",
@@ -562,14 +686,19 @@ class CodexIabAdapter implements BrowserAdapter {
     }
     try {
       const tab = await this.#getTab();
-      const selectedModelLabel = await readComposerModelLabelWhenReady(tab);
+      throwIfCancelled(input.signal);
+      const selectedModelLabel = await readComposerModelLabelWhenReady(tab, input.signal);
       if (!isProLabel(selectedModelLabel)) {
         throw new CueLineError(
           "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
           "The existing conversation does not currently expose a Pro composer label; refusing to import the response without both model checks.",
         );
       }
-      const completed = await this.#waitForRecoveredCompletion(tab, input.prompt);
+      const completed = await this.#waitForRecoveredCompletion(
+        tab,
+        input.prompt,
+        input.signal,
+      );
       return this.#resultFromCompletedTurn(tab, selectedModelLabel, completed);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

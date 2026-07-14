@@ -5,13 +5,20 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { routingConfigPath } from "../api.js";
+import {
+  cancelCueLineJob,
+  cancelCueLineRun,
+  loadCueLineRunStatus,
+  routingConfigPath,
+} from "../api.js";
 import { CueLineError } from "../core/errors.js";
 import type { JobStatus } from "../jobs/status.js";
 import { executableAvailability } from "../router/availability.js";
 import { loadRoutingConfig } from "../router/config-loader.js";
 import { resolveRoute } from "../router/resolver.js";
 import { defaultCueLineHome } from "../state/paths.js";
+import { readRuntimeLease } from "../state/runtime-lease.js";
+import { readEvents } from "../state/event-log.js";
 import { CUELINE_VERSION } from "../version.js";
 import { installSkill, uninstallSkill } from "./skill-links.js";
 
@@ -26,7 +33,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|jobs|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -40,7 +47,11 @@ function help(): string {
     "  uninstall      remove only the skill link owned by this package",
     "  doctor         report Node, routing config, state home, and usable lanes",
     "  routing        list every lane and the candidate that would be selected",
-    "  jobs           list persisted local jobs, oldest first",
+    "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
+    "  run status     summarize one persisted run for safe cross-session handoff",
+    "  run cancel     request safe cancellation; ownerless work becomes ambiguous",
+    "  run stop       alias for `run cancel`",
+    "  job cancel     request cancellation for one job in one run",
     "  api path       print the bundled API module path",
     "  config path    print the routing configuration file in effect",
     "  help           print this text",
@@ -89,7 +100,59 @@ async function routingCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promis
   return available > 0 ? 0 : 1;
 }
 
-async function readJobs(home: string): Promise<JobStatus[]> {
+type ObservedJobStatus = JobStatus["status"] | "orphaned" | "unverified";
+type ListedJobStatus = JobStatus & { observedStatus: ObservedJobStatus };
+
+type LegacyJobMetadata = Pick<JobStatus, "runId" | "jobKey" | "lane" | "mode">;
+
+async function readLegacyJobMetadata(home: string): Promise<Map<string, LegacyJobMetadata>> {
+  const metadata = new Map<string, LegacyJobMetadata>();
+  let entries;
+  try {
+    entries = await readdir(path.join(home, "runs"), { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return metadata;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const events = await readEvents(path.join(home, "runs", entry.name, "events.jsonl"));
+    for (const event of events) {
+      if (
+        event.type !== "job_registered" ||
+        typeof event.payload !== "object" ||
+        event.payload === null ||
+        Array.isArray(event.payload)
+      ) {
+        continue;
+      }
+      const job = (event.payload as { job?: unknown }).job;
+      if (typeof job !== "object" || job === null || Array.isArray(job)) continue;
+      const record = job as Record<string, unknown>;
+      const spec =
+        typeof record.spec === "object" && record.spec !== null && !Array.isArray(record.spec)
+          ? (record.spec as Record<string, unknown>)
+          : {};
+      if (
+        typeof record.jobId !== "string" ||
+        typeof record.jobKey !== "string" ||
+        typeof spec.lane !== "string" ||
+        (spec.mode !== "advise" && spec.mode !== "work")
+      ) {
+        continue;
+      }
+      metadata.set(record.jobId, {
+        runId: entry.name,
+        jobKey: record.jobKey,
+        lane: spec.lane,
+        mode: spec.mode,
+      });
+    }
+  }
+  return metadata;
+}
+
+async function readJobs(home: string): Promise<ListedJobStatus[]> {
   const directory = path.join(home, "jobs");
   let names: string[];
   try {
@@ -108,18 +171,96 @@ async function readJobs(home: string): Promise<JobStatus[]> {
       });
     }
   }
-  return statuses.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  const legacyMetadata = await readLegacyJobMetadata(home);
+  const ownership = new Map<string, Awaited<ReturnType<typeof readRuntimeLease>>>();
+  const listed: ListedJobStatus[] = [];
+  for (const persisted of statuses) {
+    const status: JobStatus = { ...legacyMetadata.get(persisted.jobId), ...persisted };
+    let observedStatus: ObservedJobStatus = status.status;
+    if (status.status === "running") {
+      if (status.runId === undefined) {
+        observedStatus = "unverified";
+      } else {
+        let runtime = ownership.get(status.runId);
+        if (runtime === undefined) {
+          runtime = await readRuntimeLease(home, status.runId);
+          ownership.set(status.runId, runtime);
+        }
+        observedStatus = runtime.ownership === "active" ? "running" : "orphaned";
+      }
+    }
+    listed.push({ ...status, observedStatus });
+  }
+  return listed.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
 }
 
-async function jobsCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promise<number> {
+async function jobsCommand(
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
   const jobs = await readJobs(defaultCueLineHome(environment));
+  if (json) {
+    io.stdout(JSON.stringify(jobs, null, 2));
+    return 0;
+  }
   if (jobs.length === 0) {
     io.stdout("No jobs.");
     return 0;
   }
   for (const job of jobs) {
-    io.stdout(`${job.jobId}\t${job.execution}\t${job.status}\t${job.startedAt}`);
+    io.stdout(
+      `${job.jobId}\t${job.runId ?? "-"}\t${job.jobKey ?? "-"}\t${job.lane ?? "-"}\t${job.mode ?? "-"}\t${job.pid ?? "-"}\t${job.execution}\t${job.observedStatus}\t${job.startedAt}`,
+    );
   }
+  return 0;
+}
+
+async function runStatusCommand(
+  runId: string,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const status = await loadCueLineRunStatus(runId, { environment });
+  if (json) {
+    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...status }, null, 2));
+    return 0;
+  }
+  const controller = status.controller.responseAccepted
+    ? "response_accepted"
+    : status.controller.pendingTurns > 0
+      ? "response_pending"
+      : "no_response_accepted";
+  const counts = status.jobs.counts;
+  io.stdout(`run\t${status.runId}`);
+  io.stdout(`version\t${CUELINE_VERSION}`);
+  io.stdout(`status\t${status.status}`);
+  io.stdout(`phase\t${status.phase}`);
+  io.stdout(
+    `runtime\t${status.runtime.ownership}${
+      status.runtime.heartbeatAt === undefined
+        ? ""
+        : `\theartbeat=${status.runtime.heartbeatAt}\tage_ms=${status.runtime.ageMs ?? "-"}`
+    }`,
+  );
+  io.stdout(`sequence\t${status.lastEventSequence}`);
+  io.stdout(
+    `controller\t${controller}\tpending=${status.controller.pendingTurns}\taccepted_commands=${status.controller.acceptedCommands}\tlast_action=${status.controller.lastAcceptedAction ?? "-"}\tlast_jobs=${status.controller.lastAcceptedJobKeys.length}`,
+  );
+  io.stdout(
+    `jobs\ttotal=${status.jobs.total}\tpending=${counts.pending}\trunning=${counts.running}\tsucceeded=${counts.succeeded}\tfailed=${counts.failed}\ttimed_out=${counts.timed_out}\torphaned=${counts.orphaned}\tcancelled=${counts.cancelled}\tambiguous=${counts.ambiguous}`,
+  );
+  for (const job of status.jobs.items) {
+    io.stdout(
+      `job\t${job.jobId}\t${job.jobKey}\t${job.status}\t${job.mode}\t${job.lane}\trequired=${job.required}\tpersisted=${job.persistedStatus}`,
+    );
+  }
+  io.stdout(
+    `cancellation\trun=${status.cancellation.runRequested ? "requested" : "none"}\tjobs=${status.cancellation.jobRequests.length}`,
+  );
+  io.stdout(`continue\t${status.continueAllowed ? "allowed" : "forbidden"}`);
+  io.stdout(`next\t${status.safeNextAction}`);
   return 0;
 }
 
@@ -187,8 +328,48 @@ export async function main(
     if (args[0] === "routing" && args.length === 1) {
       return routingCommand(environment, io);
     }
-    if (args[0] === "jobs" && args.length === 1) {
-      return jobsCommand(environment, io);
+    if (
+      args[0] === "jobs" &&
+      (args.length === 1 || (args.length === 2 && args[1] === "--json"))
+    ) {
+      return jobsCommand(args[1] === "--json", environment, io);
+    }
+    if (
+      args[0] === "run" &&
+      args[1] === "status" &&
+      typeof args[2] === "string" &&
+      (args.length === 3 || (args.length === 4 && args[3] === "--json"))
+    ) {
+      return runStatusCommand(args[2], args[3] === "--json", environment, io);
+    }
+    if (
+      args[0] === "run" &&
+      (args[1] === "cancel" || args[1] === "stop") &&
+      typeof args[2] === "string" &&
+      (args.length === 3 || (args.length === 4 && args[3] === "--json"))
+    ) {
+      const result = await cancelCueLineRun(args[2], {
+        environment,
+        reason: `operator requested ${args[1]} via CLI`,
+      });
+      if (args[3] === "--json") io.stdout(JSON.stringify(result, null, 2));
+      else io.stdout(`${result.runId}\t${result.outcome}\taffected_jobs=${result.affectedJobs}`);
+      return 0;
+    }
+    if (
+      args[0] === "job" &&
+      args[1] === "cancel" &&
+      typeof args[2] === "string" &&
+      typeof args[3] === "string" &&
+      (args.length === 4 || (args.length === 5 && args[4] === "--json"))
+    ) {
+      const result = await cancelCueLineJob(args[2], args[3], {
+        environment,
+        reason: "operator requested job cancellation via CLI",
+      });
+      if (args[4] === "--json") io.stdout(JSON.stringify(result, null, 2));
+      else io.stdout(`${result.runId}\t${result.jobId}\t${result.outcome}`);
+      return 0;
     }
     if (args[0] === "doctor" && args.length === 1) {
       return doctorCommand(environment, io);

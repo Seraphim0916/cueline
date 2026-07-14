@@ -2,7 +2,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 import { CueLineError } from "../core/errors.js";
 import { runtimeEnvironment } from "../core/runtime.js";
-import type { JobResult, RunnerAdapter, RunnerSpec } from "./runner-adapter.js";
+import type {
+  JobResult,
+  RunnerAdapter,
+  RunnerRunHooks,
+  RunnerSpec,
+} from "./runner-adapter.js";
 import { RunnerRegistry } from "./registry.js";
 
 export interface ProcessRunnerOptions {
@@ -37,7 +42,7 @@ export class ProcessRunner implements RunnerAdapter {
     this.#environment = { ...(options.environment ?? runtimeEnvironment()) };
   }
 
-  async run(spec: RunnerSpec): Promise<JobResult> {
+  async run(spec: RunnerSpec, hooks: RunnerRunHooks = {}): Promise<JobResult> {
     if (this.#environment.CUELINE_DEPTH !== undefined || spec.env?.CUELINE_DEPTH !== undefined) {
       throw new CueLineError("NESTED_ROUTING_REJECTED", "nested CueLine routing is not allowed");
     }
@@ -56,8 +61,28 @@ export class ProcessRunner implements RunnerAdapter {
       throw new CueLineError("RUNNER_EXECUTABLE_UNREGISTERED", "argv executable registration did not match");
     }
 
-    return new Promise<JobResult>((resolve) => {
-      const startedAt = new Date().toISOString();
+    const startedAt = new Date().toISOString();
+    if (spec.signal?.aborted) {
+      const finishedAt = new Date().toISOString();
+      return {
+        status: "cancelled",
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        output: "",
+        emptyOutput: true,
+        timedOut: false,
+        cancelled: true,
+        ambiguousSideEffects: false,
+        retryable: false,
+        startedAt,
+        finishedAt,
+      };
+    }
+
+    let spawnedPid: number | undefined;
+    let cancelSpawned: (() => void) | undefined;
+    const completion = new Promise<JobResult>((resolve) => {
       const environment: NodeJS.ProcessEnv = {
         ...this.#environment,
         ...spec.env,
@@ -66,6 +91,7 @@ export class ProcessRunner implements RunnerAdapter {
       let stdout = "";
       let stderr = "";
       let timedOut = false;
+      let cancelled = false;
       let settled = false;
       let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
       let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
@@ -81,6 +107,7 @@ export class ProcessRunner implements RunnerAdapter {
         if (forceKillTimer !== undefined) {
           clearTimeout(forceKillTimer);
         }
+        spec.signal?.removeEventListener("abort", cancel);
         const output = combineOutput(stdout, stderr);
         resolve({
           status,
@@ -90,6 +117,7 @@ export class ProcessRunner implements RunnerAdapter {
           output,
           emptyOutput: output.length === 0,
           timedOut,
+          cancelled,
           ambiguousSideEffects: spec.mode === "work" && status !== "succeeded",
           retryable: false,
           startedAt,
@@ -98,6 +126,13 @@ export class ProcessRunner implements RunnerAdapter {
       };
 
       let child: ChildProcess;
+      const cancel = (): void => {
+        if (settled || cancelled) return;
+        cancelled = true;
+        child.kill("SIGTERM");
+        forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 250);
+      };
+      cancelSpawned = cancel;
       try {
         child = spawn(executable, [...spec.argv.slice(1)], {
           cwd: spec.cwd,
@@ -110,6 +145,9 @@ export class ProcessRunner implements RunnerAdapter {
         finish("failed", null);
         return;
       }
+
+      spawnedPid = child.pid;
+      spec.signal?.addEventListener("abort", cancel, { once: true });
 
       timeoutTimer = setTimeout(() => {
         timedOut = true;
@@ -130,11 +168,35 @@ export class ProcessRunner implements RunnerAdapter {
       }
       child.once("error", (error) => {
         stderr += errorText(error);
-        finish("failed", null);
+        finish(
+          cancelled ? (spec.mode === "work" ? "ambiguous" : "cancelled") : "failed",
+          null,
+        );
       });
       child.once("close", (exitCode) => {
-        finish(timedOut ? "timed_out" : exitCode === 0 ? "succeeded" : "failed", exitCode);
+        finish(
+          cancelled
+            ? spec.mode === "work"
+              ? "ambiguous"
+              : "cancelled"
+            : timedOut
+              ? "timed_out"
+              : exitCode === 0
+                ? "succeeded"
+                : "failed",
+          exitCode,
+        );
       });
     });
+    if (spawnedPid !== undefined) {
+      try {
+        await hooks.onSpawn?.(spawnedPid);
+      } catch (error) {
+        cancelSpawned?.();
+        await completion;
+        throw error;
+      }
+    }
+    return completion;
   }
 }
