@@ -11,15 +11,21 @@ import type {
 
 class FakeLocator implements IabLocator {
   readonly fills: string[] = [];
+  readonly waits: Array<{ state: string; timeoutMs?: number }> = [];
   clicks = 0;
+  countResult = 1;
   failFirstClick = false;
 
   async count(): Promise<number> {
-    return 1;
+    return this.countResult;
   }
 
   async fill(value: string): Promise<void> {
     this.fills.push(value);
+  }
+
+  async waitFor(options: { state: string; timeoutMs?: number }): Promise<void> {
+    this.waits.push(options);
   }
 
   async click(): Promise<void> {
@@ -35,15 +41,60 @@ function fakeBrowser(options: {
   initialUrl?: string;
   submittedUrl?: string;
   failFirstClick?: boolean;
+  failStateReadAt?: number;
+  hydratedComposer?: boolean;
+  missingSendButtonAfterRetry?: boolean;
 }) {
   const composer = new FakeLocator();
+  const hydratedComposer = new FakeLocator();
+  const missingHydratedComposer = new FakeLocator();
+  missingHydratedComposer.countResult = 0;
   const sendButtons = [new FakeLocator(), new FakeLocator()];
+  const missingSendButton = new FakeLocator();
+  missingSendButton.countResult = 0;
   sendButtons[0]!.failFirstClick = options.failFirstClick ?? false;
   const requestedRoles: Array<{ role: string; name: string }> = [];
+  const requestedSelectors: string[] = [];
   let stateIndex = 0;
+  let stateRead = 0;
   let url = options.initialUrl ?? "https://chatgpt.com/";
   let snapshots = 0;
   let sendLookup = 0;
+
+  const playwright = {
+    locator(selector: string) {
+      requestedSelectors.push(selector);
+      return options.hydratedComposer ? hydratedComposer : missingHydratedComposer;
+    },
+    getByRole(role: string, query: { name: string }) {
+      requestedRoles.push({ role, name: query.name });
+      if (role === "textbox") return composer;
+      if (options.missingSendButtonAfterRetry && snapshots > 0) {
+        return missingSendButton;
+      }
+      const locator = sendButtons[Math.min(sendLookup, sendButtons.length - 1)]!;
+      sendLookup += 1;
+      return locator;
+    },
+    async evaluate<Result>() {
+      const currentRead = stateRead;
+      stateRead += 1;
+      if (options.failStateReadAt === currentRead) {
+        throw new Error("Browser webview attach timeout");
+      }
+      const state = options.states[Math.min(stateIndex, options.states.length - 1)]!;
+      stateIndex += 1;
+      if (!state.isAnswering && options.submittedUrl) {
+        url = options.submittedUrl;
+      }
+      return state as Result;
+    },
+    async domSnapshot() {
+      snapshots += 1;
+      return {};
+    },
+    async waitForTimeout() {},
+  };
 
   const tab: IabTab = {
     async goto(nextUrl) {
@@ -52,34 +103,21 @@ function fakeBrowser(options: {
     async url() {
       return url;
     },
-    playwright: {
-      getByRole(role, query) {
-        requestedRoles.push({ role, name: query.name });
-        if (role === "textbox") return composer;
-        const locator = sendButtons[Math.min(sendLookup, sendButtons.length - 1)]!;
-        sendLookup += 1;
-        return locator;
-      },
-      async evaluate<Result>() {
-        const state = options.states[Math.min(stateIndex, options.states.length - 1)]!;
-        stateIndex += 1;
-        if (!state.isAnswering && options.submittedUrl) {
-          url = options.submittedUrl;
-        }
-        return state as Result;
-      },
-      async domSnapshot() {
-        snapshots += 1;
-        return {};
-      },
-      async waitForTimeout() {},
-    },
+    playwright,
   };
   const browser: IabBrowser = {
     async documentation() {},
     tabs: { async new() { return tab; } },
   };
-  return { browser, composer, sendButtons, requestedRoles, snapshots: () => snapshots };
+  return {
+    browser,
+    composer,
+    hydratedComposer,
+    requestedRoles,
+    requestedSelectors,
+    sendButtons,
+    snapshots: () => snapshots,
+  };
 }
 
 test("fills the ChatGPT composer and returns the completed assistant control text", async () => {
@@ -117,6 +155,35 @@ test("fills the ChatGPT composer and returns the completed assistant control tex
       (request) => request.role === "textbox" && request.name === "Message ChatGPT",
     ),
   );
+});
+
+test("fills the hydrated contenteditable composer instead of the pre-hydration textbox", async () => {
+  const fixture = fakeBrowser({
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+    hydratedComposer: true,
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_hydrated",
+    round: 1,
+    requestId: "msg_hydrated",
+    prompt: "Use the visible editor",
+  });
+
+  assert.deepEqual(fixture.hydratedComposer.fills, ["Use the visible editor"]);
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.deepEqual(fixture.requestedSelectors, ['#prompt-textarea[contenteditable="true"]']);
+  assert.equal(turn.text, "complete");
 });
 
 test("reacquires a replaced send button once after a transient click failure", async () => {
@@ -173,6 +240,37 @@ test("does not retry a timed-out click when answering already started", async ()
 
   assert.equal(fixture.sendButtons[0]?.clicks, 1);
   assert.equal(fixture.sendButtons[1]?.clicks, 0);
+  assert.equal(turn.text, "finished");
+});
+
+test("accepts submission when the send button disappears after a transient state read failure", async () => {
+  const fixture = fakeBrowser({
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "started", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "finished", assistantMessageCount: 1 },
+    ],
+    failFirstClick: true,
+    failStateReadAt: 1,
+    missingSendButtonAfterRetry: true,
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_transient",
+    round: 1,
+    requestId: "msg_transient",
+    prompt: "Recover without duplicate send",
+  });
+
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendButtons[1]?.clicks, 0);
+  assert.equal(fixture.snapshots(), 1);
   assert.equal(turn.text, "finished");
 });
 

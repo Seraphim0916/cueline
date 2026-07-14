@@ -25,6 +25,8 @@ export interface CodexIabAdapterOptions {
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1_000;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STABLE_MS = 1_500;
+const COMPOSER_HYDRATION_TIMEOUT_MS = 5_000;
+const CONTENTEDITABLE_COMPOSER_SELECTOR = '#prompt-textarea[contenteditable="true"]';
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -42,6 +44,17 @@ async function findUniqueLocator(
     }
   }
   return undefined;
+}
+
+async function findHydratedComposer(tab: IabTab): Promise<IabLocator | undefined> {
+  if (!tab.playwright.locator) return undefined;
+  const composer = tab.playwright.locator(CONTENTEDITABLE_COMPOSER_SELECTOR);
+  try {
+    await composer.waitFor?.({ state: "visible", timeoutMs: COMPOSER_HYDRATION_TIMEOUT_MS });
+    return (await composer.count()) === 1 ? composer : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isConversationUrl(url: string): boolean {
@@ -129,6 +142,9 @@ class CodexIabAdapter implements BrowserAdapter {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const button = await findUniqueLocator(tab, "button", SEND_BUTTON_NAMES);
       if (!button) {
+        if (attempt > 0 && await this.#submissionStarted(tab, previousUrl)) {
+          return;
+        }
         throw new CueLineError("SEND_BUTTON_MISSING", "Could not find ChatGPT's send button.");
       }
       try {
@@ -177,7 +193,9 @@ class CodexIabAdapter implements BrowserAdapter {
   async sendTurn(input: BrowserTurnInput): Promise<ControllerTurn> {
     const tab = await this.#getTab();
     const baseline = await readPageChatState(tab);
-    const composer = await findUniqueLocator(tab, "textbox", COMPOSER_TEXTBOX_NAMES);
+    const composer =
+      (await findHydratedComposer(tab)) ??
+      (await findUniqueLocator(tab, "textbox", COMPOSER_TEXTBOX_NAMES));
     if (!composer) {
       throw new CueLineError("COMPOSER_MISSING", "Could not find ChatGPT's message composer.");
     }

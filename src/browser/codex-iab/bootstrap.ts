@@ -10,10 +10,12 @@ export interface IabLocator {
   count(): Promise<number>;
   fill(value: string, options?: Record<string, unknown>): Promise<void>;
   click(options?: { timeoutMs?: number }): Promise<void>;
+  waitFor?(options: { state: "visible"; timeoutMs: number }): Promise<void>;
 }
 
 export interface IabPlaywright {
   getByRole(role: string, query: { name: string }): IabLocator;
+  locator?(selector: string): IabLocator;
   evaluate<Result, Argument = undefined>(
     pageFunction: (argument: Argument) => Result | Promise<Result>,
     argument?: Argument,
