@@ -31,6 +31,20 @@ That is an allow-list, not a sandbox. A registered worker runs with the same per
 
 You need Node.js 22+, Codex with its built-in Browser, and — for the bundled default lane — the `codex` CLI on `PATH`.
 
+Install the packaged tarball from the [v0.1.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0), which also carries its `.sha256` checksum:
+
+```bash
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.0/cueline-0.1.0.tgz
+cueline install
+cueline doctor
+```
+
+CueLine is not published on the npm registry, so the release asset — or the source route below — is how you get it.
+
+`cueline install` creates one symlink, the bundled skill at `$CODEX_HOME/skills/cueline` (`~/.codex/skills/cueline` by default). It refuses to replace a path it does not own, and running it twice is a no-op. `cueline uninstall` removes that link and nothing else; a foreign path in its place is preserved, not deleted.
+
+### Install from source
+
 ```bash
 git clone https://github.com/Seraphim0916/cueline.git
 cd cueline
@@ -69,18 +83,26 @@ if (result.status === "complete") {
 
 `startCueLineRun` is the explicit start (`runCueLine` is its alias). `continueCueLineRun({ runId })` resumes an interrupted run in the same conversation, and reuses the stored conversation URL unless you hand it a new adapter. `loadCueLineRunState(runId)` reads persisted state without driving anything. A run that already reached `complete` or `blocked` is returned as-is, never dispatched twice.
 
+Inside Codex's runtime, import the absolute module that `cueline api path` prints — that is the built API of the package you installed.
+
 ## The CLI
 
-The CLI does not drive the browser. It tells you whether the local half is sound.
+The CLI does not drive the browser. It manages the skill link and tells you whether the local half is sound.
 
 ```console
+$ cueline install
+CueLine skill installed: /Users/you/.codex/skills/cueline
+
 $ cueline doctor
 CueLine 0.1.0
 status	ok
 node	22.14.0	ok
-config	/Users/you/cueline/config/routing.default.json	valid
+config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
 home	/Users/you/.cueline
 available_lanes	1
+
+$ cueline api path
+/usr/local/lib/node_modules/cueline/dist/src/api.js
 
 $ cueline routing
 default	codex-default	available
@@ -89,10 +111,13 @@ $ cueline jobs
 No jobs.
 
 $ cueline config path
-/Users/you/cueline/config/routing.default.json
+/usr/local/lib/node_modules/cueline/config/routing.default.json
+
+$ cueline uninstall
+CueLine skill removed: /Users/you/.codex/skills/cueline
 ```
 
-`cueline doctor` exits non-zero when Node is too old or no lane can resolve, which makes it usable as a preflight check. `cueline routing` shows why a lane is unavailable instead of quietly selecting something else. `cueline help` lists everything.
+`cueline doctor` exits non-zero when Node is too old or no lane can resolve, which makes it usable as a preflight check. `cueline routing` shows why a lane is unavailable instead of quietly selecting something else. `cueline api path` is what the skill imports, so a packaged install needs no repository checkout. `cueline help` lists everything.
 
 ## Configuration
 

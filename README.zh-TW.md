@@ -31,6 +31,20 @@ CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 
 
 你需要 Node.js 22 以上、帶內建瀏覽器的 Codex，以及——若要用內建的預設通道——`PATH` 上有 `codex` CLI。
 
+安裝 [v0.1.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+
+```bash
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.0/cueline-0.1.0.tgz
+cueline install
+cueline doctor
+```
+
+CueLine 沒有發布到 npm registry，所以取得它的方式就是上面的 release 資產，或下面的原始碼路線。
+
+`cueline install` 只建立一個符號連結：把內建的 skill 接到 `$CODEX_HOME/skills/cueline`（預設 `~/.codex/skills/cueline`）。它拒絕覆寫不屬於自己的路徑，重複執行也不會有副作用。`cueline uninstall` 只移除那一個連結；若該位置換成了別人的檔案，它會保留而不刪除。
+
+### 從原始碼安裝
+
 ```bash
 git clone https://github.com/Seraphim0916/cueline.git
 cd cueline
@@ -67,20 +81,28 @@ if (result.status === "complete") {
 }
 ```
 
+在 Codex 的 runtime 裡，import `cueline api path` 印出的那個絕對路徑模組——那就是你安裝的那份套件建置出來的 API。
+
 `startCueLineRun` 是明確的啟動入口（`runCueLine` 是它的別名）。`continueCueLineRun({ runId })` 會在同一個對話裡續跑被中斷的執行，並沿用已保存的對話網址，除非你另外傳入新的 adapter。`loadCueLineRunState(runId)` 只讀取已保存的狀態，不驅動任何東西。已經走到 `complete` 或 `blocked` 的執行會原樣回傳，絕不會被再派工一次。
 
 ## CLI
 
-CLI 不驅動瀏覽器。它只告訴你本機這一半健不健康。
+CLI 不驅動瀏覽器。它負責管理 skill 連結，並告訴你本機這一半健不健康。
 
 ```console
+$ cueline install
+CueLine skill installed: /Users/you/.codex/skills/cueline
+
 $ cueline doctor
 CueLine 0.1.0
 status	ok
 node	22.14.0	ok
-config	/Users/you/cueline/config/routing.default.json	valid
+config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
 home	/Users/you/.cueline
 available_lanes	1
+
+$ cueline api path
+/usr/local/lib/node_modules/cueline/dist/src/api.js
 
 $ cueline routing
 default	codex-default	available
@@ -89,10 +111,13 @@ $ cueline jobs
 No jobs.
 
 $ cueline config path
-/Users/you/cueline/config/routing.default.json
+/usr/local/lib/node_modules/cueline/config/routing.default.json
+
+$ cueline uninstall
+CueLine skill removed: /Users/you/.codex/skills/cueline
 ```
 
-Node 版本太舊、或沒有任何通道解析得出來時，`cueline doctor` 會以非零狀態結束，因此可以直接拿來當前置檢查。`cueline routing` 會告訴你某個通道為什麼不可用，而不是安靜地改選別的。`cueline help` 會列出全部。
+Node 版本太舊、或沒有任何通道解析得出來時，`cueline doctor` 會以非零狀態結束，因此可以直接拿來當前置檢查。`cueline routing` 會告訴你某個通道為什麼不可用，而不是安靜地改選別的。`cueline api path` 印出的就是 skill 會 import 的模組，所以用打包安裝時完全不需要 clone 原始碼。`cueline help` 會列出全部。
 
 ## 設定
 

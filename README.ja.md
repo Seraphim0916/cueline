@@ -31,6 +31,20 @@ CueLine は独立した実装で、**ランタイムの npm 依存はゼロ**で
 
 必要なもの：Node.js 22 以上、組み込みブラウザーを備えた Codex、そして——同梱の既定レーンを使う場合は——`PATH` 上の `codex` CLI。
 
+[v0.1.0 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0) のパッケージ済み tarball をインストールします。同じリリースに `.sha256` チェックサムも置いてあります。
+
+```bash
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.0/cueline-0.1.0.tgz
+cueline install
+cueline doctor
+```
+
+CueLine は npm レジストリで公開していません。入手経路は上のリリース資産、または下のソースからの手順です。
+
+`cueline install` が作るシンボリックリンクは 1 つだけ、同梱スキルを `$CODEX_HOME/skills/cueline`（既定では `~/.codex/skills/cueline`）に張ります。自分が所有していないパスの置き換えは拒否し、二度実行しても何も変わりません。`cueline uninstall` はそのリンクだけを外します。そこに他人のファイルがあれば、削除せず保持します。
+
+### ソースからインストールする
+
 ```bash
 git clone https://github.com/Seraphim0916/cueline.git
 cd cueline
@@ -67,20 +81,28 @@ if (result.status === "complete") {
 }
 ```
 
+Codex のランタイムでは、`cueline api path` が出力する絶対パスのモジュールを import します。それがインストールしたパッケージのビルド済み API です。
+
 `startCueLineRun` が明示的な開始点です（`runCueLine` はその別名）。`continueCueLineRun({ runId })` は中断した実行を同じ会話で再開し、新しいアダプターを渡さないかぎり保存済みの会話 URL を再利用します。`loadCueLineRunState(runId)` は永続化された状態を読むだけで、何も駆動しません。すでに `complete` または `blocked` に達した実行はそのまま返され、二度とディスパッチされません。
 
 ## CLI
 
-CLI はブラウザーを駆動しません。ローカル側が健全かどうかを教えるだけです。
+CLI はブラウザーを駆動しません。スキルのリンクを管理し、ローカル側が健全かどうかを教えます。
 
 ```console
+$ cueline install
+CueLine skill installed: /Users/you/.codex/skills/cueline
+
 $ cueline doctor
 CueLine 0.1.0
 status	ok
 node	22.14.0	ok
-config	/Users/you/cueline/config/routing.default.json	valid
+config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
 home	/Users/you/.cueline
 available_lanes	1
+
+$ cueline api path
+/usr/local/lib/node_modules/cueline/dist/src/api.js
 
 $ cueline routing
 default	codex-default	available
@@ -89,10 +111,13 @@ $ cueline jobs
 No jobs.
 
 $ cueline config path
-/Users/you/cueline/config/routing.default.json
+/usr/local/lib/node_modules/cueline/config/routing.default.json
+
+$ cueline uninstall
+CueLine skill removed: /Users/you/.codex/skills/cueline
 ```
 
-Node が古すぎる場合、あるいは解決できるレーンが一つもない場合、`cueline doctor` は非ゼロで終了します。そのため事前チェックとしてそのまま使えます。`cueline routing` は、黙って別のものを選ぶのではなく、そのレーンがなぜ使えないのかを示します。`cueline help` ですべて一覧できます。
+Node が古すぎる場合、あるいは解決できるレーンが一つもない場合、`cueline doctor` は非ゼロで終了します。そのため事前チェックとしてそのまま使えます。`cueline routing` は、黙って別のものを選ぶのではなく、そのレーンがなぜ使えないのかを示します。`cueline api path` が出すのはスキルが import するモジュールなので、パッケージ導入ならリポジトリの取得は不要です。`cueline help` ですべて一覧できます。
 
 ## 設定
 
