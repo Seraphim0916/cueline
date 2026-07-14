@@ -31,15 +31,21 @@ CueLine は独立した実装で、**ランタイムの npm 依存はゼロ**で
 
 必要なもの：Node.js 22 以上、組み込みブラウザーを備えた Codex、そして——同梱の既定レーンを使う場合は——`PATH` 上の `codex` CLI。
 
-[v0.1.0 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0) のパッケージ済み tarball をインストールします。同じリリースに `.sha256` チェックサムも置いてあります。
+npm レジストリからインストールします。
+
+```bash
+npm install -g cueline@0.1.0
+cueline install
+cueline doctor
+```
+
+フォールバックとして、[v0.1.0 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
 
 ```bash
 npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.0/cueline-0.1.0.tgz
 cueline install
 cueline doctor
 ```
-
-CueLine は npm レジストリで公開していません。入手経路は上のリリース資産、または下のソースからの手順です。
 
 `cueline install` が作るシンボリックリンクは 1 つだけ、同梱スキルを `$CODEX_HOME/skills/cueline`（既定では `~/.codex/skills/cueline`）に張ります。自分が所有していないパスの置き換えは拒否し、二度実行しても何も変わりません。`cueline uninstall` はそのリンクだけを外します。そこに他人のファイルがあれば、削除せず保持します。
 

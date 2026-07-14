@@ -31,15 +31,21 @@ CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnil
 
 你需要 Node.js 22 以上、带内置浏览器的 Codex，以及——若使用内置的默认通道——`PATH` 上有 `codex` CLI。
 
-安装 [v0.1.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+从 npm registry 安装：
+
+```bash
+npm install -g cueline@0.1.0
+cueline install
+cueline doctor
+```
+
+作为后备，也可以安装 [v0.1.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
 npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.0/cueline-0.1.0.tgz
 cueline install
 cueline doctor
 ```
-
-CueLine 没有发布到 npm registry，所以获取它的方式就是上面的 release 资产，或下面的源码路线。
 
 `cueline install` 只创建一个软链接：把内置的 skill 接到 `$CODEX_HOME/skills/cueline`（默认 `~/.codex/skills/cueline`）。它拒绝覆盖不属于自己的路径，重复执行也不会产生副作用。`cueline uninstall` 只移除那一个链接；若该位置换成了别人的文件，它会保留而不删除。
 

@@ -31,15 +31,21 @@ That is an allow-list, not a sandbox. A registered worker runs with the same per
 
 You need Node.js 22+, Codex with its built-in Browser, and — for the bundled default lane — the `codex` CLI on `PATH`.
 
-Install the packaged tarball from the [v0.1.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0), which also carries its `.sha256` checksum:
+Install from the npm registry:
+
+```bash
+npm install -g cueline@0.1.0
+cueline install
+cueline doctor
+```
+
+As a fallback, install the packaged tarball from the [v0.1.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0), which also carries its `.sha256` checksum:
 
 ```bash
 npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.0/cueline-0.1.0.tgz
 cueline install
 cueline doctor
 ```
-
-CueLine is not published on the npm registry, so the release asset — or the source route below — is how you get it.
 
 `cueline install` creates one symlink, the bundled skill at `$CODEX_HOME/skills/cueline` (`~/.codex/skills/cueline` by default). It refuses to replace a path it does not own, and running it twice is a no-op. `cueline uninstall` removes that link and nothing else; a foreign path in its place is preserved, not deleted.
 
