@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 590" width="1000" height="590" role="img" aria-label="一次 CueLine 執行像一本提示本：機器送出觀測，主控端喊出一道指令，已註冊的 runner 執行它，直到主控端喊 complete。">
+  <title>一次 CueLine 執行，像讀一本提示本</title>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei", monospace }
+    .hd   { fill: #0F1720; font-size: 15px; letter-spacing: .02em }
+    .sub  { fill: #8B949E; font-size: 12.5px }
+    .rule { stroke: #E4E8EC; stroke-width: 1 }
+    .spine{ stroke: #0F1720; stroke-width: 2 }
+    .tick { stroke: #C3CAD2; stroke-width: 1 }
+    .say  { fill: #C8553D; font-size: 13.5px }
+    .obs  { fill: #4A5561; font-size: 13.5px }
+    .note { fill: #8B949E; font-size: 12.5px }
+    .rnd  { fill: #B6BEC7; font-size: 11px; letter-spacing: .14em }
+    .foot { fill: #8B949E; font-size: 12.5px }
+    .cue  { fill: #C8553D }
+    @media (prefers-color-scheme: dark) {
+      .hd { fill: #E6EDF3 }
+      .sub, .note, .foot { fill: #7D8590 }
+      .rule { stroke: #21262D }
+      .spine { stroke: #C9D1D9 }
+      .tick { stroke: #30363D }
+      .say { fill: #E0674C }
+      .obs { fill: #ADBAC7 }
+      .rnd { fill: #484F58 }
+      .cue { fill: #E0674C }
+    }
+  </style>
+
+  <text x="505" y="44" class="hd" text-anchor="end">ChatGPT 網頁對話</text>
+  <text x="505" y="64" class="sub" text-anchor="end">主控端 — 規劃、喊 cue、審查證據</text>
+  <text x="555" y="44" class="hd">你的機器</text>
+  <text x="555" y="64" class="sub">CueLine — 驗證、路由、執行、記錄</text>
+
+  <path d="M40 84H505" class="rule"/>
+  <path d="M555 84H960" class="rule"/>
+  <path d="M530 84V520" class="spine"/>
+
+  <text x="40" y="126" class="rnd">第 1 輪</text>
+  <path d="M505 122H524" class="tick"/>
+  <text x="555" y="126" class="obs">observation · 你的需求，還沒有任何工作</text>
+  <path d="M524 118 517 122 524 126z" class="cue"/>
+
+  <path d="M536 158 545 162 536 166z" class="cue"/>
+  <text x="505" y="166" class="say" text-anchor="end">dispatch · review · lane default · advise</text>
+  <path d="M545 162H565" class="tick"/>
+  <text x="575" y="166" class="note">任何程序啟動之前就先決定路由</text>
+
+  <text x="555" y="200" class="note">codex exec（唯讀）→ 成功 · 輸出已保存</text>
+
+  <text x="40" y="264" class="rnd">第 2 輪</text>
+  <path d="M505 260H524" class="tick"/>
+  <text x="555" y="264" class="obs">observation · 證據原樣送回</text>
+  <path d="M524 256 517 260 524 264z" class="cue"/>
+
+  <path d="M536 296 545 300 536 304z" class="cue"/>
+  <text x="505" y="304" class="say" text-anchor="end">dispatch · patch · mode work</text>
+  <path d="M545 300H565" class="tick"/>
+  <text x="575" y="304" class="note">argv[0] 必須事先被允許</text>
+
+  <text x="555" y="338" class="note">codex exec（workspace-write）→ 成功</text>
+
+  <text x="40" y="402" class="rnd">第 3 輪</text>
+  <path d="M505 398H524" class="tick"/>
+  <text x="555" y="402" class="obs">observation · 更新後的證據</text>
+  <path d="M524 394 517 398 524 402z" class="cue"/>
+
+  <path d="M536 434 545 438 536 442z" class="cue"/>
+  <text x="505" y="442" class="say" text-anchor="end">complete · final_delivery_text</text>
+  <path d="M545 438H565" class="tick"/>
+  <text x="575" y="442" class="note">原樣回傳給你</text>
+
+  <text x="555" y="476" class="note">本次執行封存 · events.jsonl 就是紀錄</text>
+
+  <path d="M40 520H960" class="rule"/>
+  <text x="40" y="546" class="foot">只有五個動作 — dispatch · wait · inspect · complete · blocked。</text>
+  <text x="40" y="568" class="foot">封包以外的文字一律不執行；工作行程一旦啟動就不會自動重試。</text>
+</svg>

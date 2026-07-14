@@ -3,9 +3,13 @@
   <img alt="CueLine — ChatGPT directs. Your machine executes." src="docs/assets/cueline-banner-light.svg" width="100%">
 </picture>
 
-[![ci](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg)](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml"><img alt="ci" src="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg"></a>
+</p>
 
-**English** · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
+<p align="center">
+  <b>English</b> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
+</p>
 
 **CueLine hands the wheel to an open ChatGPT web conversation: it plans the run and calls each next step, while CueLine checks every command and does the actual work here, on your machine.**
 
@@ -15,31 +19,7 @@ CueLine is a standalone implementation with **no runtime npm dependencies**. It 
 
 ## How a run actually goes
 
-```mermaid
-flowchart LR
-    You([your request]) --> Codex
-    Codex -- observation --> Pro
-    Pro -- one CueLineControl command --> Codex
-    Codex -- validated route --> Runner
-    Runner -- output, exit code, side effects --> Codex
-    Codex --- State
-    Codex --> Answer([final delivery text])
-
-    subgraph local [your machine]
-        Codex[Codex + CueLine]
-        Runner[registered local runner]
-        State[(event log<br/>+ snapshots)]
-    end
-
-    Pro[ChatGPT web conversation<br/>the controller]
-
-    classDef node fill:none,stroke:#7D8590,stroke-width:1px,color:#7D8590
-    classDef cue fill:none,stroke:#C8553D,stroke-width:1.5px,color:#C8553D
-    class You,Codex,Runner,State,Answer node
-    class Pro cue
-    style local fill:none,stroke:#7D8590,stroke-width:1px,stroke-dasharray:3 4,color:#7D8590
-    linkStyle default stroke:#7D8590,color:#7D8590
-```
+<img alt="A CueLine run read as a promptbook: the machine reports an observation, the controller calls one command, the registered runner executes it, until the controller calls complete." src="docs/assets/cueline-loop-en.svg" width="100%">
 
 Each round: CueLine writes down what it is about to ask, sends one observation into the conversation, and reads back exactly one `<CueLineControl>` envelope. The controller picks one of five actions — `dispatch`, `wait`, `inspect`, `complete`, `blocked` — and nothing outside that envelope is ever executed. A command that names the wrong run, the wrong round, or a malformed job is sent back for a bounded repair attempt rather than guessed at. The loop stops at `complete` or `blocked`, or when it runs out of rounds (12 by default).
 

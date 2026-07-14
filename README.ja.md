@@ -3,9 +3,13 @@
   <img alt="CueLine — ChatGPT が指示し、あなたのマシンが実行する。" src="docs/assets/cueline-banner-light.svg" width="100%">
 </picture>
 
-[![ci](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg)](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml"><img alt="ci" src="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg"></a>
+</p>
 
-[English](README.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · **日本語** · [한국어](README.ko.md)
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.zh-CN.md">简体中文</a> · <b>日本語</b> · <a href="README.ko.md">한국어</a>
+</p>
 
 **CueLine は、開いている ChatGPT のウェブ会話にハンドルを渡します。会話側が実行全体を計画し、次の一手を出す。CueLine はそのコマンドを一つずつ検証し、実際の作業をここ、あなたのマシンで行います。**
 
@@ -15,31 +19,7 @@ CueLine は独立した実装で、**ランタイムの npm 依存はゼロ**で
 
 ## 1 回の実行は実際にどう進むか
 
-```mermaid
-flowchart LR
-    You([あなたの依頼]) --> Codex
-    Codex -- 観測 --> Pro
-    Pro -- CueLineControl コマンド 1 件 --> Codex
-    Codex -- 検証済みのルート --> Runner
-    Runner -- 出力・終了コード・副作用 --> Codex
-    Codex --- State
-    Codex --> Answer([最終的な回答テキスト])
-
-    subgraph local [あなたのマシン]
-        Codex[Codex + CueLine]
-        Runner[登録済みのローカル runner]
-        State[(イベントログ<br/>+ スナップショット)]
-    end
-
-    Pro[ChatGPT のウェブ会話<br/>コントローラー]
-
-    classDef node fill:none,stroke:#7D8590,stroke-width:1px,color:#7D8590
-    classDef cue fill:none,stroke:#C8553D,stroke-width:1.5px,color:#C8553D
-    class You,Codex,Runner,State,Answer node
-    class Pro cue
-    style local fill:none,stroke:#7D8590,stroke-width:1px,stroke-dasharray:3 4,color:#7D8590
-    linkStyle default stroke:#7D8590,color:#7D8590
-```
+<img alt="CueLine の 1 回の実行をプロンプトブックとして読む：マシンが観測を送り、コントローラーがコマンドを 1 つ出し、登録済みの runner が実行し、complete が出るまで続く。" src="docs/assets/cueline-loop-ja.svg" width="100%">
 
 各ラウンドで CueLine は、これから何を尋ねるのかをまず記録し、観測（observation）を 1 件だけ会話に送り、`<CueLineControl>` エンベロープを**ちょうど 1 つだけ**読み戻します。コントローラーは 5 つのアクション——`dispatch`、`wait`、`inspect`、`complete`、`blocked`——から 1 つを選び、エンベロープの外にあるテキストが実行されることは一切ありません。誤った run、誤ったラウンド、あるいは不正なジョブ定義を指すコマンドは、推測で補われることなく、回数制限つきの修復のために差し戻されます。ループは `complete` または `blocked` で停止し、ラウンド上限（既定 12 回）に達した場合も停止します。
 

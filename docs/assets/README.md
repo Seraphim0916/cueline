@@ -7,8 +7,9 @@ Original CueLine artwork. Plain SVG, no external fonts, no embedded raster image
 | `cueline-mark-{light,dark}.svg` | Square mark, 48×48 grid. Readable down to 16 px. |
 | `cueline-wordmark-{light,dark}.svg` | Wordmark alone, for headers and docs. |
 | `cueline-banner-{light,dark}.svg` | README banner, 1280×320. |
+| `cueline-loop-{en,zh-TW,zh-CN,ja,ko}.svg` | The run figure, 1000×590, one per README language. |
 
-Pick the variant with a `<picture>` block so GitHub serves the right one:
+The mark, wordmark, and banner ship as a light/dark pair; pick one with a `<picture>` block so GitHub serves the right file:
 
 ```html
 <picture>
@@ -17,11 +18,17 @@ Pick the variant with a `<picture>` block so GitHub serves the right one:
 </picture>
 ```
 
+The run figure is a single file per language instead: it carries its own `@media (prefers-color-scheme: dark)` block and a transparent ground, so one `<img>` serves both themes and sits directly on the reader's canvas.
+
 ## The mark
 
 A stage manager marks a cue in the margin of the promptbook: a vertical rule down the page, a caret at the exact line where the cue lands. That is the whole product in one drawing — the controller calls the cue, the line it points at is the work, and everything around it stays quiet.
 
 The vertical rule is the control loop. The caret is the accepted command. Three horizontal lines are the run; only the cued one is at full weight.
+
+## The run figure
+
+The figure is not a flowchart. It is the promptbook itself: two columns with the cue line down the middle, the controller speaking on the left, the machine working on the right, and one round per group of lines. Commands enter the line as a cue caret; observations leave it. Everything is monospaced, because the whole exchange is a printed log.
 
 ## Geometry
 

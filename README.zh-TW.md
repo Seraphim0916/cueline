@@ -3,9 +3,13 @@
   <img alt="CueLine — ChatGPT 下指令，你的機器執行。" src="docs/assets/cueline-banner-light.svg" width="100%">
 </picture>
 
-[![ci](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg)](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml"><img alt="ci" src="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg"></a>
+</p>
 
-[English](README.md) · **繁體中文** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
+<p align="center">
+  <a href="README.md">English</a> · <b>繁體中文</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
+</p>
 
 **CueLine 把方向盤交給一個已經開著的 ChatGPT 網頁對話：由它規劃整趟執行、喊出每一步；而 CueLine 負責檢查每一道指令，並在你這台機器上把事情真的做完。**
 
@@ -15,31 +19,7 @@ CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 
 
 ## 一次執行實際上怎麼跑
 
-```mermaid
-flowchart LR
-    You([你的需求]) --> Codex
-    Codex -- 觀測 --> Pro
-    Pro -- 一道 CueLineControl 指令 --> Codex
-    Codex -- 驗證過的路由 --> Runner
-    Runner -- 輸出、結束碼、副作用 --> Codex
-    Codex --- State
-    Codex --> Answer([最終交付文字])
-
-    subgraph local [你的機器]
-        Codex[Codex + CueLine]
-        Runner[已註冊的本機 runner]
-        State[(事件日誌<br/>+ 快照)]
-    end
-
-    Pro[ChatGPT 網頁對話<br/>主控端]
-
-    classDef node fill:none,stroke:#7D8590,stroke-width:1px,color:#7D8590
-    classDef cue fill:none,stroke:#C8553D,stroke-width:1.5px,color:#C8553D
-    class You,Codex,Runner,State,Answer node
-    class Pro cue
-    style local fill:none,stroke:#7D8590,stroke-width:1px,stroke-dasharray:3 4,color:#7D8590
-    linkStyle default stroke:#7D8590,color:#7D8590
-```
+<img alt="一次 CueLine 執行像一本提示本：機器送出觀測，主控端喊出一道指令，已註冊的 runner 執行它，直到主控端喊 complete。" src="docs/assets/cueline-loop-zh-TW.svg" width="100%">
 
 每一輪：CueLine 先把自己「即將問什麼」寫進紀錄，送出一份觀測（observation）到對話裡，再讀回**恰好一個** `<CueLineControl>` 封包。主控端從五個動作裡挑一個——`dispatch`、`wait`、`inspect`、`complete`、`blocked`——封包以外的任何文字都不會被執行。指令若寫錯 run、寫錯輪次，或工作定義有問題，會被退回去做有次數上限的修正，而不是靠猜。迴圈停在 `complete` 或 `blocked`，或是輪數用完（預設 12 輪）。
 

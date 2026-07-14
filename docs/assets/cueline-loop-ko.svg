@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 590" width="1000" height="590" role="img" aria-label="CueLine 실행 한 번을 프롬프트북처럼 읽기: 머신이 관측을 보내고, 컨트롤러가 명령 하나를 내리고, 등록된 runner가 실행하며, complete가 나올 때까지 이어집니다.">
+  <title>CueLine 실행을 프롬프트북처럼 읽기</title>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Apple SD Gothic Neo", "Noto Sans CJK KR", "Malgun Gothic", monospace }
+    .hd   { fill: #0F1720; font-size: 15px; letter-spacing: .02em }
+    .sub  { fill: #8B949E; font-size: 12.5px }
+    .rule { stroke: #E4E8EC; stroke-width: 1 }
+    .spine{ stroke: #0F1720; stroke-width: 2 }
+    .tick { stroke: #C3CAD2; stroke-width: 1 }
+    .say  { fill: #C8553D; font-size: 13.5px }
+    .obs  { fill: #4A5561; font-size: 13.5px }
+    .note { fill: #8B949E; font-size: 12.5px }
+    .rnd  { fill: #B6BEC7; font-size: 11px; letter-spacing: .14em }
+    .foot { fill: #8B949E; font-size: 12.5px }
+    .cue  { fill: #C8553D }
+    @media (prefers-color-scheme: dark) {
+      .hd { fill: #E6EDF3 }
+      .sub, .note, .foot { fill: #7D8590 }
+      .rule { stroke: #21262D }
+      .spine { stroke: #C9D1D9 }
+      .tick { stroke: #30363D }
+      .say { fill: #E0674C }
+      .obs { fill: #ADBAC7 }
+      .rnd { fill: #484F58 }
+      .cue { fill: #E0674C }
+    }
+  </style>
+
+  <text x="505" y="44" class="hd" text-anchor="end">ChatGPT 웹 대화</text>
+  <text x="505" y="64" class="sub" text-anchor="end">컨트롤러 — 계획하고, 지시하고, 판단합니다</text>
+  <text x="555" y="44" class="hd">당신의 머신</text>
+  <text x="555" y="64" class="sub">CueLine — 검증 · 라우팅 · 실행 · 기록</text>
+
+  <path d="M40 84H505" class="rule"/>
+  <path d="M555 84H960" class="rule"/>
+  <path d="M530 84V520" class="spine"/>
+
+  <text x="40" y="126" class="rnd">라운드 1</text>
+  <path d="M505 122H524" class="tick"/>
+  <text x="555" y="126" class="obs">observation · 당신의 요청, 아직 작업 없음</text>
+  <path d="M524 118 517 122 524 126z" class="cue"/>
+
+  <path d="M536 158 545 162 536 166z" class="cue"/>
+  <text x="505" y="166" class="say" text-anchor="end">dispatch · review · lane default · advise</text>
+  <path d="M545 162H565" class="tick"/>
+  <text x="575" y="166" class="note">프로세스가 뜨기 전에 경로가 정해집니다</text>
+
+  <text x="555" y="200" class="note">codex exec (읽기 전용) → 성공 · 출력 저장</text>
+
+  <text x="40" y="264" class="rnd">라운드 2</text>
+  <path d="M505 260H524" class="tick"/>
+  <text x="555" y="264" class="obs">observation · 증거를 그대로</text>
+  <path d="M524 256 517 260 524 264z" class="cue"/>
+
+  <path d="M536 296 545 300 536 304z" class="cue"/>
+  <text x="505" y="304" class="say" text-anchor="end">dispatch · patch · mode work</text>
+  <path d="M545 300H565" class="tick"/>
+  <text x="575" y="304" class="note">argv[0]은 미리 허용되어 있어야 합니다</text>
+
+  <text x="555" y="338" class="note">codex exec (workspace-write) → 성공</text>
+
+  <text x="40" y="402" class="rnd">라운드 3</text>
+  <path d="M505 398H524" class="tick"/>
+  <text x="555" y="402" class="obs">observation · 갱신된 증거</text>
+  <path d="M524 394 517 398 524 402z" class="cue"/>
+
+  <path d="M536 434 545 438 536 442z" class="cue"/>
+  <text x="505" y="442" class="say" text-anchor="end">complete · final_delivery_text</text>
+  <path d="M545 438H565" class="tick"/>
+  <text x="575" y="442" class="note">그대로 당신에게 반환</text>
+
+  <text x="555" y="476" class="note">실행 봉인 · events.jsonl이 곧 기록</text>
+
+  <path d="M40 520H960" class="rule"/>
+  <text x="40" y="546" class="foot">동작은 다섯 개뿐 — dispatch · wait · inspect · complete · blocked.</text>
+  <text x="40" y="568" class="foot">엔벨로프 밖은 실행되지 않고, 시작된 워커는 재시도되지 않습니다.</text>
+</svg>

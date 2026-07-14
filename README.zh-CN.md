@@ -3,9 +3,13 @@
   <img alt="CueLine — ChatGPT 下指令，你的机器执行。" src="docs/assets/cueline-banner-light.svg" width="100%">
 </picture>
 
-[![ci](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg)](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml"><img alt="ci" src="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg"></a>
+</p>
 
-[English](README.md) · [繁體中文](README.zh-TW.md) · **简体中文** · [日本語](README.ja.md) · [한국어](README.ko.md)
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-TW.md">繁體中文</a> · <b>简体中文</b> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
+</p>
 
 **CueLine 把方向盘交给一个已经打开的 ChatGPT 网页会话：由它规划整轮运行、发出每一步指令；而 CueLine 负责校验每一条指令，并在你这台机器上把活儿真正干完。**
 
@@ -15,31 +19,7 @@ CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnil
 
 ## 一次运行实际是怎么走的
 
-```mermaid
-flowchart LR
-    You([你的需求]) --> Codex
-    Codex -- 观测 --> Pro
-    Pro -- 一条 CueLineControl 指令 --> Codex
-    Codex -- 校验过的路由 --> Runner
-    Runner -- 输出、退出码、副作用 --> Codex
-    Codex --- State
-    Codex --> Answer([最终交付文本])
-
-    subgraph local [你的机器]
-        Codex[Codex + CueLine]
-        Runner[已注册的本地 runner]
-        State[(事件日志<br/>+ 快照)]
-    end
-
-    Pro[ChatGPT 网页会话<br/>控制器]
-
-    classDef node fill:none,stroke:#7D8590,stroke-width:1px,color:#7D8590
-    classDef cue fill:none,stroke:#C8553D,stroke-width:1.5px,color:#C8553D
-    class You,Codex,Runner,State,Answer node
-    class Pro cue
-    style local fill:none,stroke:#7D8590,stroke-width:1px,stroke-dasharray:3 4,color:#7D8590
-    linkStyle default stroke:#7D8590,color:#7D8590
-```
+<img alt="一次 CueLine 运行像一本提示本：机器发出观测，控制器发出一条指令，已注册的 runner 执行它，直到控制器发出 complete。" src="docs/assets/cueline-loop-zh-CN.svg" width="100%">
 
 每一轮：CueLine 先把“接下来要问什么”写入记录，向会话发送一份观测（observation），再读回**恰好一个** `<CueLineControl>` 信封。控制器从五个动作中选一个——`dispatch`、`wait`、`inspect`、`complete`、`blocked`——信封之外的任何文本都不会被执行。指令若指向错误的 run、错误的轮次，或作业定义有误，会被退回做次数有上限的修复，而不是靠猜。循环停在 `complete` 或 `blocked`，或轮次耗尽（默认 12 轮）。
 
