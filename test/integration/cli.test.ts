@@ -27,6 +27,13 @@ function invoke(args: string[], environment: NodeJS.ProcessEnv): Invocation {
   };
 }
 
+async function packageVersion(): Promise<string> {
+  const manifest = JSON.parse(
+    await readFile(path.join(packageRoot, "package.json"), "utf8"),
+  ) as { version: string };
+  return manifest.version;
+}
+
 async function fixture(): Promise<{ config: string; home: string; environment: NodeJS.ProcessEnv }> {
   const directory = await mkdtemp(path.join(tmpdir(), "cueline-cli-"));
   const config = path.join(directory, "routing.json");
@@ -87,7 +94,7 @@ test("doctor validates config, home, Node, and at least one route", async () => 
   const result = invoke(["doctor"], context.environment);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /CueLine 0\.1\.0/);
+  assert.match(result.stdout, new RegExp(`CueLine ${await packageVersion()}`));
   assert.match(result.stdout, /status\s+ok/);
   assert.match(result.stdout, new RegExp(context.home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
@@ -160,12 +167,13 @@ test("help lists every command, the environment, and the exit codes", async () =
 
 test("version prints the package version alone", async () => {
   const context = await fixture();
+  const expectedVersion = await packageVersion();
 
   for (const args of [["version"], ["--version"], ["-v"]]) {
     const result = invoke(args, context.environment);
 
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout.trim(), "0.1.0");
+    assert.equal(result.stdout.trim(), expectedVersion);
   }
 });
 
