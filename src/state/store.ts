@@ -4,7 +4,7 @@ import { atomicWriteJson } from "./atomic-write.js";
 import { appendEvent, readEvents, type RunEvent } from "./event-log.js";
 import { runPaths, type RunPaths } from "./paths.js";
 
-const STATE_PROTOCOL = "cueline/state/0.1";
+const STATE_PROTOCOL = "cueline/state/0.2";
 
 export type RunReducer<State> = (state: State, event: RunEvent) => State;
 

@@ -5,6 +5,8 @@ export interface PageChatState {
   assistantText: string;
   assistantMessageCount: number;
   assistantModelSlug: string | null;
+  lastUserText: string | null;
+  lastMessageRole: "assistant" | "user" | null;
 }
 
 export interface IabLocator {
@@ -99,8 +101,12 @@ export async function readPageChatState(tab: IabTab): Promise<PageChatState> {
       return /stop/i.test(label) && /(answer|generat|respond|stream|thinking)/i.test(label);
     });
 
-    const assistantMessages = Array.from(
-      document.querySelectorAll('[data-message-author-role="assistant"]'),
+    const messages = Array.from(document.querySelectorAll("[data-message-author-role]"));
+    const assistantMessages = messages.filter(
+      (message) => message.getAttribute("data-message-author-role") === "assistant",
+    );
+    const userMessages = messages.filter(
+      (message) => message.getAttribute("data-message-author-role") === "user",
     );
     const last = assistantMessages.at(-1);
     const visibleText =
@@ -111,11 +117,27 @@ export async function readPageChatState(tab: IabTab): Promise<PageChatState> {
       .replace(/\u00a0/g, " ")
       .trim();
     const assistantModelSlug = last?.getAttribute("data-message-model-slug") ?? null;
+    const lastUser = userMessages.at(-1);
+    const lastUserVisibleText =
+      lastUser !== undefined && "innerText" in lastUser
+        ? String(
+            (lastUser as Element & { innerText?: string }).innerText ??
+              lastUser.textContent ??
+              "",
+          )
+        : lastUser?.textContent ?? "";
+    const lastUserText =
+      lastUser === undefined ? null : lastUserVisibleText.replace(/\u00a0/g, " ").trim();
+    const lastRole = messages.at(-1)?.getAttribute("data-message-author-role");
+    const lastMessageRole =
+      lastRole === "assistant" || lastRole === "user" ? lastRole : null;
     return {
       isAnswering,
       assistantText,
       assistantMessageCount: assistantMessages.length,
       assistantModelSlug,
+      lastUserText,
+      lastMessageRole,
     };
   });
 }

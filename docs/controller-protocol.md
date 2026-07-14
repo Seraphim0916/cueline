@@ -81,7 +81,7 @@ Schedules one or more local jobs.
 }
 ```
 
-`job_key` must be unique inside the command and match the supported identifier form. `mode` is `advise` or `work`. Optional fields are `required`, `timeout_ms`, `runner`, `workdir`, and `background`. The local runtime—not ChatGPT—resolves the configured executable. When `runner` is supplied, it must name an enabled, available candidate in the selected lane. Repeating an already persisted deterministic job is ignored rather than spawned again.
+`job_key` must be unique inside the command and match the supported identifier form. `mode` is `advise` or `work`. Optional fields are `required`, `timeout_ms`, `runner`, `workdir`, and `background`. The local runtime—not ChatGPT—resolves the configured executable. `lane` must be a listed available lane; a runner ID is not a lane name. When `runner` is supplied, it must name an enabled, available candidate in the selected lane. CueLine validates every new route in the dispatch before registering or starting any job. One invalid route rejects the whole command and requests a corrected envelope with the same pending identity. Repeating an already persisted deterministic job is ignored rather than spawned again.
 
 ### `wait`
 
@@ -101,6 +101,6 @@ Ends the run with a non-empty `reason` and optional `final_delivery_text`. This 
 
 ## Validation and repair
 
-CueLine rejects missing markers, malformed JSON, invalid actions, stale identity, invalid supported-field values, and duplicate `job_key` values with stable error codes. Only the supported fields retained by runtime validation can affect execution. CueLine then sends a validation error back to the same conversation with the same pending identity. By default, two repair attempts are allowed; exhaustion fails the local run rather than guessing a command.
+CueLine rejects missing markers, malformed JSON, invalid actions, stale identity, invalid supported-field values, duplicate `job_key` values, and unavailable pre-spawn routes with stable error codes. Only the supported fields retained by runtime validation can affect execution. CueLine then sends a validation error back to the same conversation with the same pending identity. By default, two repair attempts are allowed; exhaustion fails the local run rather than guessing a command.
 
 The JSON Schema files under `schemas/` are publication references. Runtime structural validation is implemented locally and does not require a schema package.

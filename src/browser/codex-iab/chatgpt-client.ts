@@ -1,5 +1,6 @@
 import type {
   BrowserAdapter,
+  BrowserTurnHooks,
   BrowserTurnInput,
   ControllerModelEvidence,
   ControllerTurn,
@@ -99,6 +100,17 @@ function isProLabel(label: string | null): label is string {
 
 function isProModelSlug(slug: string | null): slug is string {
   return /(?:^|-)pro(?:-|$)/i.test(slug ?? "");
+}
+
+function normalizedMessageText(value: string | null): string {
+  return (value ?? "").replace(/\r\n/g, "\n").trim();
+}
+
+function submissionStateForStage(
+  stage: TurnStage,
+): "definitely_not_sent" | "possibly_sent" | "submitted" {
+  if (stage === "pre_submit") return "definitely_not_sent";
+  return stage === "submitting" ? "possibly_sent" : "submitted";
 }
 
 async function readComposerModelLabel(tab: IabTab): Promise<string | null> {
@@ -243,6 +255,9 @@ class CodexIabAdapter implements BrowserAdapter {
         isAnswering: false,
         assistantText: "",
         assistantMessageCount: 0,
+        assistantModelSlug: null,
+        lastUserText: null,
+        lastMessageRole: null,
       }))
     ).isAnswering;
   }
@@ -300,6 +315,43 @@ class CodexIabAdapter implements BrowserAdapter {
     throw new CueLineError("CHATGPT_RESPONSE_TIMEOUT", "ChatGPT did not finish before timeout.");
   }
 
+  async #waitForRecoveredCompletion(
+    tab: IabTab,
+    expectedPrompt: string,
+  ): Promise<PageChatState> {
+    const deadline = Date.now() + this.#options.timeoutMs;
+    let stableText = "";
+    let stableSince = 0;
+    while (Date.now() < deadline) {
+      const state = await readPageChatState(tab);
+      if (normalizedMessageText(state.lastUserText) !== normalizedMessageText(expectedPrompt)) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_MISMATCH",
+          "The exact conversation's last user message does not match the pending CueLine prompt. Refusing to import an unrelated response.",
+        );
+      }
+      if (
+        !state.isAnswering &&
+        state.lastMessageRole === "assistant" &&
+        state.assistantText !== ""
+      ) {
+        if (state.assistantText !== stableText) {
+          stableText = state.assistantText;
+          stableSince = Date.now();
+        }
+        if (Date.now() - stableSince >= this.#options.stableMs) return state;
+      } else {
+        stableText = "";
+        stableSince = Date.now();
+      }
+      await delay(this.#options.pollIntervalMs);
+    }
+    throw new CueLineError(
+      "CONTROLLER_RECONCILIATION_TIMEOUT",
+      "The existing ChatGPT response did not become readable before timeout; no prompt was sent.",
+    );
+  }
+
   async #resultFromCompletedTurn(
     tab: IabTab,
     selectedModelLabel: string,
@@ -337,6 +389,7 @@ class CodexIabAdapter implements BrowserAdapter {
   async #sendTurnOnce(
     input: BrowserTurnInput,
     context: TurnAttemptContext,
+    hooks?: BrowserTurnHooks,
   ): Promise<ControllerTurn> {
     const tab = await this.#getTab();
     const composer =
@@ -348,51 +401,171 @@ class CodexIabAdapter implements BrowserAdapter {
     context.selectedModelLabel = await this.#ensureProModel(tab);
     context.baseline = await readPageChatState(tab);
     await composer.fill(input.prompt, {});
+    await this.#emitCheckpoint(tab, context, hooks, "possibly_sent");
     context.stage = "submitting";
     await this.#clickSend(tab);
     context.stage = "submitted";
-    const submittedUrl = (await tab.url().catch(() => "")) ?? "";
-    if (isConversationUrl(submittedUrl)) this.#conversationUrl = submittedUrl;
+    await this.#emitCheckpoint(tab, context, hooks, "submitted");
     const completed = await this.#waitForCompletion(tab, context.baseline);
     return this.#resultFromCompletedTurn(tab, context.selectedModelLabel, completed);
   }
 
-  async sendTurn(input: BrowserTurnInput): Promise<ControllerTurn> {
+  async #emitCheckpoint(
+    tab: IabTab,
+    context: TurnAttemptContext,
+    hooks: BrowserTurnHooks | undefined,
+    submissionState: "possibly_sent" | "submitted",
+  ): Promise<void> {
+    if (!context.baseline || !context.selectedModelLabel) return;
+    const currentUrl = (await tab.url().catch(() => "")) ?? "";
+    if (isConversationUrl(currentUrl)) this.#conversationUrl = currentUrl;
+    await hooks?.onCheckpoint?.({
+      submissionState,
+      ...(isConversationUrl(currentUrl) ? { conversationUrl: currentUrl } : {}),
+      selectedModelLabel: context.selectedModelLabel,
+      baselineAssistantMessageCount: context.baseline.assistantMessageCount,
+    });
+  }
+
+  #browserFailure(
+    error: unknown,
+    context: TurnAttemptContext,
+    input: BrowserTurnInput,
+  ): CueLineError {
+    const message = error instanceof Error ? error.message : String(error);
+    const submissionState = submissionStateForStage(context.stage);
+    const existingDetails =
+      error instanceof CueLineError &&
+      typeof error.details === "object" &&
+      error.details !== null &&
+      !Array.isArray(error.details)
+        ? (error.details as Record<string, unknown>)
+        : {};
+    return new CueLineError(
+      error instanceof CueLineError
+        ? error.code
+        : context.stage === "pre_submit"
+          ? "IAB_ATTACH_FAILED"
+          : "IAB_READ_FAILED_AFTER_SUBMIT",
+      message,
+      {
+        cause: error,
+        details: {
+          ...existingDetails,
+          stage: context.stage,
+          submission_state: submissionState,
+          request_id: input.requestId,
+        },
+      },
+    );
+  }
+
+  async sendTurn(input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<ControllerTurn> {
     const context: TurnAttemptContext = { stage: "pre_submit" };
     try {
-      return await this.#sendTurnOnce(input, context);
+      return await this.#sendTurnOnce(input, context, hooks);
     } catch (error) {
-      if (!isTabUnavailableError(error)) throw error;
+      if (!isTabUnavailableError(error)) throw this.#browserFailure(error, context, input);
       if (this.#conversationUrl === undefined) {
         throw new CueLineError(
           "TAB_RECOVERY_UNSAFE",
           "The ChatGPT tab disappeared before CueLine captured an exact conversation URL; refusing a potentially duplicate send.",
-          { cause: error },
+          {
+            cause: error,
+            details: {
+              stage: context.stage,
+              submission_state: submissionStateForStage(context.stage),
+              request_id: input.requestId,
+            },
+          },
         );
       }
       this.#tab = undefined;
       if (context.stage === "pre_submit") {
         const retryContext: TurnAttemptContext = { stage: "pre_submit" };
-        return this.#sendTurnOnce(input, retryContext);
+        return this.#sendTurnOnce(input, retryContext, hooks).catch((retryError) => {
+          throw this.#browserFailure(retryError, retryContext, input);
+        });
       }
       if (!context.baseline || !context.selectedModelLabel) throw error;
-      const recoveredTab = await this.#getTab();
-      const recoveredState = await readPageChatState(recoveredTab);
-      const responseStarted =
-        recoveredState.isAnswering ||
-        recoveredState.assistantMessageCount > context.baseline.assistantMessageCount;
-      if (context.stage === "submitting" && !responseStarted) {
+      try {
+        const recoveredTab = await this.#getTab();
+        const recoveredState = await readPageChatState(recoveredTab);
+        const responseStarted =
+          recoveredState.isAnswering ||
+          recoveredState.assistantMessageCount > context.baseline.assistantMessageCount;
+        if (context.stage === "submitting" && !responseStarted) {
+          throw new CueLineError(
+            "TAB_RECOVERY_UNSAFE",
+            "The ChatGPT tab disappeared while submitting, and CueLine cannot prove whether the prompt was sent. Refusing a duplicate send.",
+            {
+              cause: error,
+              details: {
+                stage: context.stage,
+                submission_state: "possibly_sent",
+                request_id: input.requestId,
+              },
+            },
+          );
+        }
+        const completed = await this.#waitForCompletion(recoveredTab, context.baseline);
+        return this.#resultFromCompletedTurn(
+          recoveredTab,
+          context.selectedModelLabel,
+          completed,
+        );
+      } catch (recoveryError) {
+        throw this.#browserFailure(recoveryError, context, input);
+      }
+    }
+  }
+
+  async recoverTurn(input: BrowserTurnInput): Promise<ControllerTurn> {
+    if (this.#conversationUrl === undefined) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_URL_REQUIRED",
+        "CueLine needs the exact persisted ChatGPT conversation URL to recover without sending.",
+        {
+          details: {
+            stage: "reconciling",
+            submission_state: "possibly_sent",
+            request_id: input.requestId,
+          },
+        },
+      );
+    }
+    try {
+      const tab = await this.#getTab();
+      const selectedModelLabel = await readComposerModelLabel(tab);
+      if (!isProLabel(selectedModelLabel)) {
         throw new CueLineError(
-          "TAB_RECOVERY_UNSAFE",
-          "The ChatGPT tab disappeared while submitting, and CueLine cannot prove whether the prompt was sent. Refusing a duplicate send.",
-          { cause: error },
+          "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
+          "The existing conversation does not currently expose a Pro composer label; refusing to import the response without both model checks.",
         );
       }
-      const completed = await this.#waitForCompletion(recoveredTab, context.baseline);
-      return this.#resultFromCompletedTurn(
-        recoveredTab,
-        context.selectedModelLabel,
-        completed,
+      const completed = await this.#waitForRecoveredCompletion(tab, input.prompt);
+      return this.#resultFromCompletedTurn(tab, selectedModelLabel, completed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const existingDetails =
+        error instanceof CueLineError &&
+        typeof error.details === "object" &&
+        error.details !== null &&
+        !Array.isArray(error.details)
+          ? (error.details as Record<string, unknown>)
+          : {};
+      throw new CueLineError(
+        error instanceof CueLineError ? error.code : "IAB_RECONCILIATION_FAILED",
+        message,
+        {
+          cause: error,
+          details: {
+            ...existingDetails,
+            stage: "reconciling",
+            submission_state: "possibly_sent",
+            request_id: input.requestId,
+          },
+        },
       );
     }
   }

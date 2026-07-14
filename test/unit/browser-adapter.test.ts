@@ -41,12 +41,19 @@ class FakeLocator implements IabLocator {
 }
 
 function fakeBrowser(options: {
-  states: Array<Omit<PageChatState, "assistantModelSlug"> & { assistantModelSlug?: string | null }>;
+  states: Array<
+    Omit<PageChatState, "assistantModelSlug" | "lastUserText" | "lastMessageRole"> & {
+      assistantModelSlug?: string | null;
+      lastUserText?: string | null;
+      lastMessageRole?: "assistant" | "user" | null;
+    }
+  >;
   initialUrl?: string;
   submittedUrl?: string;
   failFirstClick?: boolean;
   firstClickError?: string;
   failStateReadAt?: number;
+  stateReadError?: string;
   hydratedComposer?: boolean;
   missingSendButtonAfterRetry?: boolean;
   initialModel?: string | null;
@@ -111,7 +118,7 @@ function fakeBrowser(options: {
       const currentRead = stateRead;
       stateRead += 1;
       if (options.failStateReadAt === currentRead) {
-        throw new Error("Browser webview attach timeout");
+        throw new Error(options.stateReadError ?? "Browser webview attach timeout");
       }
       const state = options.states[Math.min(stateIndex, options.states.length - 1)]!;
       stateIndex += 1;
@@ -120,6 +127,9 @@ function fakeBrowser(options: {
       }
       return {
         ...state,
+        lastUserText: state.lastUserText ?? null,
+        lastMessageRole:
+          state.lastMessageRole ?? (state.assistantMessageCount > 0 ? "assistant" : null),
         assistantModelSlug:
           state.assistantModelSlug ??
           (state.assistantMessageCount > 0
@@ -431,7 +441,12 @@ test("refuses to send when the composer model selector cannot be identified", as
     (error: unknown) =>
       error instanceof Error &&
       "code" in error &&
-      error.code === "MODEL_SELECTOR_MISSING",
+      error.code === "MODEL_SELECTOR_MISSING" &&
+      "details" in error &&
+      (error.details as { submission_state?: unknown; request_id?: unknown })
+        .submission_state === "definitely_not_sent" &&
+      (error.details as { submission_state?: unknown; request_id?: unknown }).request_id ===
+        "msg_missing_model_selector",
   );
   assert.deepEqual(fixture.composer.fills, []);
 });
@@ -711,4 +726,152 @@ test("refuses recovery when submission cannot be proven after reattaching", asyn
   assert.equal(getCalls, 1);
   assert.deepEqual(submitting.composer.fills, ["Never resend after an ambiguous click"]);
   assert.deepEqual(recovered.composer.fills, []);
+});
+
+test("recovers an existing completed response from the exact conversation without sending", async () => {
+  const conversationUrl = "https://chatgpt.com/c/existing-response";
+  const prompt = "Existing controller prompt";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "existing complete response",
+        assistantMessageCount: 1,
+        lastUserText: prompt,
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_existing_response",
+    round: 1,
+    requestId: "msg_existing_response",
+    prompt,
+  });
+
+  assert.equal(turn?.text, "existing complete response");
+  assert.equal(turn?.conversationUrl, conversationUrl);
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
+test("refuses to reconcile a response when the last user prompt does not match", async () => {
+  const conversationUrl = "https://chatgpt.com/c/wrong-response";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "reply to another prompt",
+        assistantMessageCount: 1,
+        lastUserText: "Different prompt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.recoverTurn!({
+      runId: "run_wrong_response",
+      round: 1,
+      requestId: "msg_wrong_response",
+      prompt: "Expected prompt",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_RECONCILIATION_MISMATCH",
+  );
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
+test("classifies an unexpected browser read failure after submission", async () => {
+  const fixture = fakeBrowser({
+    initialUrl: "https://chatgpt.com/c/read-failure",
+    initialModel: "Pro",
+    failStateReadAt: 1,
+    stateReadError: "Unexpected IAB bridge failure",
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl: "https://chatgpt.com/c/read-failure",
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_read_failure",
+      round: 1,
+      requestId: "msg_read_failure",
+      prompt: "Classify the browser failure",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "IAB_READ_FAILED_AFTER_SUBMIT" &&
+      "details" in error &&
+      (error.details as { submission_state?: unknown }).submission_state === "submitted",
+  );
+});
+
+test("classifies a failed write-ahead checkpoint as definitely not sent", async () => {
+  const fixture = fakeBrowser({
+    initialUrl: "https://chatgpt.com/c/checkpoint-failure",
+    initialModel: "Pro",
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl: "https://chatgpt.com/c/checkpoint-failure",
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn(
+      {
+        runId: "run_checkpoint_failure",
+        round: 1,
+        requestId: "msg_checkpoint_failure",
+        prompt: "Do not click without a durable checkpoint",
+      },
+      {
+        async onCheckpoint() {
+          throw new Error("event log fsync failed");
+        },
+      },
+    ),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "IAB_ATTACH_FAILED" &&
+      "details" in error &&
+      (error.details as { submission_state?: unknown }).submission_state ===
+        "definitely_not_sent",
+  );
+  assert.deepEqual(fixture.composer.fills, ["Do not click without a durable checkpoint"]);
+  assert.equal(fixture.sendButtons[0]!.clicks, 0);
 });

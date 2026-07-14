@@ -23,7 +23,7 @@ CueLine is standalone. Its runtime does not import Omnilane or GPT Relay, and it
 
 ### Browser adapter
 
-`src/browser/codex-iab/` implements a text-only adapter over Codex's IAB client. It claims an existing ChatGPT tab when possible, otherwise opens the requested ChatGPT URL. It fills the composer, sends one turn, waits for a stable completed assistant message, and records the resulting conversation URL.
+`src/browser/codex-iab/` implements a text-only adapter over Codex's IAB client. It claims an existing ChatGPT tab when possible, otherwise opens the requested ChatGPT URL. It fills the composer, emits durable pre-click and post-click checkpoints, sends one turn, waits for a stable completed assistant message, and records the resulting conversation URL. Its recovery path is read-only: it imports an existing response only when the exact last user prompt matches the persisted pending turn and both Pro model checks pass.
 
 The adapter can receive an injected browser or resolve `globalThis.iab` / `agent.browsers.get("iab")` from Codex's runtime. Plain Node does not provide these globals.
 
@@ -36,12 +36,13 @@ The adapter can receive an injected browser or resolve `globalThis.iab` / `agent
 `src/core/controller-loop.ts` owns the run:
 
 1. Persist the intended controller turn.
-2. Send an observation through the browser adapter.
-3. Persist the assistant response.
-4. Validate and persist the accepted command.
-5. Execute the command through the local supervisor.
-6. Snapshot the derived state.
-7. Repeat until `complete`, `blocked`, or the round limit is reached.
+2. Persist browser submission checkpoints around the send boundary.
+3. Send an observation through the browser adapter.
+4. Persist the assistant response.
+5. Validate protocol identity and every pre-spawn route, then persist the accepted command.
+6. Execute the command through the local supervisor.
+7. Snapshot the derived state.
+8. Repeat until `complete`, `blocked`, or the round limit is reached.
 
 The default limits are 12 controller rounds and two repair attempts per pending command.
 
@@ -51,7 +52,7 @@ The default limits are 12 controller rounds and two repair attempts per pending 
 
 ### Durable state
 
-`src/state/` writes a per-run JSONL event log and an atomic materialized snapshot. The event log is authoritative; a snapshot is a replay optimization. Job status files are atomically replaced.
+`src/state/` writes a per-run JSONL event log and an atomic materialized snapshot. The event log is authoritative; a snapshot is a replay optimization. Pending controller turns and request-correlated browser failure evidence survive replay. A prompt is retried only when the exact sole pending request is proven `definitely_not_sent`; ambiguous submissions require read-only reconciliation. Job status files are atomically replaced.
 
 ## Authority and trust
 

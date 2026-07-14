@@ -52,6 +52,8 @@ export interface StartCueLineRunOptions extends CueLineRuntimeOptions {
 
 export interface ContinueCueLineRunOptions extends CueLineRuntimeOptions {
   runId: string;
+  reconcileRequestId?: string;
+  abandonOtherPendingTurns?: boolean;
 }
 
 interface PreparedRuntime {
@@ -62,6 +64,7 @@ interface PreparedRuntime {
     job: ControllerJobSpec,
   ) => ReturnType<typeof materializeRunnerSpec>;
   controllerInstructions: readonly string[];
+  conversationUrl?: string;
   home: string;
 }
 
@@ -193,6 +196,7 @@ async function prepareRuntime(
       });
     },
     controllerInstructions: [routingInstruction(config, availability)],
+    ...(conversationUrl === undefined ? {} : { conversationUrl }),
     home,
   };
 }
@@ -232,6 +236,12 @@ export async function continueCueLineRun(
   return continueControllerLoop({
     runId: options.runId,
     ...runtime,
+    ...(options.reconcileRequestId === undefined
+      ? {}
+      : { reconcileRequestId: options.reconcileRequestId }),
+    ...(options.abandonOtherPendingTurns === undefined
+      ? {}
+      : { abandonOtherPendingTurns: options.abandonOtherPendingTurns }),
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
     ...(options.maxRepairAttempts === undefined
       ? {}

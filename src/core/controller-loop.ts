@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 
-import type { BrowserAdapter, BrowserTurnInput } from "../browser/browser-adapter.js";
+import type {
+  BrowserAdapter,
+  BrowserTurnHooks,
+  BrowserTurnInput,
+  ControllerTurn,
+} from "../browser/browser-adapter.js";
 import type { JobStatus } from "../jobs/status.js";
 import { parseControllerCommand } from "../protocol/parse-command.js";
 import {
@@ -38,6 +43,7 @@ export interface ControllerRuntimeOptions {
   maxRounds?: number;
   maxRepairAttempts?: number;
   controllerInstructions?: readonly string[];
+  conversationUrl?: string;
   now?: () => Date;
 }
 
@@ -48,6 +54,8 @@ export interface ControllerLoopOptions extends ControllerRuntimeOptions {
 
 export interface ContinueControllerLoopOptions extends ControllerRuntimeOptions {
   runId: string;
+  reconcileRequestId?: string;
+  abandonOtherPendingTurns?: boolean;
 }
 
 export interface CueLineResult {
@@ -152,28 +160,68 @@ async function requestControllerCommand(
   expected: ExpectedControllerIdentity,
   maxRepairAttempts: number,
   instructions: readonly string[],
+  recovered?: { turn: ControllerTurn; attempt: number },
+  validateCommand?: (command: ControllerCommand) => void | Promise<void>,
 ): Promise<ControllerCommand> {
   let lastError: CueLineError | undefined;
-  for (let attempt = 0; attempt <= maxRepairAttempts; attempt += 1) {
-    const prompt =
-      attempt === 0
-        ? controllerPrompt(observation, instructions)
-        : repairPrompt(observation, lastError!, attempt, instructions);
-    const input: BrowserTurnInput = {
-      runId: expected.runId,
-      round: expected.round,
-      requestId: expected.requestId,
-      prompt,
-      ...(attempt === 0 ? {} : { repairAttempt: attempt }),
-    };
-    await store.append(attempt === 0 ? "controller_turn_requested" : "controller_repair_requested", {
-      round: expected.round,
-      request_id: expected.requestId,
-      prompt,
-      prompt_hash: commandHash(prompt),
-      repair_attempt: attempt,
-    });
-    const turn = await browser.sendTurn(input);
+  const firstAttempt = recovered?.attempt ?? 0;
+  for (let attempt = firstAttempt; attempt <= maxRepairAttempts; attempt += 1) {
+    let turn: ControllerTurn;
+    if (recovered && attempt === firstAttempt) {
+      turn = recovered.turn;
+      await store.append("controller_response_reconciled", {
+        round: expected.round,
+        request_id: expected.requestId,
+        repair_attempt: attempt,
+        ...(turn.conversationUrl === undefined
+          ? {}
+          : { conversation_url: turn.conversationUrl }),
+      });
+    } else {
+      const prompt =
+        attempt === 0
+          ? controllerPrompt(observation, instructions)
+          : repairPrompt(observation, lastError!, attempt, instructions);
+      const promptHash = commandHash(prompt);
+      const input: BrowserTurnInput = {
+        runId: expected.runId,
+        round: expected.round,
+        requestId: expected.requestId,
+        prompt,
+        ...(attempt === 0 ? {} : { repairAttempt: attempt }),
+      };
+      await store.append(
+        attempt === 0 ? "controller_turn_requested" : "controller_repair_requested",
+        {
+          round: expected.round,
+          request_id: expected.requestId,
+          prompt,
+          prompt_hash: promptHash,
+          repair_attempt: attempt,
+        },
+      );
+      const hooks: BrowserTurnHooks = {
+        onCheckpoint: async (checkpoint) => {
+          await store.append(
+            checkpoint.submissionState === "submitted"
+              ? "controller_turn_submitted"
+              : "controller_turn_submission_started",
+            {
+              round: expected.round,
+              request_id: expected.requestId,
+              submission_state: checkpoint.submissionState,
+              ...(checkpoint.conversationUrl === undefined
+                ? {}
+                : { conversation_url: checkpoint.conversationUrl }),
+              selected_model_label: checkpoint.selectedModelLabel,
+              baseline_assistant_message_count:
+                checkpoint.baselineAssistantMessageCount,
+            },
+          );
+        },
+      };
+      turn = await browser.sendTurn(input, hooks);
+    }
     await store.append("controller_response_received", {
       round: expected.round,
       request_id: expected.requestId,
@@ -188,7 +236,9 @@ async function requestControllerCommand(
           }),
     });
     try {
-      return parseControllerCommand(turn.text, expected);
+      const command = parseControllerCommand(turn.text, expected);
+      await validateCommand?.(command);
+      return command;
     } catch (error) {
       lastError = asCueLineError(error, "CONTROL_COMMAND_INVALID");
       await store.append("controller_response_rejected", {
@@ -203,6 +253,69 @@ async function requestControllerCommand(
     `Controller did not return a valid command after ${maxRepairAttempts} repair attempts.`,
     { cause: lastError },
   );
+}
+
+function validateCommandBeforeAcceptance(
+  store: RunStore<CueLineRunState>,
+  command: ControllerCommand,
+  options: ControllerRuntimeOptions,
+): void {
+  if (command.action !== "dispatch") return;
+  for (const spec of command.jobs) {
+    const id = jobId(store.runId, spec.job_key, spec);
+    if (store.state.jobs[id]) continue;
+    options.resolveRunnerSpec(id, spec);
+  }
+}
+
+function failurePayload(
+  error: unknown,
+  state: CueLineRunState,
+): Record<string, unknown> {
+  const normalized = asCueLineError(error);
+  const details =
+    typeof normalized.details === "object" &&
+    normalized.details !== null &&
+    !Array.isArray(normalized.details)
+      ? (normalized.details as Record<string, unknown>)
+      : {};
+  const requestId = typeof details.request_id === "string" ? details.request_id : undefined;
+  const pendingTurns = state.pendingControllerTurns ?? [];
+  const pending =
+    requestId === undefined
+      ? pendingTurns.length === 1
+        ? pendingTurns[0]
+        : undefined
+      : pendingTurns.find((turn) => turn.requestId === requestId);
+  const stage =
+    typeof details.stage === "string"
+      ? details.stage
+      : pending
+        ? "controller_turn"
+        : "controller_loop";
+  const submissionState =
+    typeof details.submission_state === "string"
+      ? details.submission_state
+      : pending?.submissionState;
+  const conversationUrl = pending?.conversationUrl ?? state.conversationUrl;
+  const failureRequestId = requestId ?? pending?.requestId;
+  return {
+    code: normalized.code,
+    message: truncate(normalized.message, 2_000),
+    stage,
+    ...(failureRequestId === undefined ? {} : { request_id: failureRequestId }),
+    ...(submissionState === undefined ? {} : { submission_state: submissionState }),
+    ...(conversationUrl === null ? {} : { conversation_url: conversationUrl }),
+  };
+}
+
+async function recordRunFailure(
+  store: RunStore<CueLineRunState>,
+  error: unknown,
+): Promise<void> {
+  if (store.state.status !== "running") return;
+  await store.append("run_failed", failurePayload(error, store.state));
+  await store.snapshot();
 }
 
 async function updateRunningJobs(
@@ -348,6 +461,8 @@ async function driveControllerLoop(
         { runId: id, round, requestId },
         maxRepairAttempts,
         options.controllerInstructions ?? [],
+        undefined,
+        (candidate) => validateCommandBeforeAcceptance(store, candidate, options),
       );
       await store.append("controller_command_accepted", {
         command,
@@ -366,14 +481,118 @@ async function driveControllerLoop(
       `Controller did not finish within ${maxRounds} additional rounds.`,
     );
   } catch (error) {
-    if (store.state.status === "running") {
-      await store.append("run_failed", {
-        code: error instanceof CueLineError ? error.code : "CUELINE_INTERNAL",
-      });
-      await store.snapshot();
-    }
+    await recordRunFailure(store, error);
     throw error;
   }
+}
+
+async function reconcilePendingControllerTurn(
+  store: RunStore<CueLineRunState>,
+  options: ContinueControllerLoopOptions,
+): Promise<boolean> {
+  const pendingTurns = store.state.pendingControllerTurns ?? [];
+  if (pendingTurns.length === 0) return false;
+  const provenUnsent =
+    pendingTurns.length === 1 &&
+    pendingTurns[0]?.submissionState === "requested" &&
+    store.state.lastFailure?.submissionState === "definitely_not_sent" &&
+    store.state.lastFailure.requestId === pendingTurns[0]?.requestId;
+  if (provenUnsent) {
+    const pending = pendingTurns[0]!;
+    await store.append("controller_turn_abandoned", {
+      round: pending.round,
+      request_id: pending.requestId,
+      reason: "definitely_not_sent_retry",
+    });
+    return false;
+  }
+  if (pendingTurns.length > 1 && options.reconcileRequestId === undefined) {
+    throw new CueLineError(
+      "MULTIPLE_CONTROLLER_TURNS_PENDING",
+      "More than one controller turn lacks a recorded response. Select the exact requestId to reconcile; CueLine will not guess.",
+      {
+        details: {
+          stage: "reconciling",
+          submission_state: "possibly_sent",
+          request_ids: pendingTurns.map((turn) => turn.requestId),
+        },
+      },
+    );
+  }
+  const pending =
+    options.reconcileRequestId === undefined
+      ? pendingTurns[0]!
+      : pendingTurns.find((turn) => turn.requestId === options.reconcileRequestId);
+  if (!pending) {
+    throw new CueLineError(
+      "CONTROLLER_RECONCILIATION_REQUEST_NOT_FOUND",
+      `Pending controller request '${options.reconcileRequestId}' was not found.`,
+      { details: { stage: "reconciling", submission_state: "possibly_sent" } },
+    );
+  }
+  const otherPending = pendingTurns.filter((turn) => turn.requestId !== pending.requestId);
+  if (otherPending.length > 0 && options.abandonOtherPendingTurns !== true) {
+    throw new CueLineError(
+      "OTHER_CONTROLLER_TURNS_PENDING",
+      "Other controller turns still lack recorded responses. Set abandonOtherPendingTurns only after explicitly choosing which existing response is authoritative.",
+      {
+        details: {
+          stage: "reconciling",
+          submission_state: "possibly_sent",
+          request_ids: otherPending.map((turn) => turn.requestId),
+        },
+      },
+    );
+  }
+  if (options.conversationUrl) {
+    await store.append("controller_conversation_bound", {
+      request_id: pending.requestId,
+      conversation_url: options.conversationUrl,
+    });
+  }
+  if (!options.browser.recoverTurn) {
+    throw new CueLineError(
+      "CONTROLLER_RECONCILIATION_REQUIRED",
+      "This run has a pending controller turn whose submission outcome is unknown. The browser adapter must recover the existing response without sending.",
+      {
+        details: {
+          stage: "reconciling",
+          submission_state: pending.submissionState,
+        },
+      },
+    );
+  }
+  const state = store.state;
+  const observation = observationFor(state, pending.round, pending.requestId);
+  const turn = await options.browser.recoverTurn({
+    runId: state.runId,
+    round: pending.round,
+    requestId: pending.requestId,
+    prompt: pending.prompt,
+    ...(pending.repairAttempt === 0 ? {} : { repairAttempt: pending.repairAttempt }),
+  });
+  for (const abandoned of otherPending) {
+    await store.append("controller_turn_abandoned", {
+      round: abandoned.round,
+      request_id: abandoned.requestId,
+      reason: "operator_selected_existing_response",
+    });
+  }
+  const command = await requestControllerCommand(
+    store,
+    options.browser,
+    observation,
+    { runId: state.runId, round: pending.round, requestId: pending.requestId },
+    options.maxRepairAttempts ?? 2,
+    options.controllerInstructions ?? [],
+    { turn, attempt: pending.repairAttempt },
+    (candidate) => validateCommandBeforeAcceptance(store, candidate, options),
+  );
+  await store.append("controller_command_accepted", {
+    command,
+    command_hash: commandHash(command),
+  });
+  return executeCommand(store, command, options);
 }
 
 export async function runControllerLoop(options: ControllerLoopOptions): Promise<CueLineResult> {
@@ -395,6 +614,11 @@ export async function runControllerLoop(options: ControllerLoopOptions): Promise
     now,
   });
   await store.append("run_created", { request: options.request });
+  if (options.conversationUrl) {
+    await store.append("controller_conversation_bound", {
+      conversation_url: options.conversationUrl,
+    });
+  }
   return driveControllerLoop(store, options);
 }
 
@@ -419,5 +643,19 @@ export async function continueControllerLoop(
   }
   await store.append("run_resumed", { previous_status: state.status });
   await store.snapshot();
-  return driveControllerLoop(store, options);
+  try {
+    if ((store.state.pendingControllerTurns ?? []).length > 0) {
+      const terminal = await reconcilePendingControllerTurn(store, options);
+      await store.snapshot();
+      if (terminal) return resultFromState(store.state);
+    } else if (options.conversationUrl) {
+      await store.append("controller_conversation_bound", {
+        conversation_url: options.conversationUrl,
+      });
+    }
+    return await driveControllerLoop(store, options);
+  } catch (error) {
+    await recordRunFailure(store, error);
+    throw error;
+  }
 }
