@@ -27,6 +27,14 @@ CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 
 
 這是允許清單（allow-list），不是沙箱。已註冊的工作行程擁有跟 CueLine 行程本身相同的權限；`advise` 對應 Codex 的唯讀沙箱、`work` 對應 `workspace-write`，但你註冊了什麼，就等於你授權了什麼。
 
+## 主控端必須是 Pro 模型
+
+除非輸入框的模型選單顯示 `Pro`，否則 CueLine 拒絕送出。對話若停在別的模型，CueLine 會先把輸入框切成 `Pro`——這是它唯一被允許做的模型切換。在一次已驗證的實機執行中，它把 Instant 切成 Pro，回應回來的是 `gpt-5-6-pro`。
+
+選了不等於證明了。每次回應之後，CueLine 會讀取該則已完成助理訊息的模型 slug，並要求它是 Pro 的 slug；送出與回覆之間若被降級，會被抓出來，而不是被信任。失敗會以 `MODEL_SELECTOR_MISSING`、`PRO_MODEL_UNAVAILABLE`、`PRO_MODEL_SELECTION_FAILED` 或 `PRO_MODEL_MISMATCH` 浮現——絕不會變成一個被接受的答案。
+
+ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個人資料標籤上出現 `Pro`，只是訂閱方案的證據，永遠不算模型證據；只有回應的模型 slug 才算。每一輪實機回合都會保存 `controller_response_received`，帶著 `selected_model_label`、`response_model_slug` 與 `model_evidence_source`，因此「是哪一種證據證明了模型」事後仍可稽核。
+
 ## 五分鐘上手
 
 你需要 Node.js 22 以上、帶內建瀏覽器的 Codex，以及——若要用內建的預設通道——`PATH` 上有 `codex` CLI。
@@ -34,15 +42,15 @@ CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.1.0
+npm install -g cueline@0.1.1
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.1.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.1.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.1) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.0/cueline-0.1.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.1/cueline-0.1.1.tgz
 cueline install
 cueline doctor
 ```
@@ -65,8 +73,8 @@ cueline doctor
 接著，在 Codex 裡：
 
 1. 用 Codex 的內建瀏覽器開啟 `https://chatgpt.com` 並登入。
-2. 讓你要當主控的那個對話保持選取狀態——該頁面當下選的模型就是主控端。CueLine 不會替你切換模型，也不會檢查你的訂閱方案。
-3. 請 Codex 用 CueLine 處理這件事：*「用 CueLine：檢視這個 repository，提出下一步變更，並附上證據。」*
+2. 讓你要當主控的那個對話保持選取狀態——該頁面就是主控端。它的輸入框必須停在 `Pro` 模型；若不是，CueLine 會替你選成 `Pro`，否則就拒絕送出。
+3. 請 Codex 用 CueLine 處理這件事：*「用 CueLine，讓那個開著的 ChatGPT Pro 對話來指揮這項任務。」*
 4. 留著回傳的 `runId`。中斷的執行要續跑，就靠它。
 
 內建的 `cueline` skill 是從 Codex 自己的 Node runtime 驅動這個套件的——內建瀏覽器的物件就活在那裡。另外開一個單獨的 `node` 行程並不會繼承它。
@@ -100,7 +108,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.0
+CueLine 0.1.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -141,6 +149,8 @@ jobs/<job-id>.json            每個工作的執行證據
 
 事件日誌才是紀錄本身：主控端的這一輪在送出之前就先寫下、工作在行程啟動之前就先註冊，所以「意圖」與「副作用」之間若被中斷，會留下痕跡。壞掉的快照會被忽略、從第 1 號事件重建，而不是硬信它。
 
+續跑只會重新接回該次執行記錄下來的那個對話網址，絕不接到長得像的分頁。若某個分頁在「送出狀態未明」的當下消失，CueLine 會丟出 `TAB_RECOVERY_UNSAFE` 並停下。它絕不自行重送提示，因為它無法證明第一次到底送出去了沒有。
+
 ## 驗證
 
 ```bash
@@ -156,7 +166,7 @@ npm pack --dry-run
 
 ## 0.1 的限制
 
-只支援純文字。一次執行只對應一個對話。不切換模型、不支援圖片、不支援檔案上傳，也不支援 Deep Research、Projects 或 Apps。工作行程一旦啟動就沒有自動重試或改道——失敗的 `work` 工作會被標記為副作用不明確後回報，因為 CueLine 無法證明它做到哪裡。macOS 是主要的桌面目標、Linux 是 CI 目標；Windows 未經驗證，而且 `install.sh` 不是 Windows 安裝程式。adapter 依賴 ChatGPT 網頁目前的介面，所以介面一改，會以明確的 `COMPOSER_MISSING`、`SEND_BUTTON_MISSING` 或回應逾時浮現——絕不會變成捏造的答案。
+只支援純文字。一次執行只對應一個對話。選成 `Pro` 是 CueLine 唯一會做的模型切換；不支援圖片、不支援檔案上傳，也不支援 Deep Research、Projects 或 Apps。工作行程一旦啟動就沒有自動重試或改道——失敗的 `work` 工作會被標記為副作用不明確後回報，因為 CueLine 無法證明它做到哪裡。macOS 是主要的桌面目標、Linux 是 CI 目標；Windows 未經驗證，而且 `install.sh` 不是 Windows 安裝程式。adapter 依賴 ChatGPT 網頁目前的介面，所以介面一改，會以明確的 `COMPOSER_MISSING`、`SEND_BUTTON_MISSING` 或回應逾時浮現——絕不會變成捏造的答案。
 
 完整矩陣見 [compatibility](docs/compatibility.md)。
 

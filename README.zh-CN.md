@@ -27,6 +27,14 @@ CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnil
 
 这是白名单（allow-list），不是沙箱。已注册的 worker 拥有与 CueLine 进程本身相同的权限；`advise` 对应 Codex 的只读沙箱、`work` 对应 `workspace-write`，但你注册了什么，就等于你授权了什么。
 
+## 控制器必须是 Pro 模型
+
+除非输入框的模型选择器显示 `Pro`，否则 CueLine 拒绝发送。会话若停在别的模型，CueLine 会先把输入框切换到 `Pro`——这是它唯一被允许做的模型切换。在一次已验证的实机运行中，它把 Instant 切换为 Pro，返回的响应是 `gpt-5-6-pro`。
+
+选中不等于证明。每次响应之后，CueLine 会读取该条已完成助手消息的模型 slug，并要求它是 Pro 的 slug；发送与回复之间若发生降级，会被抓出来，而不是被信任。失败会以 `MODEL_SELECTOR_MISSING`、`PRO_MODEL_UNAVAILABLE`、`PRO_MODEL_SELECTION_FAILED` 或 `PRO_MODEL_MISMATCH` 暴露出来——绝不会变成一个被接受的答案。
+
+ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个人资料标签上出现 `Pro`，只是订阅套餐的证据，永远不算模型证据；只有响应的模型 slug 才算。每一轮实机回合都会持久化 `controller_response_received`，携带 `selected_model_label`、`response_model_slug` 与 `model_evidence_source`，因此“是哪一种证据证明了模型”事后依然可审计。
+
 ## 五分钟上手
 
 你需要 Node.js 22 以上、带内置浏览器的 Codex，以及——若使用内置的默认通道——`PATH` 上有 `codex` CLI。
@@ -34,15 +42,15 @@ CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnil
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.1.0
+npm install -g cueline@0.1.1
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.1.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.1.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.1) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.0/cueline-0.1.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.1/cueline-0.1.1.tgz
 cueline install
 cueline doctor
 ```
@@ -65,8 +73,8 @@ cueline doctor
 然后，在 Codex 里：
 
 1. 用 Codex 的内置浏览器打开 `https://chatgpt.com` 并登录。
-2. 让你想让它当控制器的那个会话保持选中——该页面当前选定的模型就是控制器。CueLine 不会替你切换模型，也不会检查你的订阅套餐。
-3. 让 Codex 用 CueLine 处理任务：*“用 CueLine：审查这个仓库，提出下一步改动，并附上证据。”*
+2. 让你想让它当控制器的那个会话保持选中——该页面就是控制器。它的输入框必须停在 `Pro` 模型；若不是，CueLine 会替你选成 `Pro`，否则就拒绝发送。
+3. 让 Codex 用 CueLine 处理任务：*“用 CueLine，让那个打开的 ChatGPT Pro 会话来指挥这项任务。”*
 4. 保留返回的 `runId`。被中断的运行要续跑，就靠它。
 
 内置的 `cueline` skill 是从 Codex 自身的 Node runtime 驱动这个包的——内置浏览器对象就存在于那里。另外单独启动的 `node` 进程不会继承它。
@@ -100,7 +108,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.0
+CueLine 0.1.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -141,6 +149,8 @@ jobs/<job-id>.json            每个作业的执行证据
 
 事件日志才是记录本身：控制器这一轮在发送之前先写入、作业在进程启动之前先注册，因此“意图”与“副作用”之间若被中断，会留下痕迹。损坏的快照会被忽略并从第 1 号事件重建，而不是被信任。
 
+续跑只会重新接回该次运行记录下来的那个会话 URL，绝不接到长得像的标签页。若某个标签页在“提交状态未明”的当下消失，CueLine 会抛出 `TAB_RECOVERY_UNSAFE` 并停下。它绝不自行重发提示，因为它无法证明第一次究竟发出去了没有。
+
 ## 验证
 
 ```bash
@@ -156,7 +166,7 @@ npm pack --dry-run
 
 ## 0.1 的限制
 
-仅支持纯文本。一次运行只对应一个会话。不切换模型、不支持图片、不支持文件上传，也不支持 Deep Research、Projects 或 Apps。worker 一旦启动便没有自动重试或回退——失败的 `work` 作业会在副作用被标记为不确定后回报，因为 CueLine 无法证明它执行到了哪一步。macOS 是主要的桌面目标、Linux 是 CI 目标；Windows 未经验证，且 `install.sh` 不是 Windows 安装程序。adapter 依赖 ChatGPT 网页当前的界面，因此界面变更会以明确的 `COMPOSER_MISSING`、`SEND_BUTTON_MISSING` 或响应超时暴露出来——绝不会变成编造的答案。
+仅支持纯文本。一次运行只对应一个会话。选成 `Pro` 是 CueLine 唯一会做的模型切换；不支持图片、不支持文件上传，也不支持 Deep Research、Projects 或 Apps。worker 一旦启动便没有自动重试或回退——失败的 `work` 作业会在副作用被标记为不确定后回报，因为 CueLine 无法证明它执行到了哪一步。macOS 是主要的桌面目标、Linux 是 CI 目标；Windows 未经验证，且 `install.sh` 不是 Windows 安装程序。adapter 依赖 ChatGPT 网页当前的界面，因此界面变更会以明确的 `COMPOSER_MISSING`、`SEND_BUTTON_MISSING` 或响应超时暴露出来——绝不会变成编造的答案。
 
 完整矩阵见 [compatibility](docs/compatibility.md)。
 

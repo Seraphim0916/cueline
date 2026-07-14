@@ -27,6 +27,14 @@ The controller chooses *what should happen*. The local side chooses *whether and
 
 That is an allow-list, not a sandbox. A registered worker runs with the same permissions as the CueLine process itself; `advise` maps to a read-only Codex sandbox and `work` to `workspace-write`, but what you register is what you have authorized.
 
+## The controller must be a Pro model
+
+CueLine refuses to send unless the composer's model selector reads `Pro`. If the conversation sits on another model, CueLine switches the composer to `Pro` first — that is the only model switch it is allowed to make. In a verified live run it switched Instant to Pro and the reply came back as `gpt-5-6-pro`.
+
+Selecting is not the same as proving. After each response CueLine reads the completed assistant message's model slug and requires it to be a Pro slug, so a downgrade between send and reply is caught rather than trusted. A failure surfaces as `MODEL_SELECTOR_MISSING`, `PRO_MODEL_UNAVAILABLE`, `PRO_MODEL_SELECTION_FAILED`, or `PRO_MODEL_MISMATCH` — never as an accepted answer.
+
+A ChatGPT Pro subscription and the selected Pro model are two different things. An account or profile label containing `Pro` is subscription evidence only and never counts as model evidence; only the response's model slug does. Every live turn persists `controller_response_received` with `selected_model_label`, `response_model_slug`, and `model_evidence_source`, so which evidence proved the model stays auditable afterwards.
+
 ## Quick start
 
 You need Node.js 22+, Codex with its built-in Browser, and — for the bundled default lane — the `codex` CLI on `PATH`.
@@ -34,15 +42,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.1.0
+npm install -g cueline@0.1.1
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.1.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.0), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.1.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.1), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.0/cueline-0.1.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.1/cueline-0.1.1.tgz
 cueline install
 cueline doctor
 ```
@@ -65,8 +73,8 @@ cueline doctor
 Then, in Codex:
 
 1. Open `https://chatgpt.com` in Codex's built-in Browser and sign in.
-2. Leave the conversation you want to be in charge selected — that page's current model is the controller. CueLine does not switch models and does not check your plan.
-3. Ask Codex to use CueLine for the task: *"Use CueLine: review this repository and propose the next change, with evidence."*
+2. Leave the conversation you want to be in charge selected — that page is the controller. Its composer must be on a `Pro` model; CueLine selects `Pro` for you if it is not, and refuses to send otherwise.
+3. Ask Codex to use CueLine for the task: *"Use CueLine and let the open ChatGPT Pro conversation direct this task."*
 4. Keep the returned `runId`. It is how an interrupted run is resumed.
 
 The bundled `cueline` skill drives the package from Codex's own Node runtime, which is where the in-app Browser object lives. A plain `node` process started on the side does not inherit it.
@@ -100,7 +108,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.0
+CueLine 0.1.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -141,6 +149,8 @@ jobs/<job-id>.json            per-job execution evidence
 
 The event log is the record: the controller turn is written before it is sent, and a job is registered before its process starts, so an interruption between intent and side effect leaves a trace. A corrupt snapshot is ignored and rebuilt from event 1 rather than trusted.
 
+Recovery reattaches only to the exact conversation URL the run recorded — never to a lookalike tab. If a tab disappears while a submission's status is ambiguous, CueLine throws `TAB_RECOVERY_UNSAFE` and stops. It never resends the prompt on its own, because it cannot prove whether the first one already landed.
+
 ## Verify
 
 ```bash
@@ -156,7 +166,7 @@ npm pack --dry-run
 
 ## Limits in 0.1
 
-Text only. One conversation per run. No model switching, no images, no file upload, no Deep Research, Projects, or Apps. No automatic retry or fallback once a worker has started — a failed `work` job is reported with its side effects flagged as ambiguous, because CueLine cannot prove how far it got. macOS is the primary desktop target and Linux is the CI target; Windows is unverified, and `install.sh` is not a Windows installer. The adapter depends on the current ChatGPT web UI, so a UI change surfaces as an explicit `COMPOSER_MISSING`, `SEND_BUTTON_MISSING`, or response timeout — never as a fabricated answer.
+Text only. One conversation per run. Selecting `Pro` is the only model switch CueLine makes; no images, no file upload, no Deep Research, Projects, or Apps. No automatic retry or fallback once a worker has started — a failed `work` job is reported with its side effects flagged as ambiguous, because CueLine cannot prove how far it got. macOS is the primary desktop target and Linux is the CI target; Windows is unverified, and `install.sh` is not a Windows installer. The adapter depends on the current ChatGPT web UI, so a UI change surfaces as an explicit `COMPOSER_MISSING`, `SEND_BUTTON_MISSING`, or response timeout — never as a fabricated answer.
 
 See [compatibility](docs/compatibility.md) for the full matrix.
 
