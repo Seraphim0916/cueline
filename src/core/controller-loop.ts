@@ -179,6 +179,13 @@ async function requestControllerCommand(
       request_id: expected.requestId,
       text: turn.text,
       ...(turn.conversationUrl === undefined ? {} : { conversation_url: turn.conversationUrl }),
+      ...(turn.model === undefined
+        ? {}
+        : {
+            selected_model_label: turn.model.selectedLabel,
+            response_model_slug: turn.model.responseModelSlug,
+            model_evidence_source: turn.model.source,
+          }),
     });
     try {
       return parseControllerCommand(turn.text, expected);

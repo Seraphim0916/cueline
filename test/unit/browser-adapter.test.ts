@@ -15,6 +15,9 @@ class FakeLocator implements IabLocator {
   clicks = 0;
   countResult = 1;
   failFirstClick = false;
+  firstClickError = "Playwright timeout: detached button";
+
+  constructor(readonly onClick?: () => void) {}
 
   async count(): Promise<number> {
     return this.countResult;
@@ -31,19 +34,25 @@ class FakeLocator implements IabLocator {
   async click(): Promise<void> {
     this.clicks += 1;
     if (this.failFirstClick && this.clicks === 1) {
-      throw new Error("Playwright timeout: detached button");
+      throw new Error(this.firstClickError);
     }
+    this.onClick?.();
   }
 }
 
 function fakeBrowser(options: {
-  states: PageChatState[];
+  states: Array<Omit<PageChatState, "assistantModelSlug"> & { assistantModelSlug?: string | null }>;
   initialUrl?: string;
   submittedUrl?: string;
   failFirstClick?: boolean;
+  firstClickError?: string;
   failStateReadAt?: number;
   hydratedComposer?: boolean;
   missingSendButtonAfterRetry?: boolean;
+  initialModel?: string | null;
+  proOptionAvailable?: boolean;
+  proSelectionSucceeds?: boolean;
+  responseModelSlug?: string | null;
 }) {
   const composer = new FakeLocator();
   const hydratedComposer = new FakeLocator();
@@ -52,7 +61,15 @@ function fakeBrowser(options: {
   const sendButtons = [new FakeLocator(), new FakeLocator()];
   const missingSendButton = new FakeLocator();
   missingSendButton.countResult = 0;
+  let modelLabel = options.initialModel === undefined ? "Pro" : options.initialModel;
+  const modelPicker = new FakeLocator();
+  const proOption = new FakeLocator(() => {
+    if (options.proSelectionSucceeds !== false) modelLabel = "Pro";
+  });
+  const missingProOption = new FakeLocator();
+  missingProOption.countResult = 0;
   sendButtons[0]!.failFirstClick = options.failFirstClick ?? false;
+  sendButtons[0]!.firstClickError = options.firstClickError ?? sendButtons[0]!.firstClickError;
   const requestedRoles: Array<{ role: string; name: string }> = [];
   const requestedSelectors: string[] = [];
   let stateIndex = 0;
@@ -64,11 +81,15 @@ function fakeBrowser(options: {
   const playwright = {
     locator(selector: string) {
       requestedSelectors.push(selector);
+      if (selector === "button.__composer-pill") return modelPicker;
       return options.hydratedComposer ? hydratedComposer : missingHydratedComposer;
     },
     getByRole(role: string, query: { name: string }) {
       requestedRoles.push({ role, name: query.name });
       if (role === "textbox") return composer;
+      if (role === "menuitemradio" && query.name === "Pro") {
+        return options.proOptionAvailable === false ? missingProOption : proOption;
+      }
       if (options.missingSendButtonAfterRetry && snapshots > 0) {
         return missingSendButton;
       }
@@ -76,7 +97,17 @@ function fakeBrowser(options: {
       sendLookup += 1;
       return locator;
     },
-    async evaluate<Result>() {
+    async evaluate<Result, Argument = undefined>(
+      _pageFunction: (argument: Argument) => Result | Promise<Result>,
+      argument?: Argument,
+    ) {
+      if (
+        typeof argument === "object" &&
+        argument !== null &&
+        "modelPickerSelector" in argument
+      ) {
+        return modelLabel as Result;
+      }
       const currentRead = stateRead;
       stateRead += 1;
       if (options.failStateReadAt === currentRead) {
@@ -87,7 +118,14 @@ function fakeBrowser(options: {
       if (!state.isAnswering && options.submittedUrl) {
         url = options.submittedUrl;
       }
-      return state as Result;
+      return {
+        ...state,
+        assistantModelSlug:
+          state.assistantModelSlug ??
+          (state.assistantMessageCount > 0
+            ? options.responseModelSlug ?? "gpt-5-6-pro"
+            : null),
+      } as Result;
     },
     async domSnapshot() {
       snapshots += 1;
@@ -111,8 +149,11 @@ function fakeBrowser(options: {
   };
   return {
     browser,
+    tab,
     composer,
     hydratedComposer,
+    modelPicker,
+    proOption,
     requestedRoles,
     requestedSelectors,
     sendButtons,
@@ -298,4 +339,376 @@ test("does not mistake the previous stable assistant message for the new respons
   });
 
   assert.equal(turn.text, "new complete");
+});
+
+test("switches the composer to Pro before sending and reports verified model evidence", async () => {
+  const fixture = fakeBrowser({
+    initialModel: "Instant",
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_pro",
+    round: 1,
+    requestId: "msg_pro",
+    prompt: "Use Pro",
+  });
+
+  assert.equal(fixture.modelPicker.clicks, 1);
+  assert.equal(fixture.proOption.clicks, 1);
+  assert.deepEqual(
+    (turn as unknown as { model?: unknown }).model,
+    {
+      provider: "chatgpt",
+      selectedLabel: "Pro",
+      responseModelSlug: "gpt-5-6-pro",
+      source: "composer_and_response",
+    },
+  );
+});
+
+test("refuses to send when the Pro model option is unavailable", async () => {
+  const fixture = fakeBrowser({
+    initialModel: "Instant",
+    proOptionAvailable: false,
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_no_pro",
+      round: 1,
+      requestId: "msg_no_pro",
+      prompt: "Do not downgrade",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "PRO_MODEL_UNAVAILABLE",
+  );
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("refuses to send when the composer model selector cannot be identified", async () => {
+  const fixture = fakeBrowser({
+    initialModel: null,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_missing_model_selector",
+      round: 1,
+      requestId: "msg_missing_model_selector",
+      prompt: "Require visible Pro evidence",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "MODEL_SELECTOR_MISSING",
+  );
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("refuses to send when selecting Pro does not change the composer model", async () => {
+  const fixture = fakeBrowser({
+    initialModel: "Instant",
+    proSelectionSucceeds: false,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_pro_selection_failed",
+      round: 1,
+      requestId: "msg_pro_selection_failed",
+      prompt: "Require Pro",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "PRO_MODEL_SELECTION_FAILED",
+  );
+  assert.equal(fixture.proOption.clicks, 1);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("rejects a response whose actual model slug is not Pro", async () => {
+  const fixture = fakeBrowser({
+    initialModel: "Pro",
+    responseModelSlug: "gpt-5-6-thinking",
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_fallback",
+      round: 1,
+      requestId: "msg_fallback",
+      prompt: "Require actual Pro",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "PRO_MODEL_MISMATCH",
+  );
+});
+
+test("reacquires the exact conversation once when the cached tab is gone", async () => {
+  const conversationUrl = "https://chatgpt.com/c/controller-recovery";
+  const healthy = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  const staleTab: IabTab = {
+    async goto() {},
+    async url() {
+      return conversationUrl;
+    },
+    playwright: {
+      getByRole() {
+        return new FakeLocator();
+      },
+      async evaluate() {
+        throw new Error("Tab not found: 1. Existing tabs: none");
+      },
+      async domSnapshot() {
+        throw new Error("Tab not found: 1. Existing tabs: none");
+      },
+      async waitForTimeout() {},
+    },
+  };
+  let selectedCalls = 0;
+  let getCalls = 0;
+  const browser: IabBrowser = {
+    async documentation() {},
+    tabs: {
+      async new() {
+        return healthy.tab;
+      },
+      async selected() {
+        selectedCalls += 1;
+        return selectedCalls === 1 ? staleTab : undefined;
+      },
+      async list() {
+        return [{ id: "healthy", url: conversationUrl }];
+      },
+      async get() {
+        getCalls += 1;
+        return healthy.tab;
+      },
+    },
+  };
+  const adapter = createCodexIabAdapter({
+    browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_recover",
+    round: 2,
+    requestId: "msg_recover",
+    prompt: "Continue the same run",
+  });
+
+  assert.equal(getCalls, 1);
+  assert.equal(turn.conversationUrl, conversationUrl);
+  assert.equal(turn.text, "complete");
+});
+
+test("reattaches and waits without resending when the tab disappears during submission", async () => {
+  const conversationUrl = "https://chatgpt.com/c/controller-submission-recovery";
+  const submitting = fakeBrowser({
+    initialUrl: conversationUrl,
+    failFirstClick: true,
+    firstClickError: "Tab not found: 1. Existing tabs: none",
+    failStateReadAt: 1,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  const recovered = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  let selectedCalls = 0;
+  let getCalls = 0;
+  const browser: IabBrowser = {
+    async documentation() {},
+    tabs: {
+      async new() {
+        return recovered.tab;
+      },
+      async selected() {
+        selectedCalls += 1;
+        return selectedCalls === 1 ? submitting.tab : undefined;
+      },
+      async list() {
+        return [{ id: "recovered", url: conversationUrl }];
+      },
+      async get() {
+        getCalls += 1;
+        return recovered.tab;
+      },
+    },
+  };
+  const adapter = createCodexIabAdapter({
+    browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_submission_recover",
+    round: 2,
+    requestId: "msg_submission_recover",
+    prompt: "Do not send twice",
+  });
+
+  assert.equal(getCalls, 1);
+  assert.deepEqual(submitting.composer.fills, ["Do not send twice"]);
+  assert.deepEqual(recovered.composer.fills, []);
+  assert.equal(turn.text, "complete");
+});
+
+test("refuses recovery when the tab disappears before an exact conversation URL is known", async () => {
+  const fixture = fakeBrowser({
+    failFirstClick: true,
+    firstClickError: "Tab not found: 1. Existing tabs: none",
+    failStateReadAt: 1,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_unknown_conversation_recovery",
+      round: 1,
+      requestId: "msg_unknown_conversation_recovery",
+      prompt: "Never duplicate this prompt",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "TAB_RECOVERY_UNSAFE",
+  );
+  assert.deepEqual(fixture.composer.fills, ["Never duplicate this prompt"]);
+  assert.equal(fixture.sendButtons[0]!.clicks, 1);
+  assert.equal(fixture.sendButtons[1]!.clicks, 0);
+});
+
+test("refuses recovery when submission cannot be proven after reattaching", async () => {
+  const conversationUrl = "https://chatgpt.com/c/controller-unsafe-recovery";
+  const submitting = fakeBrowser({
+    initialUrl: conversationUrl,
+    failFirstClick: true,
+    firstClickError: "Tab not found: 1. Existing tabs: none",
+    failStateReadAt: 1,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  const recovered = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  let selectedCalls = 0;
+  let getCalls = 0;
+  const browser: IabBrowser = {
+    async documentation() {},
+    tabs: {
+      async new() {
+        return recovered.tab;
+      },
+      async selected() {
+        selectedCalls += 1;
+        return selectedCalls === 1 ? submitting.tab : undefined;
+      },
+      async list() {
+        return [{ id: "recovered", url: conversationUrl }];
+      },
+      async get() {
+        getCalls += 1;
+        return recovered.tab;
+      },
+    },
+  };
+  const adapter = createCodexIabAdapter({
+    browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_unproven_submission",
+      round: 2,
+      requestId: "msg_unproven_submission",
+      prompt: "Never resend after an ambiguous click",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "TAB_RECOVERY_UNSAFE",
+  );
+  assert.equal(getCalls, 1);
+  assert.deepEqual(submitting.composer.fills, ["Never resend after an ambiguous click"]);
+  assert.deepEqual(recovered.composer.fills, []);
 });

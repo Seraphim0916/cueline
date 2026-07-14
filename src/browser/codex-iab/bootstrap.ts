@@ -4,6 +4,7 @@ export interface PageChatState {
   isAnswering: boolean;
   assistantText: string;
   assistantMessageCount: number;
+  assistantModelSlug: string | null;
 }
 
 export interface IabLocator {
@@ -109,6 +110,12 @@ export async function readPageChatState(tab: IabTab): Promise<PageChatState> {
     const assistantText = visibleText
       .replace(/\u00a0/g, " ")
       .trim();
-    return { isAnswering, assistantText, assistantMessageCount: assistantMessages.length };
+    const assistantModelSlug = last?.getAttribute("data-message-model-slug") ?? null;
+    return {
+      isAnswering,
+      assistantText,
+      assistantMessageCount: assistantMessages.length,
+      assistantModelSlug,
+    };
   });
 }

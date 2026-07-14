@@ -4,19 +4,21 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { BrowserTurnInput } from "../../src/browser/browser-adapter.js";
+import type { BrowserTurnInput, ControllerTurn } from "../../src/browser/browser-adapter.js";
 import { CueLineError } from "../../src/core/errors.js";
 import { jobId } from "../../src/core/ids.js";
 import { continueControllerLoop, runControllerLoop } from "../../src/core/controller-loop.js";
 import type { ControllerJobSpec } from "../../src/protocol/types.js";
 import type { JobStatus } from "../../src/jobs/status.js";
 import type { RunnerSpec } from "../../src/runners/runner-adapter.js";
+import { readEvents } from "../../src/state/event-log.js";
+import { runPaths } from "../../src/state/paths.js";
 import { FakeBrowserAdapter } from "../fakes/fake-browser.js";
 import { FakeJobSupervisor } from "../fakes/fake-runner.js";
 
 function reply(
   command: (input: BrowserTurnInput) => Record<string, unknown>,
-): (input: BrowserTurnInput) => { text: string; conversationUrl: string } {
+): (input: BrowserTurnInput) => ControllerTurn {
   return (input) => ({
     text: `<CueLineControl>${JSON.stringify({
       protocol: "cueline/0.1",
@@ -26,6 +28,12 @@ function reply(
       ...command(input),
     })}</CueLineControl>`,
     conversationUrl: "https://chatgpt.com/c/cueline-test",
+    model: {
+      provider: "chatgpt",
+      selectedLabel: "Pro",
+      responseModelSlug: "gpt-5-6-pro",
+      source: "composer_and_response",
+    },
   });
 }
 
@@ -85,11 +93,12 @@ test("controller dispatches one job, observes it, then completes", async () => {
     reply(() => ({ action: "complete", final_delivery_text: "CUELINE_OK" })),
   ]);
   const supervisor = new FakeJobSupervisor([terminalStatus(id)]);
+  const stateHome = await home();
 
   const result = await runControllerLoop({
     request: "Build the thing",
     runId,
-    home: await home(),
+    home: stateHome,
     browser,
     jobSupervisor: supervisor,
     resolveRunnerSpec: resolver,
@@ -101,6 +110,29 @@ test("controller dispatches one job, observes it, then completes", async () => {
   assert.equal(browser.calls.length, 2);
   assert.equal(supervisor.starts.length, 1);
   assert.match(browser.calls[1]?.prompt ?? "", /WORKER_OK/);
+  const modelEvents = (await readEvents(runPaths(stateHome, runId).events))
+    .filter((event) => event.type === "controller_response_received")
+    .map((event) => event.payload as Record<string, unknown>);
+  assert.equal(modelEvents.length, 2);
+  assert.deepEqual(
+    modelEvents.map((payload) => ({
+      selectedModelLabel: payload.selected_model_label,
+      responseModelSlug: payload.response_model_slug,
+      modelEvidenceSource: payload.model_evidence_source,
+    })),
+    [
+      {
+        selectedModelLabel: "Pro",
+        responseModelSlug: "gpt-5-6-pro",
+        modelEvidenceSource: "composer_and_response",
+      },
+      {
+        selectedModelLabel: "Pro",
+        responseModelSlug: "gpt-5-6-pro",
+        modelEvidenceSource: "composer_and_response",
+      },
+    ],
+  );
 });
 
 test("repairs invalid controller output at most twice", async () => {

@@ -1,6 +1,7 @@
 import type {
   BrowserAdapter,
   BrowserTurnInput,
+  ControllerModelEvidence,
   ControllerTurn,
 } from "../browser-adapter.js";
 import { CueLineError } from "../../core/errors.js";
@@ -27,6 +28,16 @@ const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STABLE_MS = 1_500;
 const COMPOSER_HYDRATION_TIMEOUT_MS = 5_000;
 const CONTENTEDITABLE_COMPOSER_SELECTOR = '#prompt-textarea[contenteditable="true"]';
+const MODEL_PICKER_SELECTOR = "button.__composer-pill";
+const REQUIRED_MODEL_LABEL = "Pro";
+
+type TurnStage = "pre_submit" | "submitting" | "submitted";
+
+interface TurnAttemptContext {
+  stage: TurnStage;
+  baseline?: PageChatState;
+  selectedModelLabel?: string;
+}
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -66,11 +77,50 @@ function isTransientClickError(error: unknown): boolean {
   return /deadline exceeded|timed? out|timeout|detached|stale|not enabled|not visible/i.test(message);
 }
 
+function isTabUnavailableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /tab not found|existing tabs: none|webview attach|cdp operation exceeded|target closed|page closed|browser.*disconnected/i.test(
+    message,
+  );
+}
+
+function normalizedConversationUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+function isProLabel(label: string | null): label is string {
+  return /^Pro(?:\s+(?:Standard|Extended))?$/i.test(label ?? "");
+}
+
+function isProModelSlug(slug: string | null): slug is string {
+  return /(?:^|-)pro(?:-|$)/i.test(slug ?? "");
+}
+
+async function readComposerModelLabel(tab: IabTab): Promise<string | null> {
+  return tab.playwright.evaluate(
+    ({ modelPickerSelector }) => {
+      const knownModel = /^(?:Instant(?:\s+\d+(?:\.\d+)*)?|Medium|High|Extra High|Thinking|Auto|Pro(?:\s+(?:Standard|Extended))?)$/i;
+      const labels = Array.from(document.querySelectorAll(modelPickerSelector))
+        .map((element) => String((element as HTMLElement).innerText ?? element.textContent ?? ""))
+        .map((label) => label.replace(/\s+/g, " ").trim())
+        .filter((label) => knownModel.test(label));
+      return labels.length === 1 ? labels[0]! : null;
+    },
+    { modelPickerSelector: MODEL_PICKER_SELECTOR },
+  );
+}
+
 class CodexIabAdapter implements BrowserAdapter {
   readonly #options: Required<Pick<CodexIabAdapterOptions, "timeoutMs" | "pollIntervalMs" | "stableMs">> &
     Pick<CodexIabAdapterOptions, "browser" | "conversationUrl">;
   #browser: IabBrowser | undefined;
   #tab: IabTab | undefined;
+  #conversationUrl: string | undefined;
 
   constructor(options: CodexIabAdapterOptions) {
     this.#options = {
@@ -80,6 +130,7 @@ class CodexIabAdapter implements BrowserAdapter {
       ...(options.browser === undefined ? {} : { browser: options.browser }),
       ...(options.conversationUrl === undefined ? {} : { conversationUrl: options.conversationUrl }),
     };
+    this.#conversationUrl = options.conversationUrl;
   }
 
   async #getBrowser(): Promise<IabBrowser> {
@@ -88,11 +139,28 @@ class CodexIabAdapter implements BrowserAdapter {
   }
 
   async #getTab(): Promise<IabTab> {
-    if (this.#tab) return this.#tab;
+    if (this.#tab) {
+      try {
+        const cachedUrl = (await this.#tab.url()) ?? "";
+        const expected = this.#conversationUrl;
+        if (
+          cachedUrl.startsWith(CHATGPT_URL) &&
+          (expected === undefined ||
+            normalizedConversationUrl(cachedUrl) === normalizedConversationUrl(expected))
+        ) {
+          return this.#tab;
+        }
+      } catch (error) {
+        if (!isTabUnavailableError(error)) throw error;
+      }
+      this.#tab = undefined;
+    }
     const browser = await this.#getBrowser();
-    const targetUrl = this.#options.conversationUrl;
+    const targetUrl = this.#conversationUrl;
     const matchesTarget = (url: string): boolean =>
-      targetUrl ? url === targetUrl : url.startsWith(CHATGPT_URL);
+      targetUrl
+        ? normalizedConversationUrl(url) === normalizedConversationUrl(targetUrl)
+        : url.startsWith(CHATGPT_URL);
     const selected = await browser.tabs.selected?.().catch(() => undefined);
     if (selected && matchesTarget((await selected.url().catch(() => "")) ?? "")) {
       this.#tab = selected;
@@ -121,6 +189,48 @@ class CodexIabAdapter implements BrowserAdapter {
       timeoutMs: 30_000,
     });
     return tab;
+  }
+
+  async #ensureProModel(tab: IabTab): Promise<string> {
+    let label = await readComposerModelLabel(tab);
+    if (isProLabel(label)) return label;
+    if (label === null) {
+      throw new CueLineError(
+        "MODEL_SELECTOR_MISSING",
+        "Could not identify ChatGPT's composer model selector. Refusing to send without Pro evidence.",
+      );
+    }
+    if (!tab.playwright.locator) {
+      throw new CueLineError(
+        "PRO_MODEL_UNAVAILABLE",
+        `ChatGPT is using '${label}', and the Pro model picker is unavailable.`,
+      );
+    }
+    const picker = tab.playwright.locator(MODEL_PICKER_SELECTOR);
+    if ((await picker.count()) !== 1) {
+      throw new CueLineError(
+        "PRO_MODEL_UNAVAILABLE",
+        `ChatGPT is using '${label}', and CueLine could not uniquely locate the model picker.`,
+      );
+    }
+    await picker.click({ timeoutMs: 10_000 });
+    const proOption = await findUniqueLocator(tab, "menuitemradio", [REQUIRED_MODEL_LABEL]);
+    if (!proOption) {
+      throw new CueLineError(
+        "PRO_MODEL_UNAVAILABLE",
+        `ChatGPT is using '${label}', and the Pro model option is unavailable.`,
+      );
+    }
+    await proOption.click({ timeoutMs: 10_000 });
+    await tab.playwright.waitForTimeout(250);
+    label = await readComposerModelLabel(tab);
+    if (!isProLabel(label)) {
+      throw new CueLineError(
+        "PRO_MODEL_SELECTION_FAILED",
+        `ChatGPT did not switch to Pro; current composer model is '${label ?? "unknown"}'.`,
+      );
+    }
+    return label;
   }
 
   async #submissionStarted(tab: IabTab, previousUrl: string): Promise<boolean> {
@@ -163,7 +273,7 @@ class CodexIabAdapter implements BrowserAdapter {
     }
   }
 
-  async #waitForCompletion(tab: IabTab, baseline: PageChatState): Promise<string> {
+  async #waitForCompletion(tab: IabTab, baseline: PageChatState): Promise<PageChatState> {
     const deadline = Date.now() + this.#options.timeoutMs;
     let stableText = "";
     let stableSince = 0;
@@ -179,7 +289,7 @@ class CodexIabAdapter implements BrowserAdapter {
           stableSince = Date.now();
         }
         if (Date.now() - stableSince >= this.#options.stableMs) {
-          return stableText;
+          return state;
         }
       } else {
         stableText = state.assistantText;
@@ -190,25 +300,101 @@ class CodexIabAdapter implements BrowserAdapter {
     throw new CueLineError("CHATGPT_RESPONSE_TIMEOUT", "ChatGPT did not finish before timeout.");
   }
 
-  async sendTurn(input: BrowserTurnInput): Promise<ControllerTurn> {
+  async #resultFromCompletedTurn(
+    tab: IabTab,
+    selectedModelLabel: string,
+    completed: PageChatState,
+  ): Promise<ControllerTurn> {
+    if (!isProModelSlug(completed.assistantModelSlug)) {
+      throw new CueLineError(
+        "PRO_MODEL_MISMATCH",
+        `ChatGPT returned model '${completed.assistantModelSlug ?? "unknown"}' after Pro was selected. Refusing the controller response.`,
+        {
+          details: {
+            selected_model_label: selectedModelLabel,
+            response_model_slug: completed.assistantModelSlug,
+          },
+        },
+      );
+    }
+    const conversationUrl = (await tab.url()) ?? "";
+    if (isConversationUrl(conversationUrl)) this.#conversationUrl = conversationUrl;
+    const title = await tab.title?.();
+    const model: ControllerModelEvidence = {
+      provider: "chatgpt",
+      selectedLabel: selectedModelLabel,
+      responseModelSlug: completed.assistantModelSlug,
+      source: "composer_and_response",
+    };
+    return {
+      text: completed.assistantText,
+      model,
+      ...(conversationUrl === "" ? {} : { conversationUrl }),
+      ...(title === undefined || title === "" ? {} : { title }),
+    };
+  }
+
+  async #sendTurnOnce(
+    input: BrowserTurnInput,
+    context: TurnAttemptContext,
+  ): Promise<ControllerTurn> {
     const tab = await this.#getTab();
-    const baseline = await readPageChatState(tab);
     const composer =
       (await findHydratedComposer(tab)) ??
       (await findUniqueLocator(tab, "textbox", COMPOSER_TEXTBOX_NAMES));
     if (!composer) {
       throw new CueLineError("COMPOSER_MISSING", "Could not find ChatGPT's message composer.");
     }
+    context.selectedModelLabel = await this.#ensureProModel(tab);
+    context.baseline = await readPageChatState(tab);
     await composer.fill(input.prompt, {});
+    context.stage = "submitting";
     await this.#clickSend(tab);
-    const text = await this.#waitForCompletion(tab, baseline);
-    const conversationUrl = (await tab.url()) ?? "";
-    const title = await tab.title?.();
-    return {
-      text,
-      ...(conversationUrl === "" ? {} : { conversationUrl }),
-      ...(title === undefined || title === "" ? {} : { title }),
-    };
+    context.stage = "submitted";
+    const submittedUrl = (await tab.url().catch(() => "")) ?? "";
+    if (isConversationUrl(submittedUrl)) this.#conversationUrl = submittedUrl;
+    const completed = await this.#waitForCompletion(tab, context.baseline);
+    return this.#resultFromCompletedTurn(tab, context.selectedModelLabel, completed);
+  }
+
+  async sendTurn(input: BrowserTurnInput): Promise<ControllerTurn> {
+    const context: TurnAttemptContext = { stage: "pre_submit" };
+    try {
+      return await this.#sendTurnOnce(input, context);
+    } catch (error) {
+      if (!isTabUnavailableError(error)) throw error;
+      if (this.#conversationUrl === undefined) {
+        throw new CueLineError(
+          "TAB_RECOVERY_UNSAFE",
+          "The ChatGPT tab disappeared before CueLine captured an exact conversation URL; refusing a potentially duplicate send.",
+          { cause: error },
+        );
+      }
+      this.#tab = undefined;
+      if (context.stage === "pre_submit") {
+        const retryContext: TurnAttemptContext = { stage: "pre_submit" };
+        return this.#sendTurnOnce(input, retryContext);
+      }
+      if (!context.baseline || !context.selectedModelLabel) throw error;
+      const recoveredTab = await this.#getTab();
+      const recoveredState = await readPageChatState(recoveredTab);
+      const responseStarted =
+        recoveredState.isAnswering ||
+        recoveredState.assistantMessageCount > context.baseline.assistantMessageCount;
+      if (context.stage === "submitting" && !responseStarted) {
+        throw new CueLineError(
+          "TAB_RECOVERY_UNSAFE",
+          "The ChatGPT tab disappeared while submitting, and CueLine cannot prove whether the prompt was sent. Refusing a duplicate send.",
+          { cause: error },
+        );
+      }
+      const completed = await this.#waitForCompletion(recoveredTab, context.baseline);
+      return this.#resultFromCompletedTurn(
+        recoveredTab,
+        context.selectedModelLabel,
+        completed,
+      );
+    }
   }
 }
 
