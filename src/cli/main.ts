@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { readdir, readFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { routingConfigPath } from "../api.js";
 import { CueLineError } from "../core/errors.js";
@@ -12,6 +13,7 @@ import { loadRoutingConfig } from "../router/config-loader.js";
 import { resolveRoute } from "../router/resolver.js";
 import { defaultCueLineHome } from "../state/paths.js";
 import { CUELINE_VERSION } from "../version.js";
+import { installSkill, uninstallSkill } from "./skill-links.js";
 
 interface CliIo {
   stdout: (line: string) => void;
@@ -24,7 +26,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <doctor|routing|jobs|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|jobs|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -34,9 +36,12 @@ function help(): string {
     usage(),
     "",
     "commands:",
+    "  install        link the bundled skill into Codex",
+    "  uninstall      remove only the skill link owned by this package",
     "  doctor         report Node, routing config, state home, and usable lanes",
     "  routing        list every lane and the candidate that would be selected",
     "  jobs           list persisted local jobs, oldest first",
+    "  api path       print the bundled API module path",
     "  config path    print the routing configuration file in effect",
     "  help           print this text",
     "  version        print the CueLine version",
@@ -167,6 +172,18 @@ export async function main(
       io.stdout(routingConfigPath(environment));
       return 0;
     }
+    if (args[0] === "api" && args[1] === "path" && args.length === 2) {
+      io.stdout(fileURLToPath(new URL("../api.js", import.meta.url)));
+      return 0;
+    }
+    if (args[0] === "install" && args.length === 1) {
+      io.stdout(await installSkill(environment));
+      return 0;
+    }
+    if (args[0] === "uninstall" && args.length === 1) {
+      io.stdout(await uninstallSkill(environment));
+      return 0;
+    }
     if (args[0] === "routing" && args.length === 1) {
       return routingCommand(environment, io);
     }
@@ -186,6 +203,9 @@ export async function main(
   }
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1] !== undefined &&
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+) {
   process.exitCode = await main();
 }

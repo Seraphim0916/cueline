@@ -10,7 +10,7 @@ Use CueLine to put the current ChatGPT web conversation in charge of planning an
 ## Preconditions
 
 1. Confirm the current host, operator, and work directory before local work.
-2. Confirm Node.js is version 22 or newer and CueLine has been built (`dist/src/api.js` exists). The bundled default lane also needs the `codex` CLI on `PATH`.
+2. Run `cueline doctor` and require Node.js 22 or newer plus at least one usable lane. Run `cueline api path` and require the returned API module to exist. The bundled default lane needs the `codex` CLI on `PATH`.
 3. Use Codex's persistent Node REPL/runtime together with the built-in in-app Browser (IAB), not a separate plain `node` child, Chrome automation, or GPT Relay. Claim the logged-in `chatgpt.com` tab intended for this run.
 4. Do not request, read, copy, or print cookies, access tokens, browser session material, or private environment values.
 5. Keep v0.1 controller traffic text-only. Do not attempt model switching, images, file upload, Deep Research, Projects, or Apps.
@@ -19,14 +19,15 @@ If live IAB, authentication, build output, or a required runner is missing, repo
 
 ## Start a run
 
-Drive CueLine from Codex's Node runtime so the injected IAB object remains available. Import the built public API; do not import Omnilane or GPT Relay.
+Drive CueLine from Codex's Node runtime so the injected IAB object remains available. First run `cueline api path` in the local shell. In the Node REPL, assign its exact one-line output to `cuelineApiPath`; do not guess an npm prefix or repository location. Import the built public API; do not import Omnilane or GPT Relay.
 
 ```js
+var cuelineApiPath = "/exact/output/from/cueline/api/path";
 const {
   createCodexIabAdapter,
   runCueLine,
   startCueLineRun,
-} = await import("/absolute/path/to/cueline/dist/src/api.js");
+} = await import(cuelineApiPath);
 
 const browser = createCodexIabAdapter({
   // Optional: conversationUrl: "https://chatgpt.com/c/..."
@@ -51,7 +52,7 @@ When an interrupted or locally failed run already has a `runId`, resume it inste
 ```js
 const {
   continueCueLineRun,
-} = await import("/absolute/path/to/cueline/dist/src/api.js");
+} = await import(cuelineApiPath);
 
 const result = await continueCueLineRun({
   runId: EXISTING_RUN_ID,

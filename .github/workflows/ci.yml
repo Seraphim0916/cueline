@@ -30,4 +30,5 @@ jobs:
       - run: npm test
       - run: npm run smoke:fake
       - run: bash test/shell/install.test.sh
+      - run: bash test/shell/npm-package-install.test.sh
       - run: npm pack --dry-run

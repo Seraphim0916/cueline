@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const cli = fileURLToPath(new URL("../../src/cli/main.js", import.meta.url));
+const packageRoot = fileURLToPath(new URL("../../..", import.meta.url));
 
 interface Invocation {
   status: number | null;
@@ -64,6 +65,15 @@ test("config path prints the effective configuration path", async () => {
   assert.equal(result.stdout.trim(), context.config);
 });
 
+test("api path prints an importable bundled API path", async () => {
+  const context = await fixture();
+  const result = invoke(["api", "path"], context.environment);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), path.join(packageRoot, "dist", "src", "api.js"));
+  await access(result.stdout.trim());
+});
+
 test("routing reports the pre-spawn resolved candidate", async () => {
   const context = await fixture();
   const result = invoke(["routing"], context.environment);
@@ -90,6 +100,39 @@ test("jobs is read-only and reports an empty store", async () => {
   assert.match(result.stdout, /No jobs\./);
 });
 
+test("install and uninstall manage the Codex skill link idempotently", async () => {
+  const context = await fixture();
+  const target = path.join(context.home, "codex", "skills", "cueline");
+  const environment = { ...context.environment, CODEX_HOME: path.join(context.home, "codex") };
+
+  for (const attempt of [1, 2]) {
+    const installed = invoke(["install"], environment);
+    assert.equal(installed.status, 0, `attempt ${attempt}: ${installed.stderr}`);
+    assert.equal(await readlink(target), path.join(packageRoot, "skills", "cueline"));
+  }
+
+  const removed = invoke(["uninstall"], environment);
+  assert.equal(removed.status, 0, removed.stderr);
+  await assert.rejects(readlink(target), { code: "ENOENT" });
+});
+
+test("install refuses a foreign skill path and uninstall preserves it", async () => {
+  const context = await fixture();
+  const codexHome = path.join(context.home, "codex");
+  const target = path.join(codexHome, "skills", "cueline");
+  const environment = { ...context.environment, CODEX_HOME: codexHome };
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "foreign\n", "utf8");
+
+  const installed = invoke(["install"], environment);
+  assert.equal(installed.status, 1);
+  assert.match(installed.stderr, /refusing to replace foreign path/);
+
+  const removed = invoke(["uninstall"], environment);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.equal(await readFile(target, "utf8"), "foreign\n");
+});
+
 test("help lists every command, the environment, and the exit codes", async () => {
   const context = await fixture();
 
@@ -97,7 +140,16 @@ test("help lists every command, the environment, and the exit codes", async () =
     const result = invoke(args, context.environment);
 
     assert.equal(result.status, 0, result.stderr);
-    for (const command of ["doctor", "routing", "jobs", "config path", "version"]) {
+    for (const command of [
+      "install",
+      "uninstall",
+      "doctor",
+      "routing",
+      "jobs",
+      "api path",
+      "config path",
+      "version",
+    ]) {
       assert.match(result.stdout, new RegExp(`^\\s+${command}\\s{2,}\\S`, "m"));
     }
     assert.match(result.stdout, /CUELINE_HOME/);
