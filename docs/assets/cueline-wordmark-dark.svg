@@ -1,19 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 201 48" width="201" height="48" role="img" aria-label="CueLine">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 186 48" width="186" height="48" role="img" aria-label="CueLine">
   <title>CueLine</title>
   <g fill="none" stroke="#E6EDF3" stroke-width="3" stroke-linecap="butt" stroke-linejoin="miter">
     <path d="M21.81 14.68A11.5 14.5 0 1 0 21.81 33.32"/>
-    <path d="M37.5 8V24A11.5 14.5 0 0 0 60.5 24V8"/>
-    <path d="M73.5 8V40"/>
-    <path d="M72 9.5H92"/>
-    <path d="M72 24H88"/>
-    <path d="M72 38.5H92"/>
-    <path d="M103.5 8V38.5"/>
-    <path d="M102 38.5H122"/>
-    <path d="M133.5 8V40"/>
-    <path d="M146.5 40V8L169.5 40V8"/>
-    <path d="M182.5 8V40"/>
-    <path d="M181 9.5H201"/>
-    <path d="M181 24H197"/>
-    <path d="M181 38.5H201"/>
+    <path d="M31.5 8V24A11.5 14.5 0 0 0 54.5 24V8"/>
+    <path d="M64.5 8V40"/>
+    <path d="M63 9.5H83"/>
+    <path d="M63 24H79"/>
+    <path d="M63 38.5H83"/>
+    <path d="M93.5 8V38.5"/>
+    <path d="M92 38.5H112"/>
+    <path d="M120.5 8V40"/>
+    <path d="M132.5 40V8L155.5 40V8"/>
+    <path d="M167.5 8V40"/>
+    <path d="M166 9.5H186"/>
+    <path d="M166 24H182"/>
+    <path d="M166 38.5H186"/>
   </g>
 </svg>

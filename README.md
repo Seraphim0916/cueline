@@ -16,6 +16,12 @@ CueLine is a standalone implementation with **no runtime npm dependencies**. It 
 ```mermaid
 flowchart LR
     You([your request]) --> Codex
+    Codex -- observation --> Pro
+    Pro -- one CueLineControl command --> Codex
+    Codex -- validated route --> Runner
+    Runner -- output, exit code, side effects --> Codex
+    Codex --- State
+    Codex --> Answer([final delivery text])
 
     subgraph local [your machine]
         Codex[Codex + CueLine]
@@ -23,14 +29,14 @@ flowchart LR
         State[(event log<br/>+ snapshots)]
     end
 
-    Codex -- observation --> Pro
-    Pro -- one CueLineControl command --> Codex
-    Codex -- validated route --> Runner
-    Runner -- output, exit code, side-effect flags --> Codex
-    Codex --- State
-    Codex --> Answer([final delivery text])
-
     Pro[ChatGPT web conversation<br/>the controller]
+
+    classDef node fill:none,stroke:#7D8590,stroke-width:1px,color:#7D8590
+    classDef cue fill:none,stroke:#C8553D,stroke-width:1.5px,color:#C8553D
+    class You,Codex,Runner,State,Answer node
+    class Pro cue
+    style local fill:none,stroke:#7D8590,stroke-width:1px,stroke-dasharray:3 4,color:#7D8590
+    linkStyle default stroke:#7D8590,color:#7D8590
 ```
 
 Each round: CueLine writes down what it is about to ask, sends one observation into the conversation, and reads back exactly one `<CueLineControl>` envelope. The controller picks one of five actions — `dispatch`, `wait`, `inspect`, `complete`, `blocked` — and nothing outside that envelope is ever executed. A command that names the wrong run, the wrong round, or a malformed job is sent back for a bounded repair attempt rather than guessed at. The loop stops at `complete` or `blocked`, or when it runs out of rounds (12 by default).
