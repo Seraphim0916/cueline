@@ -5,6 +5,8 @@
 
 [![ci](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg)](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml)
 
+**English** · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
+
 **CueLine hands the wheel to an open ChatGPT web conversation: it plans the run and calls each next step, while CueLine checks every command and does the actual work here, on your machine.**
 
 The web page never touches your machine. It only ever emits one small text command per round. CueLine decides whether that command is well-formed, whether it belongs to this run, which local worker it maps to — and then runs it, keeps the evidence, and hands the evidence back.

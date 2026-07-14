@@ -1,0 +1,164 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/cueline-banner-dark.svg">
+  <img alt="CueLine — ChatGPT 下指令，你的机器执行。" src="docs/assets/cueline-banner-light.svg" width="100%">
+</picture>
+
+[![ci](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg)](https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml)
+
+[English](README.md) · [繁體中文](README.zh-TW.md) · **简体中文** · [日本語](README.ja.md) · [한국어](README.ko.md)
+
+**CueLine 把方向盘交给一个已经打开的 ChatGPT 网页会话：由它规划整轮运行、发出每一步指令；而 CueLine 负责校验每一条指令，并在你这台机器上把活儿真正干完。**
+
+那个网页碰不到你的机器。它每一轮只输出一小段文本指令。CueLine 判断这条指令格式是否合法、是否属于本次运行、对应到哪个本地 worker——然后才执行它、保留证据，再把证据交回去。
+
+CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 或 GPT Relay 的包装层。
+
+## 一次运行实际是怎么走的
+
+```mermaid
+flowchart LR
+    You([你的需求]) --> Codex
+    Codex -- 观测 --> Pro
+    Pro -- 一条 CueLineControl 指令 --> Codex
+    Codex -- 校验过的路由 --> Runner
+    Runner -- 输出、退出码、副作用 --> Codex
+    Codex --- State
+    Codex --> Answer([最终交付文本])
+
+    subgraph local [你的机器]
+        Codex[Codex + CueLine]
+        Runner[已注册的本地 runner]
+        State[(事件日志<br/>+ 快照)]
+    end
+
+    Pro[ChatGPT 网页会话<br/>控制器]
+
+    classDef node fill:none,stroke:#7D8590,stroke-width:1px,color:#7D8590
+    classDef cue fill:none,stroke:#C8553D,stroke-width:1.5px,color:#C8553D
+    class You,Codex,Runner,State,Answer node
+    class Pro cue
+    style local fill:none,stroke:#7D8590,stroke-width:1px,stroke-dasharray:3 4,color:#7D8590
+    linkStyle default stroke:#7D8590,color:#7D8590
+```
+
+每一轮：CueLine 先把“接下来要问什么”写入记录，向会话发送一份观测（observation），再读回**恰好一个** `<CueLineControl>` 信封。控制器从五个动作中选一个——`dispatch`、`wait`、`inspect`、`complete`、`blocked`——信封之外的任何文本都不会被执行。指令若指向错误的 run、错误的轮次，或作业定义有误，会被退回做次数有上限的修复，而不是靠猜。循环停在 `complete` 或 `blocked`，或轮次耗尽（默认 12 轮）。
+
+控制器决定*应该发生什么*；本地这一侧决定*是否允许发生、以何种方式发生*：通道（lane）必须启用、候选必须在任何进程启动**之前**确认可用、`argv[0]` 必须早已由你的路由配置注册。没有任何内容会经过 shell。worker 一旦启动，就不会悄悄退回到第二个候选——失败以证据的形式返回，而不是自动重试。
+
+这是白名单（allow-list），不是沙箱。已注册的 worker 拥有与 CueLine 进程本身相同的权限；`advise` 对应 Codex 的只读沙箱、`work` 对应 `workspace-write`，但你注册了什么，就等于你授权了什么。
+
+## 五分钟上手
+
+你需要 Node.js 22 以上、带内置浏览器的 Codex，以及——若使用内置的默认通道——`PATH` 上有 `codex` CLI。
+
+```bash
+git clone https://github.com/Seraphim0916/cueline.git
+cd cueline
+npm ci
+npm run build
+./install.sh      # 创建 ~/.codex/skills/cueline 与 ~/.local/bin/cueline 两个软链接
+cueline doctor
+```
+
+`install.sh` 只创建这两个软链接，不做别的；它拒绝覆盖不属于自己的路径，而 `./install.sh --uninstall` 也只移除自己创建的链接。
+
+然后，在 Codex 里：
+
+1. 用 Codex 的内置浏览器打开 `https://chatgpt.com` 并登录。
+2. 让你想让它当控制器的那个会话保持选中——该页面当前选定的模型就是控制器。CueLine 不会替你切换模型，也不会检查你的订阅套餐。
+3. 让 Codex 用 CueLine 处理任务：*“用 CueLine：审查这个仓库，提出下一步改动，并附上证据。”*
+4. 保留返回的 `runId`。被中断的运行要续跑，就靠它。
+
+内置的 `cueline` skill 是从 Codex 自身的 Node runtime 驱动这个包的——内置浏览器对象就存在于那里。另外单独启动的 `node` 进程不会继承它。
+
+## 从代码驱动
+
+```js
+import { createCodexIabAdapter, runCueLine } from "cueline";
+
+const result = await runCueLine({
+  request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
+  browser: createCodexIabAdapter(),
+  // 可选：conversationUrl、routingConfig / routingConfigPath、home、cwd、limits。
+});
+
+if (result.status === "complete") {
+  console.log(result.finalDeliveryText);
+}
+```
+
+`startCueLineRun` 是显式的启动入口（`runCueLine` 是它的别名）。`continueCueLineRun({ runId })` 会在同一个会话中续跑被中断的运行，并复用已保存的会话链接，除非你传入新的 adapter。`loadCueLineRunState(runId)` 只读取已持久化的状态，不驱动任何东西。已经到达 `complete` 或 `blocked` 的运行会原样返回，绝不会被再次派发。
+
+## CLI
+
+CLI 不驱动浏览器。它只告诉你本地这一半是否健康。
+
+```console
+$ cueline doctor
+CueLine 0.1.0
+status	ok
+node	22.14.0	ok
+config	/Users/you/cueline/config/routing.default.json	valid
+home	/Users/you/.cueline
+available_lanes	1
+
+$ cueline routing
+default	codex-default	available
+
+$ cueline jobs
+No jobs.
+
+$ cueline config path
+/Users/you/cueline/config/routing.default.json
+```
+
+当 Node 版本过旧、或没有任何通道可解析时，`cueline doctor` 会以非零状态退出，因此可直接用作预检。`cueline routing` 会说明某个通道为何不可用，而不是悄悄改选别的。`cueline help` 会列出全部。
+
+## 配置
+
+`CUELINE_CONFIG` 用于指定路由配置文件；`CUELINE_HOME` 用于迁移本地状态（默认 `~/.cueline`）。
+
+内置的 `default` 通道只有一个候选 `codex-default`：通过 stdin 传入任务运行 `codex exec`，`advise` 用 `read-only`、`work` 用 `workspace-write`。要注册别的 worker，复制一份 [`config/routing.default.json`](config/routing.default.json)、加入你的候选，再把 `CUELINE_CONFIG` 指过去——`argv[0]` 中的可执行文件正是通过这个动作被注册的，并且它也必须在 `PATH` 上，通道才能解析成功。
+
+状态位于 `CUELINE_HOME` 之下：
+
+```text
+runs/<run-id>/events.jsonl    仅追加、具权威性
+runs/<run-id>/snapshot.json   重放优化产物，可丢弃
+jobs/<job-id>.json            每个作业的执行证据
+```
+
+事件日志才是记录本身：控制器这一轮在发送之前先写入、作业在进程启动之前先注册，因此“意图”与“副作用”之间若被中断，会留下痕迹。损坏的快照会被忽略并从第 1 号事件重建，而不是被信任。
+
+## 验证
+
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run smoke:fake
+bash test/shell/install.test.sh
+npm pack --dry-run
+```
+
+`npm run smoke:fake` 用假的浏览器与假的 runner，离线跑完整个控制循环。它证明的是循环，而不是线上页面——只有通过内置浏览器真正完成一轮，才能证明后者。
+
+## 0.1 的限制
+
+仅支持纯文本。一次运行只对应一个会话。不切换模型、不支持图片、不支持文件上传，也不支持 Deep Research、Projects 或 Apps。worker 一旦启动便没有自动重试或回退——失败的 `work` 作业会在副作用被标记为不确定后回报，因为 CueLine 无法证明它执行到了哪一步。macOS 是主要的桌面目标、Linux 是 CI 目标；Windows 未经验证，且 `install.sh` 不是 Windows 安装程序。adapter 依赖 ChatGPT 网页当前的界面，因此界面变更会以明确的 `COMPOSER_MISSING`、`SEND_BUTTON_MISSING` 或响应超时暴露出来——绝不会变成编造的答案。
+
+完整矩阵见 [compatibility](docs/compatibility.md)。
+
+## 文档
+
+[architecture](docs/architecture.md) · [controller protocol](docs/controller-protocol.md) · [runner contract](docs/runner-contract.md) · [state and recovery](docs/state-and-recovery.md) · [compatibility](docs/compatibility.md) · [provenance](docs/provenance.md)（均为英文）
+
+## 开发
+
+TypeScript、ESM，仅使用 Node 内置模块。`npm run build` 编译到 `dist/`；测试以 `node --test` 运行编译产物。CI 覆盖 Ubuntu 与 macOS 上的 Node 22 与 24。
+
+CueLine 是独立项目，与 OpenAI 或任何其他公司均无隶属关系，也未获其背书或赞助。见 [provenance](docs/provenance.md) 与 [third-party notices](THIRD_PARTY_NOTICES.md)。
+
+## 许可证
+
+MIT。见 [LICENSE](LICENSE)。

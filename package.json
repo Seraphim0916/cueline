@@ -50,6 +50,10 @@
     "install.sh",
     "LICENSE",
     "README.md",
+    "README.ja.md",
+    "README.ko.md",
+    "README.zh-CN.md",
+    "README.zh-TW.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
