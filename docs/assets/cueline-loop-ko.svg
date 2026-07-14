@@ -2,16 +2,16 @@
   <title>CueLine 실행을 프롬프트북처럼 읽기</title>
   <style>
     text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Apple SD Gothic Neo", "Noto Sans CJK KR", "Malgun Gothic", monospace }
-    .hd   { fill: #0F1720; font-size: 15px; letter-spacing: .02em }
-    .sub  { fill: #8B949E; font-size: 12.5px }
+    .hd   { fill: #0F1720; font-size: 17px; letter-spacing: .02em }
+    .sub  { fill: #8B949E; font-size: 13.5px }
     .rule { stroke: #E4E8EC; stroke-width: 1 }
     .spine{ stroke: #0F1720; stroke-width: 2 }
     .tick { stroke: #C3CAD2; stroke-width: 1 }
-    .say  { fill: #C8553D; font-size: 13.5px }
-    .obs  { fill: #4A5561; font-size: 13.5px }
-    .note { fill: #8B949E; font-size: 12.5px }
-    .rnd  { fill: #B6BEC7; font-size: 11px; letter-spacing: .14em }
-    .foot { fill: #8B949E; font-size: 12.5px }
+    .say  { fill: #C8553D; font-size: 15px }
+    .obs  { fill: #4A5561; font-size: 15px }
+    .note { fill: #8B949E; font-size: 13.5px }
+    .rnd  { fill: #B6BEC7; font-size: 12px; letter-spacing: .14em }
+    .foot { fill: #8B949E; font-size: 13.5px }
     .cue  { fill: #C8553D }
     @media (prefers-color-scheme: dark) {
       .hd { fill: #E6EDF3 }
