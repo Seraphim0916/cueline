@@ -57,6 +57,8 @@ function fakeBrowser(options: {
   hydratedComposer?: boolean;
   missingSendButtonAfterRetry?: boolean;
   initialModel?: string | null;
+  legacyModelPickerPresent?: boolean;
+  modelReadSequence?: Array<string | null>;
   proOptionAvailable?: boolean;
   proSelectionSucceeds?: boolean;
   responseModelSlug?: string | null;
@@ -69,6 +71,7 @@ function fakeBrowser(options: {
   const missingSendButton = new FakeLocator();
   missingSendButton.countResult = 0;
   let modelLabel = options.initialModel === undefined ? "Pro" : options.initialModel;
+  let modelRead = 0;
   const modelPicker = new FakeLocator();
   const proOption = new FakeLocator(() => {
     if (options.proSelectionSucceeds !== false) modelLabel = "Pro";
@@ -113,7 +116,16 @@ function fakeBrowser(options: {
         argument !== null &&
         "modelPickerSelector" in argument
       ) {
-        return modelLabel as Result;
+        if (options.modelReadSequence) {
+          const value =
+            options.modelReadSequence[
+              Math.min(modelRead, options.modelReadSequence.length - 1)
+            ] ?? null;
+          modelRead += 1;
+          return value as Result;
+        }
+        const hasLegacyPicker = options.legacyModelPickerPresent !== false;
+        return (hasLegacyPicker ? modelLabel : null) as Result;
       }
       const currentRead = stateRead;
       stateRead += 1;
@@ -761,6 +773,83 @@ test("recovers an existing completed response from the exact conversation withou
 
   assert.equal(turn?.text, "existing complete response");
   assert.equal(turn?.conversationUrl, conversationUrl);
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
+test("waits for the Pro model button to hydrate before reconciling", async () => {
+  const conversationUrl = "https://chatgpt.com/c/hydrating-pro-button";
+  const prompt = "Existing controller prompt";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    modelReadSequence: [null, "Pro"],
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "existing complete response",
+        assistantMessageCount: 1,
+        lastUserText: prompt,
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_hydrating_pro_button",
+    round: 1,
+    requestId: "msg_hydrating_pro_button",
+    prompt,
+  });
+
+  assert.equal(turn.text, "existing complete response");
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
+test("still refuses recovery when neither model picker nor Pro button is visible", async () => {
+  const conversationUrl = "https://chatgpt.com/c/unverified-model";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    legacyModelPickerPresent: false,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "must not import",
+        assistantMessageCount: 1,
+        lastUserText: "Expected prompt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.recoverTurn!({
+      runId: "run_unverified_model",
+      round: 1,
+      requestId: "msg_unverified_model",
+      prompt: "Expected prompt",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
+  );
   assert.deepEqual(fixture.composer.fills, []);
   assert.equal(fixture.sendButtons[0]!.clicks, 0);
 });

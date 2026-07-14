@@ -25,6 +25,8 @@ CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 
 
 主控端決定*該發生什麼*；本機這一側決定*能不能發生、怎麼發生*：通道（lane）必須啟用、候選項必須在任何程序啟動**之前**就確認可用、`argv[0]` 必須早已由你的路由設定註冊過。沒有任何東西會經過 shell。工作行程一旦啟動，就不會偷偷改用第二個候選項——失敗是以證據的形式回報，不是自動重試。
 
+主控協定刻意區分路由層級：`lane` 填的是通道名稱 `default`；`codex-default` 是該通道內的候選執行器，不是通道。CueLine 會在註冊任何工作前先驗證整份 `dispatch`；只要包含無效通道或執行器，整份派工就會被退回修正，不會先執行其中一部分。
+
 這是允許清單（allow-list），不是沙箱。已註冊的工作行程擁有跟 CueLine 行程本身相同的權限；`advise` 對應 Codex 的唯讀沙箱、`work` 對應 `workspace-write`，但你註冊了什麼，就等於你授權了什麼。
 
 ## 主控端必須是 Pro 模型
@@ -42,15 +44,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.1.1
+npm install -g cueline@0.1.2
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.1.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.1) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.1.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.2) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.1/cueline-0.1.1.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.2/cueline-0.1.2.tgz
 cueline install
 cueline doctor
 ```
@@ -108,7 +110,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.1
+CueLine 0.1.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -149,7 +151,7 @@ jobs/<job-id>.json            每個工作的執行證據
 
 事件日誌才是紀錄本身：主控端的這一輪在送出之前就先寫下、工作在行程啟動之前就先註冊，所以「意圖」與「副作用」之間若被中斷，會留下痕跡。壞掉的快照會被忽略、從第 1 號事件重建，而不是硬信它。
 
-續跑只會重新接回該次執行記錄下來的那個對話網址，絕不接到長得像的分頁。若某個分頁在「送出狀態未明」的當下消失，CueLine 會丟出 `TAB_RECOVERY_UNSAFE` 並停下。它絕不自行重送提示，因為它無法證明第一次到底送出去了沒有。
+續跑只會重新接回該次執行記錄下來的那個對話網址，絕不接到長得像的分頁。對尚待處理的主控回合，它會先在該對話尋找與確切請求相符的已完成回覆；找到就以唯讀方式接回，不會重送。若舊狀態中同時有多個待處理回合，呼叫端必須明確指定一個。只有當唯一待處理提示能被證明為 `definitely_not_sent` 時，CueLine 才會自動重試；提交狀態不明或分頁消失時，會丟出 `TAB_RECOVERY_UNSAFE` 並停下。
 
 ## 驗證
 

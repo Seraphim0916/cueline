@@ -1,6 +1,6 @@
 {
   "name": "cueline",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A ChatGPT web conversation directs; CueLine validates each command and runs the work on your machine, with a durable record of both.",
   "keywords": [
     "chatgpt",
@@ -48,6 +48,7 @@
     "schemas",
     "skills",
     "install.sh",
+    "CHANGELOG.md",
     "LICENSE",
     "README.md",
     "README.ja.md",

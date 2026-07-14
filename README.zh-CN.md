@@ -25,6 +25,8 @@ CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnil
 
 控制器决定*应该发生什么*；本地这一侧决定*是否允许发生、以何种方式发生*：通道（lane）必须启用、候选必须在任何进程启动**之前**确认可用、`argv[0]` 必须早已由你的路由配置注册。没有任何内容会经过 shell。worker 一旦启动，就不会悄悄退回到第二个候选——失败以证据的形式返回，而不是自动重试。
 
+控制器协议有意区分路由层级：`lane` 填的是通道名称 `default`；`codex-default` 是该通道内的候选执行器，不是通道。CueLine 会在注册任何作业之前先验证整份 `dispatch`；只要包含无效通道或执行器，整份派工就会被退回修复，不会先执行其中一部分。
+
 这是白名单（allow-list），不是沙箱。已注册的 worker 拥有与 CueLine 进程本身相同的权限；`advise` 对应 Codex 的只读沙箱、`work` 对应 `workspace-write`，但你注册了什么，就等于你授权了什么。
 
 ## 控制器必须是 Pro 模型
@@ -42,15 +44,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.1.1
+npm install -g cueline@0.1.2
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.1.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.1) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.1.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.2) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.1/cueline-0.1.1.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.2/cueline-0.1.2.tgz
 cueline install
 cueline doctor
 ```
@@ -108,7 +110,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.1
+CueLine 0.1.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -149,7 +151,7 @@ jobs/<job-id>.json            每个作业的执行证据
 
 事件日志才是记录本身：控制器这一轮在发送之前先写入、作业在进程启动之前先注册，因此“意图”与“副作用”之间若被中断，会留下痕迹。损坏的快照会被忽略并从第 1 号事件重建，而不是被信任。
 
-续跑只会重新接回该次运行记录下来的那个会话 URL，绝不接到长得像的标签页。若某个标签页在“提交状态未明”的当下消失，CueLine 会抛出 `TAB_RECOVERY_UNSAFE` 并停下。它绝不自行重发提示，因为它无法证明第一次究竟发出去了没有。
+续跑只会重新接回该次运行记录下来的那个会话 URL，绝不接到长得像的标签页。对仍待处理的控制器回合，它会先在该会话中查找与确切请求对应的已完成回复；找到后以只读方式接回，而不是重发。若旧状态中同时有多个待处理回合，调用方必须明确选择一个。只有当唯一待处理提示能被证明为 `definitely_not_sent` 时，CueLine 才会自动重试；提交状态不明或标签页消失时，它会抛出 `TAB_RECOVERY_UNSAFE` 并停下。
 
 ## 验证
 

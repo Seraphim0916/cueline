@@ -25,6 +25,8 @@ Each round: CueLine writes down what it is about to ask, sends one observation i
 
 The controller chooses *what should happen*. The local side chooses *whether and how it may happen*: the lane must be enabled, the candidate must be available **before** anything spawns, and `argv[0]` must already be registered by your routing config. Nothing is passed through a shell. Once a worker starts, there is no silent fallback to a second candidate — a failure comes back as evidence, not as a retry.
 
+The controller protocol keeps routing levels explicit: `lane` names the lane (`default`), while `codex-default` is a candidate runner inside that lane, not a lane. CueLine validates the entire `dispatch` before registering any job; an invalid lane or runner rejects the whole dispatch for repair, so no valid-looking subset starts early.
+
 That is an allow-list, not a sandbox. A registered worker runs with the same permissions as the CueLine process itself; `advise` maps to a read-only Codex sandbox and `work` to `workspace-write`, but what you register is what you have authorized.
 
 ## The controller must be a Pro model
@@ -42,15 +44,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.1.1
+npm install -g cueline@0.1.2
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.1.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.1), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.1.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.2), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.1/cueline-0.1.1.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.2/cueline-0.1.2.tgz
 cueline install
 cueline doctor
 ```
@@ -108,7 +110,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.1
+CueLine 0.1.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -149,7 +151,7 @@ jobs/<job-id>.json            per-job execution evidence
 
 The event log is the record: the controller turn is written before it is sent, and a job is registered before its process starts, so an interruption between intent and side effect leaves a trace. A corrupt snapshot is ignored and rebuilt from event 1 rather than trusted.
 
-Recovery reattaches only to the exact conversation URL the run recorded — never to a lookalike tab. If a tab disappears while a submission's status is ambiguous, CueLine throws `TAB_RECOVERY_UNSAFE` and stops. It never resends the prompt on its own, because it cannot prove whether the first one already landed.
+Recovery reattaches only to the exact conversation URL the run recorded — never to a lookalike tab. For a pending controller turn, CueLine first looks in that conversation for a completed response correlated to the exact request; if found, it reconciles the response read-only instead of resending. If legacy state contains multiple pending turns, the caller must select one explicitly. CueLine retries automatically only when the sole pending prompt is proven `definitely_not_sent`; an ambiguous submission or a vanished tab throws `TAB_RECOVERY_UNSAFE` and stops.
 
 ## Verify
 

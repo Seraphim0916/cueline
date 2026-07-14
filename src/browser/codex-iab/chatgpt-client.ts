@@ -31,6 +31,8 @@ const COMPOSER_HYDRATION_TIMEOUT_MS = 5_000;
 const CONTENTEDITABLE_COMPOSER_SELECTOR = '#prompt-textarea[contenteditable="true"]';
 const MODEL_PICKER_SELECTOR = "button.__composer-pill";
 const REQUIRED_MODEL_LABEL = "Pro";
+const MODEL_LABEL_READ_ATTEMPTS = 50;
+const MODEL_LABEL_RETRY_INTERVAL_MS = 100;
 
 type TurnStage = "pre_submit" | "submitting" | "submitted";
 
@@ -118,13 +120,37 @@ async function readComposerModelLabel(tab: IabTab): Promise<string | null> {
     ({ modelPickerSelector }) => {
       const knownModel = /^(?:Instant(?:\s+\d+(?:\.\d+)*)?|Medium|High|Extra High|Thinking|Auto|Pro(?:\s+(?:Standard|Extended))?)$/i;
       const labels = Array.from(document.querySelectorAll(modelPickerSelector))
-        .map((element) => String((element as HTMLElement).innerText ?? element.textContent ?? ""))
+        .filter((element) => {
+          if ((element as HTMLElement).hidden) return false;
+          if (element.getAttribute("aria-hidden") === "true") return false;
+          const style = window.getComputedStyle(element);
+          return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
+        })
+        .map((element) =>
+          String(
+            element.getAttribute("aria-label") ??
+              (element as HTMLElement).innerText ??
+              element.textContent ??
+              "",
+          ),
+        )
         .map((label) => label.replace(/\s+/g, " ").trim())
         .filter((label) => knownModel.test(label));
       return labels.length === 1 ? labels[0]! : null;
     },
     { modelPickerSelector: MODEL_PICKER_SELECTOR },
   );
+}
+
+async function readComposerModelLabelWhenReady(tab: IabTab): Promise<string | null> {
+  for (let attempt = 0; attempt < MODEL_LABEL_READ_ATTEMPTS; attempt += 1) {
+    const label = await readComposerModelLabel(tab);
+    if (label !== null) return label;
+    if (attempt < MODEL_LABEL_READ_ATTEMPTS - 1) {
+      await tab.playwright.waitForTimeout(MODEL_LABEL_RETRY_INTERVAL_MS);
+    }
+  }
+  return null;
 }
 
 class CodexIabAdapter implements BrowserAdapter {
@@ -536,7 +562,7 @@ class CodexIabAdapter implements BrowserAdapter {
     }
     try {
       const tab = await this.#getTab();
-      const selectedModelLabel = await readComposerModelLabel(tab);
+      const selectedModelLabel = await readComposerModelLabelWhenReady(tab);
       if (!isProLabel(selectedModelLabel)) {
         throw new CueLineError(
           "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",

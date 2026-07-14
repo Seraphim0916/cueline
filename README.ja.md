@@ -25,6 +25,8 @@ CueLine は独立した実装で、**ランタイムの npm 依存はゼロ**で
 
 コントローラーは*何が起こるべきか*を選びます。ローカル側は*それを許すか、どう許すか*を選びます。レーンが有効であること、候補がプロセス起動の**前に**利用可能だと確認されていること、`argv[0]` があなたのルーティング設定によってすでに登録されていること。シェルを経由するものは何もありません。ワーカーがいったん起動したら、黙って 2 番目の候補にフォールバックすることはありません。失敗は再試行ではなく、証拠として返ります。
 
+コントローラープロトコルでは、ルーティングの階層を明確に区別します。`lane` に指定するのはレーン名の `default` であり、`codex-default` はそのレーン内の候補ランナーであって、レーンではありません。CueLine はジョブを一つでも登録する前に `dispatch` 全体を検証します。無効なレーンまたはランナーが一つでもあれば、途中まで実行せず、`dispatch` 全体を修正のために差し戻します。
+
 これは許可リスト（allow-list）であって、サンドボックスではありません。登録されたワーカーは CueLine プロセス自身と同じ権限で動きます。`advise` は Codex の読み取り専用サンドボックスに、`work` は `workspace-write` に対応しますが、登録したものが、そのまま許可したものになります。
 
 ## コントローラーは Pro モデルでなければならない
@@ -42,15 +44,15 @@ ChatGPT Pro のサブスクリプションと、選択された Pro モデルは
 npm レジストリからインストールします。
 
 ```bash
-npm install -g cueline@0.1.1
+npm install -g cueline@0.1.2
 cueline install
 cueline doctor
 ```
 
-フォールバックとして、[v0.1.1 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.1) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
+フォールバックとして、[v0.1.2 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.2) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.1/cueline-0.1.1.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.2/cueline-0.1.2.tgz
 cueline install
 cueline doctor
 ```
@@ -108,7 +110,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.1
+CueLine 0.1.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -149,7 +151,7 @@ jobs/<job-id>.json            ジョブごとの実行証拠
 
 記録そのものはイベントログです。コントローラーのターンは送信する前に書かれ、ジョブはプロセスが起動する前に登録されます。だからこそ、意図と副作用のあいだで中断が起きても痕跡が残ります。壊れたスナップショットは信用されず、無視されてイベント 1 番から再構築されます。
 
-復帰は、その実行が記録したまさにその会話 URL にだけ再接続します。よく似たタブにつなぐことはありません。送信の状態が不確定なあいだにタブが消えた場合、CueLine は `TAB_RECOVERY_UNSAFE` を投げて停止します。最初の送信がすでに届いたかどうかを証明できない以上、自動でプロンプトを送り直すことは決してありません。
+復帰は、その実行が記録したまさにその会話 URL にだけ再接続します。よく似たタブにつなぐことはありません。保留中のコントローラーターンについては、まず正確なリクエストに対応する完了済みの応答をその会話内で探し、見つかれば再送せず読み取り専用で照合します。古い状態に複数の保留ターンがある場合、呼び出し側が一つを明示的に選ぶ必要があります。唯一の保留中プロンプトが `definitely_not_sent` だと証明できた場合に限り、CueLine は自動で再試行します。送信状態が不明、またはタブが消えた場合は `TAB_RECOVERY_UNSAFE` を投げて停止します。
 
 ## 検証
 
