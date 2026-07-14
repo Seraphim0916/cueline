@@ -11,23 +11,27 @@
   <b>English</b> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
 </p>
 
-**CueLine hands the wheel to an open ChatGPT web conversation: it plans the run and calls each next step, while CueLine checks every command and does the actual work here, on your machine.**
+**CueLine hands the wheel to an open ChatGPT web conversation: it plans the run and calls each next step, while CueLine checks every text command and the current Codex does the permitted local work.**
 
-The web page never touches your machine. It only ever emits one small text command per round. CueLine decides whether that command is well-formed, whether it belongs to this run, which local worker it maps to — and then runs it, keeps the evidence, and hands the evidence back.
+The web page never touches your machine and has no local tools. It only emits one text command per round. CueLine decides whether that command is well-formed and belongs to this run. By default, it persists `advise` jobs for the current Codex to execute and submit; an explicitly selected process executor can instead run registered local workers. CueLine keeps bounded controller evidence and the full local record.
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane or GPT Relay.
 
 ## How a run actually goes
 
-<img alt="A CueLine run read as a promptbook: the machine reports an observation, the controller calls one command, the registered runner executes it, until the controller calls complete." src="docs/assets/cueline-loop-en.svg" width="100%">
+<img alt="A caller-first CueLine run: ChatGPT emits text commands, the current Codex performs local advice, and CueLine returns bounded evidence until complete." src="docs/assets/cueline-loop-en.svg" width="100%">
 
-Each round: CueLine writes down what it is about to ask, sends one observation into the conversation, and reads back exactly one `<CueLineControl>` envelope. The controller picks one of five actions — `dispatch`, `wait`, `inspect`, `complete`, `blocked` — and nothing outside that envelope is ever executed. A command that names the wrong run, the wrong round, or a malformed job is sent back for a bounded repair attempt rather than guessed at. The loop stops at `complete` or `blocked`, or when it runs out of rounds (12 by default).
+Each round: CueLine writes down what it is about to ask, sends one observation into the conversation, and later reads back exactly one `<CueLineControl>` envelope. The controller picks one of five actions — `dispatch`, `wait`, `inspect`, `complete`, `blocked` — and nothing outside that envelope is ever executed. A command that names the wrong run, the wrong round, or a malformed job is sent back for a bounded repair attempt rather than guessed at. The loop pauses at `awaiting_controller` after one durable send, at a caller handoff, or stops at `complete`, `blocked`, or the round limit (12 by default).
 
-The controller chooses *what should happen*. The local side chooses *whether and how it may happen*: the lane must be enabled, the candidate must be available **before** anything spawns, and `argv[0]` must already be registered by your routing config. Nothing is passed through a shell. Once a worker starts, there is no silent fallback to a second candidate — a failure comes back as evidence, not as a retry.
+A non-default `maxRounds` is fixed when the run is created and counts total controller rounds across every ownerless pause. Later continuations normally omit it and reuse the durable value; supplying a different value is rejected rather than silently resetting or widening the budget.
+
+`caller` is the default executor for both `startCueLineRun` and `runCueLine`. With the built-in browser, CueLine submits once, captures the exact conversation URL, returns `awaiting_controller`, and releases the runtime lease instead of holding one tool call open while Pro thinks. A later `continueCueLineRun` performs one read-only observation: unfinished work returns `awaiting_controller` again without resending. A dispatch then produces durable pending `advise` jobs and returns `awaiting_caller`; the current Codex executes each exact task with its local tools, calls `submitCueLineCallerJobResult`, and continues the same run. ChatGPT planned the work—it did not perform the inspection. Caller advice has no execution claim, so coordinate one session: two sessions may both perform it, while only the first terminal evidence submitted wins. Caller-mode `work` is rejected until CueLine can issue a duplicate-safe execution claim.
+
+For explicit `executor: "process"`, the controller chooses *what should happen* and the local side chooses *whether and how it may happen*: the lane must be enabled, the candidate must be available **before** anything spawns, and `argv[0]` must already be registered by your routing config. Nothing is passed through a shell. Independent advice defaults to two concurrent jobs globally and per lane; a batch containing `work` is serial. Once a worker starts, there is no silent fallback to a second candidate.
 
 The controller protocol keeps routing levels explicit: `lane` names the lane (`default`), while `codex-default` is a candidate runner inside that lane, not a lane. CueLine validates the entire `dispatch` before registering any job; an invalid lane or runner rejects the whole dispatch for repair, so no valid-looking subset starts early.
 
-That is an allow-list, not a sandbox. A registered worker runs with the same permissions as the CueLine process itself; `advise` maps to a read-only Codex sandbox and `work` to `workspace-write`, but what you register is what you have authorized.
+That process route is an allow-list, not a sandbox. A registered worker runs with the same permissions as the CueLine process itself; `advise` maps to a read-only Codex sandbox and `work` to `workspace-write`, but what you register is what you have authorized.
 
 ## The controller must be a Pro model
 
@@ -44,15 +48,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.1.3
+npm install -g cueline@0.1.4
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.1.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.3), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.1.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.4), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.3/cueline-0.1.3.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.4/cueline-0.1.4.tgz
 cueline install
 cueline doctor
 ```
@@ -84,39 +88,61 @@ The bundled `cueline` skill drives the package from Codex's own Node runtime, wh
 ## Driving it from code
 
 ```js
-import { createCodexIabAdapter, runCueLine } from "cueline";
+import {
+  continueCueLineRun,
+  createCodexIabAdapter,
+  runCueLine,
+  submitCueLineCallerJobResult,
+} from "cueline";
 
-const result = await runCueLine({
+let result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
   browser: createCodexIabAdapter(),
   // Optional: conversationUrl, routingConfig / routingConfigPath, home, cwd,
   // runTimeoutMs, signal, and per-job/default limits.
-});
+}); // defaults to executor: "caller"
+
+while (result.status === "awaiting_controller" || result.status === "awaiting_caller") {
+  if (result.status === "awaiting_controller") {
+    await waitBeforeNextObservation(); // bounded backoff; never resend
+  } else {
+    for (const job of result.pendingJobs ?? []) {
+      const stdout = await executeExactLocalAdvice(job.spec.task);
+      await submitCueLineCallerJobResult(result.runId, job.jobId, {
+        status: "succeeded",
+        stdout,
+      });
+    }
+  }
+  result = await continueCueLineRun({ runId: result.runId });
+}
 
 if (result.status === "complete") {
   console.log(result.finalDeliveryText);
 }
 ```
 
-`startCueLineRun` is the explicit start (`runCueLine` is its alias). `continueCueLineRun({ runId })` resumes an interrupted run in the same conversation, and reuses the stored conversation URL unless you hand it a new adapter. `loadCueLineRunState(runId)` reads persisted state without driving anything. A run that already reached `complete`, `blocked`, or `cancelled` is returned as-is, never dispatched twice. Before continuation, run `cueline run status <run-id> --json`: an accepted response plus `jobs_running` means ChatGPT already answered and local jobs are executing.
+`startCueLineRun` creates the durable run and returns `ready` without driving the browser. `runCueLine` creates and advances it to a durable controller-observation pause, caller handoff, or terminal state. `continueCueLineRun({ runId })` advances the same conversation and reuses its stored URL. `loadCueLineRunState(runId)` is read-only. A terminal run is returned as-is. Before continuation, run `cueline run status <run-id> --json`: ownerless `controller_response_pending` with exactly one normally submitted turn and `safeNextAction: observe` means Pro's response has not yet been observed; wait briefly and continue it without resend. `safeNextAction: reconcile` is reserved for ambiguous, manually submitted, or multiple pending turns. Ownerless `caller_jobs_pending` is a healthy local handoff; an accepted response plus `jobs_running` means an explicit process executor is active.
 
 Inside Codex's runtime, import the absolute module that `cueline api path` prints — that is the built API of the package you installed.
 
 ## The CLI
 
-The CLI does not drive the browser. It manages the skill link and tells you whether the local half is sound.
+The CLI does not drive the browser. `doctor`, `routing`, `jobs`, `run status`, `api path`, and `config path` are read-only. `install`/`uninstall` change the package-owned skill link. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, and `job cancel` append evidence or change durable local run/job state. Run `cueline help` for every positional argument and option before using a state-changing command.
 
 ```console
 $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.3
+CueLine 0.1.4
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
 home	/Users/you/.cueline
-available_lanes	1
+caller_ready	yes
+caller_lanes	1
+process_available_lanes	1
 
 $ cueline api path
 /usr/local/lib/node_modules/cueline/dist/src/api.js
@@ -128,7 +154,13 @@ $ cueline jobs
 No jobs.
 
 $ cueline run status run_... --json
-{"status":"running","phase":"jobs_running","runtime":{"ownership":"active"},...}
+{"status":"running","executor":"caller","phase":"caller_jobs_pending","runtime":{"ownership":"missing"},...}
+
+$ cueline run takeover stale_run_... --json
+{"runId":"stale_run_...","outcome":"taken_over","next":"continue",...}
+
+$ cueline run reconcile run_... --request-id msg_... --manual-send-confirmed
+run_...\tmsg_...\tconfirmed
 
 $ cueline run cancel run_...
 run_...	requested	affected_jobs=0
@@ -140,19 +172,23 @@ $ cueline uninstall
 CueLine skill removed: /Users/you/.codex/skills/cueline
 ```
 
-`cueline doctor` exits non-zero when Node is too old or no lane can resolve, which makes it usable as a preflight check. `cueline routing` shows why a lane is unavailable instead of quietly selecting something else. `cueline api path` is what the skill imports, so a packaged install needs no repository checkout. `cueline help` lists everything.
+`cueline doctor` exits non-zero when Node is too old or no enabled caller lane exists. `process_available_lanes` may be zero without degrading caller mode; use `cueline routing` to inspect process availability before explicitly selecting that executor. `cueline api path` is what the skill imports, so a packaged install needs no repository checkout. `cueline help` lists every command's exact syntax, including `--json` and the manual-reconcile confirmation flags.
+
+Use `run takeover` only when `run status` reports an exact stale owner. It refuses a fresh active heartbeat and returns `next: continue` or `next: reconcile_runtime`; follow that value instead of guessing.
 
 ## Configuration
 
 `CUELINE_CONFIG` selects a routing file; `CUELINE_HOME` moves local state (default `~/.cueline`).
 
-The bundled `default` lane holds one candidate, `codex-default`: `codex exec` with the task on stdin, `read-only` for `advise`, `workspace-write` for `work`. To register a different worker, copy [`config/routing.default.json`](config/routing.default.json), add your candidate, and point `CUELINE_CONFIG` at it — the executable in `argv[0]` becomes registered by that act, and must also be on `PATH` before a lane resolves.
+Caller execution needs no spawned route. When `executor: "process"` is explicitly selected, the bundled `default` lane holds one candidate, `codex-default`: `codex exec` with the task on stdin, `read-only` for `advise`, and `workspace-write` for `work`. To register a different process worker, copy [`config/routing.default.json`](config/routing.default.json), add your candidate, and point `CUELINE_CONFIG` at it.
 
 State lives under `CUELINE_HOME`:
 
 ```text
-runs/<run-id>/events.jsonl    append-only, authoritative
-runs/<run-id>/runtime.json   live-owner heartbeat evidence
+runs/<run-id>/events.jsonl + events.jsonl.segments/   append-only, authoritative
+runs/<run-id>/runtime.json.fence + runtime.json.epochs/   fenced live-owner heartbeat evidence
+runs/<run-id>/runtime.json.retired-owners/   immutable stale-owner event cutoffs
+runs/<run-id>/runtime.json.takeover-intents/   immutable exact takeover attempts
 runs/<run-id>/cancel.json    durable cancellation request, when present
 runs/<run-id>/snapshot.json   a replay optimization, disposable
 jobs/<job-id>.json            per-job execution evidence
@@ -160,7 +196,9 @@ jobs/<job-id>.json            per-job execution evidence
 
 The event log is the record: the controller turn is written before it is sent, and a job is registered before its process starts, so an interruption between intent and side effect leaves a trace. A corrupt snapshot is ignored and rebuilt from event 1 rather than trusted.
 
-Recovery reattaches only to the exact conversation URL the run recorded — never to a lookalike tab. For a pending controller turn, CueLine first looks in that conversation for a completed response correlated to the exact request; if found, it reconciles the response read-only instead of resending. If legacy state contains multiple pending turns, the caller must select one explicitly. CueLine retries automatically only when the sole pending prompt is proven `definitely_not_sent`; an ambiguous submission or a vanished tab throws `TAB_RECOVERY_UNSAFE` and stops.
+Recovery reattaches only to the exact recorded conversation URL. CueLine recognizes long prompts that ChatGPT automatically converts into attachment chips and makes at most one send attempt. An ambiguous click is `possibly_sent` and is never clicked again. If an operator manually sends that attachment, `cueline run reconcile ... --manual-send-confirmed` records an append-only confirmation; CueLine then requires exact conversation, Pro model, and protocol/run/round/request identity before importing the response without resend or duplicate dispatch.
+
+Controller observations prefer successful non-empty stdout, retain full stdout/stderr in local job status, and share one 12,000-character evidence budget with an explicit truncation marker.
 
 ## Verify
 
@@ -177,7 +215,7 @@ npm pack --dry-run
 
 ## Limits in 0.1
 
-Text only. One conversation per run. Selecting `Pro` is the only model switch CueLine makes; no images, no file upload, no Deep Research, Projects, or Apps. No automatic retry or fallback once a worker has started — a failed `work` job is reported with its side effects flagged as ambiguous, because CueLine cannot prove how far it got. macOS is the primary desktop target and Linux is the CI target; Windows is unverified, and `install.sh` is not a Windows installer. The adapter depends on the current ChatGPT web UI, so a UI change surfaces as an explicit `COMPOSER_MISSING`, `SEND_BUTTON_MISSING`, or response timeout — never as a fabricated answer.
+Text commands only. One conversation per run. Selecting `Pro` is the only model switch CueLine makes. Automatic long-text-to-attachment conversion is supported, but deliberate file upload, images, Deep Research, Projects, and Apps are not. Caller mode is `advise` only; process `work` must be explicit. No automatic retry or fallback starts a worker twice. macOS is the primary desktop target and Linux is the CI target; Windows is unverified. The adapter depends on the current ChatGPT web UI, so a UI change surfaces explicitly, never as a fabricated answer.
 
 See [compatibility](docs/compatibility.md) for the full matrix.
 

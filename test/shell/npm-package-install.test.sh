@@ -34,6 +34,8 @@ test -f "$SKILL_LINK/SKILL.md" || fail "skill link does not reach packaged skill
 
 DOCTOR_OUTPUT=$(HOME="$WORK/home" CODEX_HOME="$CODEX_ROOT" PATH="$TEST_PATH" "$CLI" doctor) || fail "doctor command failed"
 printf '%s\n' "$DOCTOR_OUTPUT" | grep -Eq '^status[[:space:]]+ok$' || fail "doctor did not report ok"
+printf '%s\n' "$DOCTOR_OUTPUT" | grep -Eq '^caller_ready[[:space:]]+yes$' || fail "doctor did not report caller readiness"
+printf '%s\n' "$DOCTOR_OUTPUT" | grep -Eq '^process_available_lanes[[:space:]]+1$' || fail "doctor did not report the packaged process lane"
 
 HOME="$WORK/home" CODEX_HOME="$CODEX_ROOT" PATH="$TEST_PATH" "$CLI" uninstall
 test ! -e "$SKILL_LINK" && test ! -L "$SKILL_LINK" || fail "skill link survived uninstall"

@@ -11,17 +11,21 @@
   <a href="README.md">English</a> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <b>한국어</b>
 </p>
 
-**CueLine은 이미 열려 있는 ChatGPT 웹 대화에 운전대를 넘깁니다. 대화가 실행 전체를 계획하고 다음 단계를 지시하면, CueLine은 모든 명령을 검증하고 실제 작업은 바로 이곳, 당신의 머신에서 수행합니다.**
+**CueLine은 열린 ChatGPT 웹 대화에 판단을 맡깁니다. 대화는 텍스트 명령을 내리고, CueLine이 검증하며, 현재 Codex가 허용된 로컬 작업을 수행합니다.**
 
-웹 페이지는 당신의 머신을 건드리지 않습니다. 페이지가 내보내는 것은 라운드당 작은 텍스트 명령 하나뿐입니다. CueLine은 그 명령의 형식이 올바른지, 이번 실행(run)에 속하는지, 어떤 로컬 워커에 대응하는지를 판단한 뒤에야 실행하고, 증거를 보관하고, 그 증거를 돌려줍니다.
+웹 페이지에는 로컬 도구가 없습니다. 기본 `caller` 실행에서는 CueLine이 `advise` 작업을 지속 상태로 넘기고 현재 Codex가 실행해 결과를 제출합니다. 등록된 워커를 띄우려면 `process` executor를 명시해야 합니다.
 
 CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane이나 GPT Relay를 감싼 래퍼가 아닙니다.
 
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
-<img alt="CueLine 실행 한 번을 프롬프트북처럼 읽기: 머신이 관측을 보내고, 컨트롤러가 명령 하나를 내리고, 등록된 runner가 실행하며, complete가 나올 때까지 이어집니다." src="docs/assets/cueline-loop-ko.svg" width="100%">
+<img alt="Caller-first CueLine: ChatGPT가 텍스트 명령을 내리고 현재 Codex가 로컬 조언 작업을 수행하며 CueLine이 완료까지 제한된 증거를 반환합니다." src="docs/assets/cueline-loop-ko.svg" width="100%">
 
-매 라운드마다 CueLine은 무엇을 물으려 하는지 먼저 기록하고, 관측(observation) 하나를 대화에 보낸 뒤, `<CueLineControl>` 엔벨로프를 **정확히 하나만** 읽어 옵니다. 컨트롤러는 다섯 가지 동작 — `dispatch`, `wait`, `inspect`, `complete`, `blocked` — 중 하나를 고르며, 엔벨로프 바깥의 텍스트는 절대 실행되지 않습니다. 잘못된 run이나 잘못된 라운드를 가리키거나 작업 정의가 잘못된 명령은 추측으로 메워지지 않고, 횟수가 제한된 복구 시도를 위해 되돌려 보내집니다. 루프는 `complete` 또는 `blocked`에서 멈추며, 라운드 한도(기본 12회)를 소진해도 멈춥니다.
+매 라운드마다 CueLine은 관측 하나를 보내고 나중에 `<CueLineControl>` 엔벨로프를 **정확히 하나만** 읽습니다. 컨트롤러는 `dispatch`, `wait`, `inspect`, `complete`, `blocked` 중 하나를 고릅니다. 루프는 한 번의 영속적인 전송 뒤 `awaiting_controller`에서 일시 중지하며 caller 인계, `complete`, `blocked`, 또는 라운드 상한(기본 12회)에서도 멈춥니다.
+
+기본값이 아닌 `maxRounds`는 run 생성 시 고정되며 owner가 없는 일시 중지를 가로질러 컨트롤러 총 라운드 수를 셉니다. 이후 계속하기에서는 보통 생략해 지속 값을 재사용하고, 다른 값을 전달하면 예산을 몰래 재설정하거나 늘리지 않고 거부합니다.
+
+`startCueLineRun`과 `runCueLine`의 기본값은 `caller`입니다. 내장 브라우저에서는 CueLine이 한 번만 전송하고 정확한 대화 URL을 저장한 뒤, Pro가 생각하는 동안 한 도구 호출을 붙잡지 않고 runtime lease를 해제하여 `awaiting_controller`를 반환합니다. 이후 `continueCueLineRun`은 읽기 전용 관측을 한 번만 수행하며, 미완료이면 재전송 없이 다시 `awaiting_controller`를 반환합니다. `dispatch` 뒤에는 `awaiting_caller`를 반환하고, 현재 Codex가 각 `advise`를 실행해 `submitCueLineCallerJobResult`로 제출한 뒤 같은 run을 계속합니다. Pro 컨트롤러 자체가 로컬 도구를 사용한 것은 아닙니다. Caller advice에는 execution claim이 없으므로 한 session만 실행하도록 조정해야 합니다. 두 session이 같은 점검을 수행할 수 있지만, 먼저 제출된 종료 증거만 채택됩니다. Caller의 `work`는 거부됩니다.
 
 컨트롤러는 *무엇이 일어나야 하는지*를 고릅니다. 로컬 쪽은 *그것이 허용되는지, 어떻게 허용되는지*를 고릅니다. 레인이 활성화되어 있어야 하고, 후보는 어떤 프로세스가 뜨기 **전에** 사용 가능함이 확인되어야 하며, `argv[0]`은 당신의 라우팅 설정에 이미 등록되어 있어야 합니다. 셸을 거치는 것은 아무것도 없습니다. 워커가 일단 시작되면 두 번째 후보로 조용히 넘어가는 폴백은 없습니다. 실패는 재시도가 아니라 증거로 돌아옵니다.
 
@@ -44,15 +48,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.1.3
+npm install -g cueline@0.1.4
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.1.3 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.3)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.1.4 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.4)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.3/cueline-0.1.3.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.4/cueline-0.1.4.tgz
 cueline install
 cueline doctor
 ```
@@ -84,39 +88,63 @@ cueline doctor
 ## 코드에서 구동하기
 
 ```js
-import { createCodexIabAdapter, runCueLine } from "cueline";
+import {
+  continueCueLineRun,
+  createCodexIabAdapter,
+  runCueLine,
+  submitCueLineCallerJobResult,
+} from "cueline";
 
-const result = await runCueLine({
+let result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
   browser: createCodexIabAdapter(),
   // 선택: conversationUrl, routingConfig / routingConfigPath, home, cwd,
   // runTimeoutMs, signal, 작업별/기본 제한 시간.
-});
+}); // 기본 executor: "caller"
+
+while (result.status === "awaiting_controller" || result.status === "awaiting_caller") {
+  if (result.status === "awaiting_controller") {
+    await waitBeforeNextObservation(); // 제한된 백오프. 재전송 금지
+  } else {
+    for (const job of result.pendingJobs ?? []) {
+      const stdout = await executeExactLocalAdvice(job.spec.task);
+      await submitCueLineCallerJobResult(result.runId, job.jobId, {
+        status: "succeeded",
+        stdout,
+      });
+    }
+  }
+  result = await continueCueLineRun({ runId: result.runId });
+}
 
 if (result.status === "complete") {
   console.log(result.finalDeliveryText);
 }
 ```
 
+`awaiting_controller`가 반환되면 같은 정확한 request는 이미 전송되었지만 Pro 응답은 아직 관측되지 않은 것입니다. 이후 계속하기는 읽기 전용으로 관측하며 재전송하지 않습니다. `awaiting_caller`가 반환되면 현재 Codex가 `result.pendingJobs`의 각 `advise`를 실행하고 실제 결과를 `submitCueLineCallerJobResult`로 제출한 뒤 `continueCueLineRun`을 호출합니다. Pro 웹 페이지가 로컬 도구를 직접 쓰는 것은 아닙니다.
+
 Codex 런타임에서는 `cueline api path`가 출력하는 절대 경로 모듈을 import하세요. 그것이 설치한 패키지의 빌드된 API입니다.
 
-`startCueLineRun`이 명시적인 시작점입니다(`runCueLine`은 그 별칭). `continueCueLineRun({ runId })`은 중단된 실행을 같은 대화에서 재개하며, 새 어댑터를 넘기지 않는 한 저장된 대화 URL을 재사용합니다. `loadCueLineRunState(runId)`는 저장된 상태를 읽기만 하고 아무것도 구동하지 않습니다. 이미 `complete`, `blocked`, `cancelled`에 도달한 실행은 그대로 반환되며, 두 번 디스패치되지 않습니다. 재개 전 `cueline run status <run-id> --json`을 실행하십시오. 응답이 수락되었고 phase가 `jobs_running`이면 ChatGPT 응답은 끝났고 로컬 작업이 실행 중입니다.
+`startCueLineRun`은 지속 run을 만들고 `ready`만 반환합니다. `runCueLine`은 생성 후 지속 controller 관측 대기, caller 인계 또는 종료 상태까지 진행합니다. owner가 없는 `controller_response_pending`에 정상 전송된 턴이 정확히 하나이고 `safeNextAction: observe`가 표시되면 같은 Pro 응답을 읽기 전용으로 관측하기 위한 대기입니다. 잠시 뒤 계속하고 재전송하지 마세요. `safeNextAction: reconcile`은 모호하거나 수동 전송되었거나 보류 턴이 여러 개인 경우에 사용합니다. owner가 없는 `caller_jobs_pending`은 정상적인 로컬 인계이며 orphan이나 ChatGPT 대기가 아닙니다.
 
 ## CLI
 
-CLI는 브라우저를 구동하지 않습니다. 스킬 링크를 관리하고, 로컬 쪽이 멀쩡한지 알려줍니다.
+CLI는 브라우저를 구동하지 않습니다. `doctor`, `routing`, `jobs`, `run status`, `api path`, `config path`는 읽기 전용입니다. `install`/`uninstall`은 패키지가 소유한 스킬 링크만 변경합니다. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, `job cancel`은 감사 증거를 추가하거나 지속 run/job 상태를 변경합니다. 상태를 쓰는 명령 전에는 `cueline help`로 전체 인수를 확인하세요.
 
 ```console
 $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.3
+CueLine 0.1.4
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
 home	/Users/you/.cueline
-available_lanes	1
+caller_ready	yes
+caller_lanes	1
+process_available_lanes	1
 
 $ cueline api path
 /usr/local/lib/node_modules/cueline/dist/src/api.js
@@ -128,7 +156,10 @@ $ cueline jobs
 No jobs.
 
 $ cueline run status run_... --json
-{"status":"running","phase":"jobs_running","runtime":{"ownership":"active"},...}
+{"status":"running","executor":"caller","phase":"caller_jobs_pending","runtime":{"ownership":"missing"},...}
+
+$ cueline run takeover stale_run_... --json
+{"runId":"stale_run_...","outcome":"taken_over","next":"continue",...}
 
 $ cueline run cancel run_...
 run_...	requested	affected_jobs=0
@@ -140,19 +171,23 @@ $ cueline uninstall
 CueLine skill removed: /Users/you/.codex/skills/cueline
 ```
 
-Node 버전이 너무 낮거나 해석 가능한 레인이 하나도 없으면 `cueline doctor`는 0이 아닌 코드로 종료합니다. 그래서 사전 점검용으로 그대로 쓸 수 있습니다. `cueline routing`은 조용히 다른 것을 고르는 대신, 그 레인이 왜 사용 불가인지 보여줍니다. `cueline api path`가 출력하는 것이 곧 스킬이 import하는 모듈이므로, 패키지로 설치했다면 저장소를 받을 필요가 없습니다. `cueline help`가 전부를 나열합니다.
+Node 버전이 너무 낮거나 활성화된 caller 레인이 하나도 없으면 `cueline doctor`는 0이 아닌 코드로 종료합니다. `process_available_lanes`가 0이어도 caller 모드는 저하되지 않습니다. process executor를 명시적으로 선택하기 전에만 `cueline routing`으로 process 가용성을 확인하세요. `cueline api path`가 출력하는 것이 곧 스킬이 import하는 모듈이므로, 패키지로 설치했다면 저장소를 받을 필요가 없습니다. `cueline help`는 `--json`과 수동 reconcile 필수 확인 플래그를 포함한 각 명령의 정확한 구문을 나열합니다.
+
+`run takeover`는 `run status`가 exact stale owner를 표시할 때만 사용합니다. 새로운 active heartbeat는 거부됩니다. 반환된 `next: continue` 또는 `next: reconcile_runtime`을 따르고 추측해서 진행하지 마세요.
 
 ## 설정
 
 `CUELINE_CONFIG`는 라우팅 설정 파일을 고르고, `CUELINE_HOME`은 로컬 상태의 위치를 옮깁니다(기본값 `~/.cueline`).
 
-기본 제공 `default` 레인에는 후보가 하나, `codex-default`가 있습니다. 작업을 stdin으로 넘겨 `codex exec`를 실행하며, `advise`에는 `read-only`, `work`에는 `workspace-write`를 씁니다. 다른 워커를 등록하려면 [`config/routing.default.json`](config/routing.default.json)을 복사해 후보를 추가하고 `CUELINE_CONFIG`를 그쪽으로 가리키면 됩니다. `argv[0]`의 실행 파일은 바로 그 행위로 등록되며, 레인이 해석되려면 그것이 `PATH` 위에도 있어야 합니다.
+Caller는 프로세스를 띄우지 않습니다. `process` executor를 명시한 경우에만 `default` 레인의 `codex-default`가 `codex exec`를 실행합니다. 독립 `advise`의 기본 동시 실행 상한은 전체/레인당 2이고, `work`가 포함된 배치는 직렬입니다.
 
 상태는 `CUELINE_HOME` 아래에 놓입니다:
 
 ```text
-runs/<run-id>/events.jsonl    추가 전용, 정본
-runs/<run-id>/runtime.json   활성 owner의 heartbeat 증거
+runs/<run-id>/events.jsonl + events.jsonl.segments/   추가 전용, 정본
+runs/<run-id>/runtime.json.fence + runtime.json.epochs/   세대가 격리된 활성 owner heartbeat 증거
+runs/<run-id>/runtime.json.retired-owners/   변경 불가능한 이전 owner 이벤트 cutoff
+runs/<run-id>/runtime.json.takeover-intents/   변경 불가능한 exact takeover 시도 기록
 runs/<run-id>/cancel.json    존재할 때 지속 취소 요청
 runs/<run-id>/snapshot.json   재생 최적화용, 버려도 무방
 jobs/<job-id>.json            작업별 실행 증거
@@ -160,7 +195,7 @@ jobs/<job-id>.json            작업별 실행 증거
 
 기록 그 자체는 이벤트 로그입니다. 컨트롤러의 턴은 보내기 전에 기록되고, 작업은 프로세스가 시작되기 전에 등록됩니다. 그래서 의도와 부작용 사이에서 중단이 일어나도 흔적이 남습니다. 손상된 스냅샷은 신뢰되지 않고, 무시된 뒤 이벤트 1번부터 다시 만들어집니다.
 
-복구는 그 실행이 기록해 둔 바로 그 대화 URL에만 다시 연결하며, 비슷해 보이는 탭에는 결코 붙지 않습니다. 보류 중인 컨트롤러 턴이 있으면 먼저 그 대화에서 정확한 요청과 연결된 완료 응답을 찾고, 찾으면 다시 보내지 않고 읽기 전용으로 대조해 복구합니다. 이전 상태에 보류 중인 턴이 여러 개 있으면 호출자가 하나를 명시적으로 선택해야 합니다. 유일한 보류 프롬프트가 `definitely_not_sent`임이 증명된 경우에만 CueLine이 자동으로 다시 시도합니다. 제출 상태가 불명확하거나 탭이 사라지면 `TAB_RECOVERY_UNSAFE`를 던지고 멈춥니다.
+복구는 완전히 같은 대화 URL에만 연결합니다. ChatGPT가 긴 텍스트를 첨부로 자동 변환하면 `attachment_ready`로 인식하며 전송 클릭은 최대 한 번입니다. 모호한 클릭은 `possibly_sent`가 되고 재전송하지 않습니다. 수동 전송 뒤에는 `cueline run reconcile RUN_ID --request-id REQUEST_ID --manual-send-confirmed`로 정식 확인하고 동일 conversation, Pro 증거, protocol/run/round/request identity를 모두 검증합니다. 컨트롤러 증거는 성공한 비어 있지 않은 stdout을 우선하며 전체 12,000자로 제한하고, 전체 stdout/stderr는 로컬에 보존합니다.
 
 ## 검증
 
@@ -177,7 +212,7 @@ npm pack --dry-run
 
 ## 0.1의 한계
 
-텍스트 전용. 실행 하나당 대화 하나. CueLine이 수행하는 모델 전환은 `Pro` 선택뿐입니다. 이미지, 파일 업로드, Deep Research, Projects, Apps는 지원하지 않습니다. 워커가 시작된 뒤의 자동 재시도나 폴백도 없습니다. 실패한 `work` 작업은 어디까지 진행됐는지 CueLine이 증명할 수 없으므로, 부작용이 불확실하다는 표시와 함께 보고됩니다. 주력 데스크톱 대상은 macOS이고 CI 대상은 Linux입니다. Windows는 검증되지 않았으며 `install.sh`는 Windows용 설치 프로그램이 아닙니다. 어댑터는 현재의 ChatGPT 웹 UI에 의존하므로, UI가 바뀌면 `COMPOSER_MISSING`, `SEND_BUTTON_MISSING`, 또는 응답 타임아웃으로 명시적으로 드러납니다 — 지어낸 답으로 둔갑하는 일은 결코 없습니다.
+텍스트 명령 전용입니다. 긴 텍스트의 자동 첨부 변환은 지원하지만 의도적 파일 업로드, 이미지, Deep Research, Projects, Apps는 지원하지 않습니다. Caller는 `advise`만 허용하며 `work`에는 명시적 process executor가 필요합니다. 모호한 전송이나 이미 시작된 작업은 자동 재시도하지 않습니다.
 
 전체 표는 [compatibility](docs/compatibility.md)를 보세요.
 

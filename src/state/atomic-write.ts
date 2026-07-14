@@ -3,11 +3,24 @@ import { mkdir, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { canonicalJson } from "../core/ids.js";
-import { runtimePidTag } from "../core/runtime.js";
+import { runtimePidTag, runtimePlatform } from "../core/runtime.js";
+
+async function syncDirectory(directory: string): Promise<void> {
+  if (runtimePlatform() === "win32") return;
+  const handle = await open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
 
 export async function atomicWriteJson(target: string, value: unknown): Promise<void> {
   const directory = path.dirname(target);
-  await mkdir(directory, { recursive: true });
+  const created = await mkdir(directory, { recursive: true });
+  if (created !== undefined) {
+    await syncDirectory(path.dirname(created));
+  }
   const temporary = path.join(
     directory,
     `.${path.basename(target)}.${runtimePidTag()}.${randomUUID()}.tmp`,
@@ -20,6 +33,7 @@ export async function atomicWriteJson(target: string, value: unknown): Promise<v
     await handle.close();
     handle = undefined;
     await rename(temporary, target);
+    await syncDirectory(directory);
   } catch (error) {
     if (handle !== undefined) {
       await handle.close().catch(() => undefined);

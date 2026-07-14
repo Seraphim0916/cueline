@@ -9,6 +9,7 @@ export interface RunPaths {
   home: string;
   runsDir: string;
   runDir: string;
+  creationMarker: string;
   events: string;
   runtimeLease: string;
   runCancellation: string;
@@ -45,6 +46,7 @@ export function runPaths(home: string, runId: string): RunPaths {
     home: resolvedHome,
     runsDir,
     runDir,
+    creationMarker: path.join(runDir, "created"),
     events: path.join(runDir, "events.jsonl"),
     runtimeLease: path.join(runDir, "runtime.json"),
     runCancellation: path.join(runDir, "cancel.json"),

@@ -23,7 +23,9 @@ CueLine is standalone. Its runtime does not import Omnilane or GPT Relay, and it
 
 ### Browser adapter
 
-`src/browser/codex-iab/` implements a text-only adapter over Codex's IAB client. It claims an existing ChatGPT tab when possible, otherwise opens the requested ChatGPT URL. It fills the composer, emits durable pre-click and post-click checkpoints, sends one turn, waits for a stable completed assistant message, and records the resulting conversation URL. Its recovery path is read-only: it imports an existing response only when the exact last user prompt matches the persisted pending turn and both Pro model checks pass.
+`src/browser/codex-iab/` implements a text-only adapter over Codex's IAB client. It claims an existing ChatGPT tab when possible, otherwise opens the requested ChatGPT URL. It fills the composer, waits for the DOM to settle as either `inline_ready` or `attachment_ready`, emits durable submission checkpoints, makes at most one send attempt, waits for a stable completed assistant message, and records the resulting conversation URL. ChatGPT may automatically convert a long text prompt into an attachment; this is supported without treating an empty composer as proof that nothing is ready.
+
+Recovery is read-only. Inline turns normally require the exact last user prompt. A manually submitted attachment turn may instead be recovered only after an append-only operator confirmation and exact conversation, Pro model, and protocol/run/round/request envelope checks. Response text and the conversation URL are captured in the same DOM evaluation so navigation cannot mix evidence from two pages. Ambiguous clicks remain `possibly_sent`; CueLine never retries or coordinate-clicks after a possibly accepted send.
 
 The adapter can receive an injected browser or resolve `globalThis.iab` / `agent.browsers.get("iab")` from Codex's runtime. Plain Node does not provide these globals.
 
@@ -33,26 +35,28 @@ The adapter can receive an injected browser or resolve `globalThis.iab` / `agent
 
 ### Controller loop
 
-`src/core/controller-loop.ts` owns the run:
+`src/core/controller-loop.ts` advances the run:
 
 1. Persist the intended controller turn.
 2. Persist browser submission checkpoints around the send boundary.
-3. Send an observation through the browser adapter.
-4. Persist the assistant response.
+3. With the built-in browser in caller mode, submit once, capture the exact `/c/...` URL, persist `submitted`, return `awaiting_controller`, and release the runtime lease. CueLine does not create a detached Node daemon because Codex's injected IAB object does not exist there.
+4. A later continuation performs one read-only `observeTurn`. An unfinished Pro response returns `awaiting_controller` immediately without another send; an exact completed response is persisted.
 5. Validate protocol identity and every pre-spawn route, then persist the accepted command.
-6. Execute the command through the local supervisor.
+6. In the default `caller` executor, persist `advise` jobs and return them to the current Codex. In explicit `process` execution, run registered workers through the local supervisor.
 7. Snapshot the derived state.
-8. Repeat until `complete`, `blocked`, or the round limit is reached.
+8. Repeat through ownerless controller/caller pauses until `complete`, `blocked`, or the round limit is reached. Neither terminal action is accepted while any required or optional job remains pending/running.
 
-The default limits are 12 controller rounds and two repair attempts per pending command.
+The default limits are 12 controller rounds and two repair attempts per pending command. An explicit `maxRounds` is persisted with run creation and remains the total budget across split caller continuations; omitting it later reuses the persisted value, while a different value is rejected.
 
-### Routing and runners
+### Execution modes, routing, and runners
 
-`src/router/` chooses an enabled, available candidate before any process starts. `src/runners/` requires an explicitly registered `argv[0]`, uses `spawn` with `shell: false`, and never performs post-spawn fallback. `src/jobs/` coordinates foreground/background execution and persists job status.
+`caller` is the default for both `startCueLineRun` and `runCueLine`. A controller turn first returns `awaiting_controller` after its one durable submission; each continuation observes the same URL/request once and never resends. A controller `dispatch` then creates durable pending jobs and returns `awaiting_caller`; the current Codex performs each exact local inspection and calls `submitCueLineCallerJobResult`, then continues the same run. ChatGPT only issued the text command—it did not use local tools. Caller mode accepts `advise` only; `work` is rejected until CueLine can issue a duplicate-safe execution claim.
+
+`process` is opt-in. `src/router/` chooses an enabled, available candidate before any process starts. `src/runners/` requires an explicitly registered `argv[0]`, uses `spawn` with `shell: false`, and never performs post-spawn fallback. `src/jobs/` coordinates foreground/background execution and persists job status. Process execution defaults to two concurrent jobs globally and two per lane; an accepted batch containing any `work` job is serial. Owned process groups are settled on success, cancellation, and timeout so descendants are not left behind.
 
 ### Durable state
 
-`src/state/` writes a per-run JSONL event log and an atomic materialized snapshot. The event log is authoritative; a snapshot is a replay optimization. Pending controller turns and request-correlated browser failure evidence survive replay. A prompt is retried only when the exact sole pending request is proven `definitely_not_sent`; ambiguous submissions require read-only reconciliation. Job status files are atomically replaced.
+`src/state/` writes a per-run logical event log and an atomic disposable snapshot. The event log is authoritative and is replayed on load. Immutable fsynced sequence segments avoid a shared-host append lock; a durable legacy-prefix fence isolates still-loaded older writers. Runtime-authored events carry owner identity. Exact takeover intent is durable before replacement; the successful atomic lease replacement embeds the retired owner's sequence cutoff, so a failed replacement leaves the old owner authoritative while a committed cutoff keeps later writes visible for audit but unable to change replayed state. The cutoff is mirrored to immutable retirement evidence before the replacement lease is removed. Pending and recoverably abandoned controller turns, composer state, manual confirmation, and request-correlated browser failure evidence survive replay. A prompt is retried only when the exact sole pending request is proven `definitely_not_sent`; ambiguous submissions require read-only reconciliation. Job status files are atomically replaced, but authoritative terminal run events win if a retired owner writes a conflicting file later. Runtime leases serialize continuation and caller result submission; ownerless `controller_response_pending` and `caller_jobs_pending` phases are intentional healthy boundaries.
 
 ## Authority and trust
 
@@ -64,6 +68,7 @@ The controller can request local work, but a request is not equivalent to proces
 - config-derived registered executable allow-list
 - no shell interpolation
 - deterministic job identity and duplicate-dispatch suppression
+- caller-mode `advise`-only enforcement
 - no nested CueLine routing (`CUELINE_DEPTH`)
 - no retry after a worker has started
 
@@ -72,7 +77,7 @@ These gates reduce accidental execution ambiguity; they do not make an allowed w
 ## Data flow
 
 1. The original user request becomes part of every controller observation.
-2. Job outputs and errors are stored locally and included in later observations (individual fields are bounded before browser submission).
+2. Full job stdout and stderr remain in local status. Successful non-empty stdout is preferred for controller evidence, and all controller job evidence shares one 12,000-character budget with an explicit truncation notice.
 3. ChatGPT returns a command; only the control envelope is machine-executed.
 4. On `complete`, CueLine returns `final_delivery_text` to Codex.
 5. On `blocked`, CueLine preserves the controller's reason and optional delivery text.

@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
-import { jobId } from "../../src/core/ids.js";
+import { commandHash, jobId } from "../../src/core/ids.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
 import { JobStatusStore } from "../../src/jobs/status.js";
+import { readEvents } from "../../src/state/event-log.js";
+import { runPaths } from "../../src/state/paths.js";
 import { RunStore } from "../../src/state/store.js";
 
 const cli = fileURLToPath(new URL("../../src/cli/main.js", import.meta.url));
@@ -71,6 +73,21 @@ async function fixture(): Promise<{ config: string; home: string; environment: N
 
 async function seedActiveRun(home: string): Promise<string> {
   const runId = "run_cli_status";
+  const specs = [1, 2, 3, 4].map((index) => ({
+    job_key: `audit_${index}`,
+    lane: "default",
+    mode: "advise" as const,
+    task: `Audit ${index}`,
+    required: true,
+  }));
+  const command = {
+    protocol: "cueline/0.1" as const,
+    run_id: runId,
+    round: 1,
+    request_id: "msg_cli_status",
+    action: "dispatch" as const,
+    jobs: specs,
+  };
   const store = await RunStore.create({
     home,
     runId,
@@ -91,16 +108,13 @@ async function seedActiveRun(home: string): Promise<string> {
     model_evidence_source: "composer_and_response",
   });
   await store.append("controller_command_accepted", {
-    command_hash: "accepted-command",
+    command,
+    command_hash: commandHash(command),
   });
-  for (const [index, status] of ["timed_out", "timed_out", "timed_out", "running"].entries()) {
-    const spec = {
-      job_key: `audit_${index + 1}`,
-      lane: "default",
-      mode: "advise" as const,
-      task: `Audit ${index + 1}`,
-      required: true,
-    };
+  for (const [spec, status] of specs.map((spec, index) => [
+    spec,
+    ["timed_out", "timed_out", "timed_out", "running"][index]!,
+  ] as const)) {
     const id = jobId(runId, spec.job_key, spec);
     await store.append("job_registered", {
       job: {
@@ -174,14 +188,48 @@ test("routing reports the pre-spawn resolved candidate", async () => {
   assert.match(result.stdout, /^default\s+node\s+available$/m);
 });
 
-test("doctor validates config, home, Node, and at least one route", async () => {
+test("doctor reports caller and process readiness separately", async () => {
   const context = await fixture();
   const result = invoke(["doctor"], context.environment);
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`CueLine ${await packageVersion()}`));
   assert.match(result.stdout, /status\s+ok/);
+  assert.match(result.stdout, /caller_ready\s+yes/);
+  assert.match(result.stdout, /caller_lanes\s+1/);
+  assert.match(result.stdout, /process_available_lanes\s+1/);
   assert.match(result.stdout, new RegExp(context.home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("doctor keeps caller ready when no process executable is available", async () => {
+  const context = await fixture();
+  await writeFile(
+    context.config,
+    `${JSON.stringify({
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [
+            {
+              id: "missing-process",
+              argv: ["definitely-missing-cueline-runner"],
+              task_input: "stdin",
+            },
+          ],
+        },
+      },
+    })}\n`,
+    "utf8",
+  );
+
+  const result = invoke(["doctor"], context.environment);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /status\s+ok/);
+  assert.match(result.stdout, /caller_ready\s+yes/);
+  assert.match(result.stdout, /caller_lanes\s+1/);
+  assert.match(result.stdout, /process_available_lanes\s+0/);
 });
 
 test("jobs is read-only and reports an empty store", async () => {
@@ -227,9 +275,9 @@ test("run status refuses to call a legacy running run active without ownership e
     pendingTurns: 0,
     acceptedCommands: 1,
     responseAccepted: true,
-    lastAcceptedAction: null,
-    lastAcceptedRequestId: null,
-    lastAcceptedJobKeys: [],
+    lastAcceptedAction: "dispatch",
+    lastAcceptedRequestId: "msg_cli_status",
+    lastAcceptedJobKeys: ["audit_1", "audit_2", "audit_3", "audit_4"],
   });
   assert.equal(status.jobs.total, 4);
   assert.equal(status.jobs.counts.timed_out, 3);
@@ -245,6 +293,195 @@ test("run status refuses to call a legacy running run active without ownership e
   assert.match(humanResult.stdout, /controller\s+response_accepted/);
   assert.match(humanResult.stdout, /jobs\s+total=4\s+.*running=0\s+.*timed_out=3\s+.*orphaned=1/);
   assert.match(humanResult.stdout, /next\s+inspect_runtime/);
+});
+
+test("run reconcile records operator-confirmed manual submission without resending", async () => {
+  const context = await fixture();
+  const runId = "run_cli_manual_reconcile";
+  const requestId = "msg_cli_manual_reconcile";
+  const conversationUrl = "https://chatgpt.com/c/cli-manual-reconcile";
+  const store = await RunStore.create({
+    home: context.home,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Recover manual attachment" });
+  await store.append("controller_turn_requested", {
+    round: 2,
+    request_id: requestId,
+    prompt: "large attachment prompt",
+    prompt_hash: "large-prompt-hash",
+  });
+  await store.append("controller_conversation_bound", {
+    request_id: requestId,
+    conversation_url: conversationUrl,
+  });
+  await store.append("controller_turn_abandoned", {
+    round: 2,
+    request_id: requestId,
+    reason: "legacy_abandon",
+  });
+  await store.append("run_failed", { code: "LEGACY_RECONCILIATION_FAILURE" });
+  await store.snapshot();
+
+  const result = invoke(
+    [
+      "run",
+      "reconcile",
+      runId,
+      "--request-id",
+      requestId,
+      "--manual-send-confirmed",
+      "--json",
+    ],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    runId,
+    requestId,
+    conversationUrl,
+    outcome: "confirmed",
+  });
+  const events = await readEvents(runPaths(context.home, runId).events);
+  assert.equal(
+    events.filter((event) => event.type === "controller_turn_manual_submission_confirmed")
+      .length,
+    1,
+  );
+
+  const repeated = invoke(
+    [
+      "run",
+      "reconcile",
+      runId,
+      "--request-id",
+      requestId,
+      "--manual-send-confirmed",
+      "--json",
+    ],
+    context.environment,
+  );
+  assert.equal(repeated.status, 0, repeated.stderr);
+  assert.equal(JSON.parse(repeated.stdout).outcome, "already_confirmed");
+  assert.equal(
+    (await readEvents(runPaths(context.home, runId).events)).filter(
+      (event) => event.type === "controller_turn_manual_submission_confirmed",
+    ).length,
+    1,
+  );
+});
+
+test("run reconcile-runtime settles a dead ownerless advise job", async () => {
+  const context = await fixture();
+  const runId = "run_cli_runtime_reconcile";
+  const id = await seedOneRunningJob(context.home, runId);
+  await new JobStatusStore(context.home).write({
+    jobId: id,
+    runId,
+    jobKey: "legacy_job",
+    lane: "default",
+    mode: "advise",
+    pid: 2_147_483_647,
+    execution: "foreground",
+    status: "running",
+    startedAt: "2026-07-15T00:00:00.000Z",
+  });
+
+  const result = invoke(["run", "reconcile-runtime", runId, "--json"], context.environment);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    runId,
+    outcome: "reconciled",
+    affectedJobs: 1,
+    survivingJobs: [],
+  });
+  const status = JSON.parse(
+    invoke(["run", "status", runId, "--json"], context.environment).stdout,
+  ) as { status: string; jobs: { counts: Record<string, number> } };
+  assert.equal(status.status, "failed");
+  assert.equal(status.jobs.counts.failed, 1);
+  assert.equal(status.jobs.counts.orphaned, 0);
+});
+
+test("run takeover retires one exact stale owner and reports the next action", async () => {
+  const context = await fixture();
+  const runId = "run_cli_stale_takeover";
+  const store = await RunStore.create({
+    home: context.home,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Resume stale CLI run", executor: "caller" });
+  const heartbeatAt = "2000-01-01T00:00:00.000Z";
+  await writeFile(
+    runPaths(context.home, runId).runtimeLease,
+    `${JSON.stringify({
+      protocol: "cueline/runtime-lease/0.1",
+      run_id: runId,
+      owner_id: "cli-stale-owner",
+      pid: String(process.pid),
+      state: "active",
+      claimed_at: heartbeatAt,
+      heartbeat_at: heartbeatAt,
+    })}\n`,
+    "utf8",
+  );
+
+  const result = invoke(["run", "takeover", runId, "--json"], context.environment);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    runId,
+    outcome: "taken_over",
+    next: "continue",
+    previousOwnerId: "cli-stale-owner",
+  });
+  const events = await readEvents(runPaths(context.home, runId).events);
+  assert.deepEqual(
+    events
+      .filter((event) => event.type.startsWith("runtime_stale_owner_takeover_"))
+      .map((event) => event.type),
+    [
+      "runtime_stale_owner_takeover_requested",
+      "runtime_stale_owner_takeover_confirmed",
+    ],
+  );
+});
+
+test("run takeover refuses a fresh active owner", async () => {
+  const context = await fixture();
+  const runId = "run_cli_active_takeover_refused";
+  const store = await RunStore.create({
+    home: context.home,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Keep active CLI owner", executor: "caller" });
+  const heartbeatAt = new Date().toISOString();
+  await writeFile(
+    runPaths(context.home, runId).runtimeLease,
+    `${JSON.stringify({
+      protocol: "cueline/runtime-lease/0.1",
+      run_id: runId,
+      owner_id: "cli-active-owner",
+      pid: String(process.pid),
+      state: "active",
+      claimed_at: heartbeatAt,
+      heartbeat_at: heartbeatAt,
+    })}\n`,
+    "utf8",
+  );
+
+  const result = invoke(["run", "takeover", runId, "--json"], context.environment);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RUNTIME_TAKEOVER_ACTIVE_REFUSED/);
 });
 
 test("run cancel safely closes an ownerless legacy run and marks running work ambiguous", async () => {
@@ -361,6 +598,7 @@ test("jobs reconstructs legacy run metadata from the authoritative event log", a
       jobKey: "legacy_job",
       lane: "default",
       mode: "advise",
+      task: "Inspect",
       jobId: id,
       execution: "foreground",
       status: "running",
@@ -368,6 +606,125 @@ test("jobs reconstructs legacy run metadata from the authoritative event log", a
       observedStatus: "orphaned",
     },
   ]);
+});
+
+test("jobs exposes caller-pending work even before any result status file exists", async () => {
+  const context = await fixture();
+  const runId = "run_caller_pending_observable";
+  const store = await RunStore.create({
+    home: context.home,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Caller must see the task", executor: "caller" });
+  const spec = {
+    job_key: "caller_audit",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Inspect the exact caller task",
+    required: true,
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  await store.append("job_registered", {
+    job: {
+      jobId: id,
+      jobKey: spec.job_key,
+      required: true,
+      spec,
+      status: "pending",
+      output: null,
+      error: null,
+    },
+  });
+  await store.snapshot();
+
+  const result = invoke(["jobs", "--json"], context.environment);
+  assert.equal(result.status, 0, result.stderr);
+  const jobs = JSON.parse(result.stdout) as Array<Record<string, unknown>>;
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(jobs[0], {
+    jobId: id,
+    runId,
+    jobKey: "caller_audit",
+    lane: "default",
+    mode: "advise",
+    task: "Inspect the exact caller task",
+    execution: "foreground",
+    status: "pending",
+    startedAt: jobs[0]?.startedAt,
+    observedStatus: "pending",
+  });
+});
+
+test("jobs keeps authoritative terminal run evidence when a retired owner writes late status", async () => {
+  const context = await fixture();
+  const runId = "run_late_job_status_conflict";
+  const id = "job_late_job_status_conflict";
+  const store = await RunStore.create({
+    home: context.home,
+    runId,
+    initialState: initialRunState(runId, "", "process"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Keep authoritative failure", executor: "process" });
+  await store.append("job_registered", {
+    job: {
+      jobId: id,
+      jobKey: "late_writer",
+      required: true,
+      spec: {
+        job_key: "late_writer",
+        lane: "default",
+        mode: "advise",
+        task: "Do not trust a retired owner",
+      },
+      status: "running",
+      output: null,
+      error: null,
+    },
+  });
+  await store.append("job_status", {
+    job_id: id,
+    status: "failed",
+    error: "OWNER_LOST",
+  });
+  await store.snapshot();
+  await new JobStatusStore(context.home).write({
+    jobId: id,
+    runId,
+    jobKey: "late_writer",
+    lane: "default",
+    mode: "advise",
+    execution: "foreground",
+    status: "succeeded",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    result: {
+      status: "succeeded",
+      stdout: "LATE_OLD_OWNER",
+      stderr: "",
+      output: "LATE_OLD_OWNER",
+      exitCode: 0,
+      timedOut: false,
+      cancelled: false,
+      ambiguousSideEffects: false,
+      emptyOutput: false,
+      retryable: false,
+      startedAt: "2026-07-15T00:00:00.000Z",
+      finishedAt: "2026-07-15T00:01:00.000Z",
+    },
+  });
+
+  const result = invoke(["jobs", "--json"], context.environment);
+  assert.equal(result.status, 0, result.stderr);
+  const jobs = JSON.parse(result.stdout) as Array<Record<string, unknown>>;
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.status, "failed");
+  assert.equal(jobs[0]?.observedStatus, "conflict");
+  assert.equal(jobs[0]?.persistedStatus, "succeeded");
+  assert.equal(jobs[0]?.result, undefined);
+  assert.doesNotMatch(result.stdout, /LATE_OLD_OWNER/);
 });
 
 test("install and uninstall manage the Codex skill link idempotently", async () => {
@@ -417,6 +774,9 @@ test("help lists every command, the environment, and the exit codes", async () =
       "routing",
       "jobs",
       "run status",
+      "run reconcile",
+      "run takeover",
+      "run reconcile-runtime",
       "run cancel",
       "run stop",
       "job cancel",
@@ -429,6 +789,21 @@ test("help lists every command, the environment, and the exit codes", async () =
     assert.match(result.stdout, /CUELINE_HOME/);
     assert.match(result.stdout, /CUELINE_CONFIG/);
     assert.match(result.stdout, /exit codes:/);
+    for (const syntax of [
+      "jobs [--json]",
+      "run status <run-id> [--json]",
+      "run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--json]",
+      "run takeover <run-id> [--json]",
+      "run reconcile-runtime <run-id> [--json]",
+      "run cancel <run-id> [--json]",
+      "run stop <run-id> [--json]",
+      "job cancel <run-id> <job-id> [--json]",
+    ]) {
+      assert.ok(result.stdout.includes(syntax), `missing CLI syntax: ${syntax}`);
+    }
+    assert.match(result.stdout, /read-only/i);
+    assert.match(result.stdout, /append-only|durable state/i);
+    assert.doesNotMatch(result.stdout, /commands only diagnose/i);
   }
 });
 
@@ -453,4 +828,17 @@ test("an unrecognized command explains itself and exits with a usage code", asyn
   assert.match(result.stderr, /unrecognized command: lint/);
   assert.match(result.stderr, /usage: cueline/);
   assert.match(result.stderr, /cueline help/);
+});
+
+test("an incomplete state-changing command exits with the documented usage code", async () => {
+  const context = await fixture();
+  const result = invoke(
+    ["run", "reconcile", "run_missing_confirmation", "--request-id", "msg_pending"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /CLI_ARGUMENTS_INVALID/);
+  assert.match(result.stderr, /--manual-send-confirmed/);
 });

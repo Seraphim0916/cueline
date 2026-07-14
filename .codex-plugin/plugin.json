@@ -1,7 +1,7 @@
 {
   "name": "cueline",
-  "version": "0.1.3",
-  "description": "Use a ChatGPT web conversation as the controller for durable local agent work.",
+  "version": "0.1.4",
+  "description": "Use a ChatGPT web conversation as the text controller for durable local advice executed by the current Codex.",
   "author": {
     "name": "CueLine contributors"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "CueLine",
     "shortDescription": "Let ChatGPT Pro direct durable local agent runs.",
-    "longDescription": "CueLine lets a ChatGPT web conversation plan, dispatch, inspect, and complete local agent work while Codex validates commands, executes registered workers, and persists the run.",
+    "longDescription": "CueLine lets a ChatGPT web conversation issue validated text commands while the current Codex executes caller-mode advice or an explicitly selected process executor runs registered workers, with durable recovery evidence.",
     "developerName": "CueLine contributors",
     "category": "Productivity",
     "capabilities": [],

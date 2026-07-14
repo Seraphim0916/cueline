@@ -11,7 +11,20 @@ export class FakeBrowserAdapter implements BrowserAdapter {
   constructor(
     turns: Array<ControllerTurn | string | ((input: BrowserTurnInput) => ControllerTurn)>,
   ) {
-    this.#turns = turns.map((turn) => (typeof turn === "string" ? { text: turn } : turn));
+    this.#turns = turns.map((turn) =>
+      typeof turn === "string"
+        ? {
+            text: turn,
+            conversationUrl: "https://chatgpt.com/c/fake-controller",
+            model: {
+              provider: "chatgpt",
+              selectedLabel: "Pro",
+              responseModelSlug: "gpt-5-6-pro",
+              source: "composer_and_response",
+            },
+          }
+        : turn,
+    );
   }
 
   async sendTurn(input: BrowserTurnInput): Promise<ControllerTurn> {

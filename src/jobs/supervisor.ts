@@ -118,7 +118,10 @@ export class JobSupervisor {
     } catch (error) {
       terminal = {
         ...running.current,
-        status: "failed",
+        status:
+          running.current.pid !== undefined && spec.mode === "work"
+            ? "ambiguous"
+            : "failed",
         finishedAt: new Date().toISOString(),
         error: errorText(error),
       };

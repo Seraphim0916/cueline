@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 590" width="1000" height="590" role="img" aria-label="CueLine の 1 回の実行をプロンプトブックとして読む：マシンが観測を送り、コントローラーがコマンドを 1 つ出し、登録済みの runner が実行し、complete が出るまで続く。">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 612" width="1000" height="612" role="img" aria-label="CueLine の 1 回の実行をプロンプトブックとして読む：マシンが観測を送り、コントローラーがコマンドを 1 つ出し、登録済みの runner が実行し、complete が出るまで続く。">
   <title>CueLine の実行を、プロンプトブックとして読む</title>
   <style>
     text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Hiragino Sans", "Noto Sans CJK JP", "Yu Gothic", monospace }
@@ -28,8 +28,8 @@
 
   <text x="505" y="44" class="hd" text-anchor="end">ChatGPT ウェブ会話</text>
   <text x="505" y="64" class="sub" text-anchor="end">コントローラー — 計画し、指示し、判断する</text>
-  <text x="555" y="44" class="hd">あなたのマシン</text>
-  <text x="555" y="64" class="sub">CueLine — 検証・ルーティング・実行・記録</text>
+  <text x="555" y="44" class="hd">現在の Codex + CueLine</text>
+  <text x="555" y="64" class="sub">検証・永続化・引き渡し・記録</text>
 
   <path d="M40 84H505" class="rule"/>
   <path d="M555 84H960" class="rule"/>
@@ -45,23 +45,23 @@
   <path d="M545 162H565" class="tick"/>
   <text x="575" y="166" class="note">プロセス起動の前にルートが決まる</text>
 
-  <text x="555" y="200" class="note">codex exec（読み取り専用）→ 成功 · 出力を保存</text>
+  <text x="555" y="200" class="note">現在の Codex（caller advise）→ 結果提出済み</text>
 
   <text x="40" y="264" class="rnd">ラウンド 2</text>
   <path d="M505 260H524" class="tick"/>
-  <text x="555" y="264" class="obs">observation · 証拠をそのまま</text>
+  <text x="555" y="264" class="obs">observation · 有界な証拠 · stdout 優先</text>
   <path d="M524 256 517 260 524 264z" class="cue"/>
 
   <path d="M536 296 545 300 536 304z" class="cue"/>
-  <text x="505" y="304" class="say" text-anchor="end">dispatch · patch · mode work</text>
+  <text x="505" y="304" class="say" text-anchor="end">dispatch · 追加確認 · mode advise</text>
   <path d="M545 300H565" class="tick"/>
-  <text x="575" y="304" class="note">argv[0] は事前の許可が必要</text>
+  <text x="575" y="304" class="note">永続 caller 引き渡し</text>
 
-  <text x="555" y="338" class="note">codex exec（workspace-write）→ 成功</text>
+  <text x="555" y="338" class="note">現在の Codex → 2 件目の結果提出済み</text>
 
   <text x="40" y="402" class="rnd">ラウンド 3</text>
   <path d="M505 398H524" class="tick"/>
-  <text x="555" y="402" class="obs">observation · 更新された証拠</text>
+  <text x="555" y="402" class="obs">observation · 更新済みの有界な証拠</text>
   <path d="M524 394 517 398 524 402z" class="cue"/>
 
   <path d="M536 434 545 438 536 442z" class="cue"/>
@@ -73,5 +73,6 @@
 
   <path d="M40 520H960" class="rule"/>
   <text x="40" y="546" class="foot">アクションは 5 つだけ — dispatch · wait · inspect · complete · blocked。</text>
-  <text x="40" y="568" class="foot">エンベロープの外は実行されない。起動後のワーカーは再試行しない。</text>
+  <text x="40" y="568" class="foot">1 回送信 → awaiting_controller → 1 回の読み取り観測。再送しません。</text>
+  <text x="40" y="590" class="foot">Caller は advise のみ。process は明示的で、暗黙の再試行はしません。</text>
 </svg>

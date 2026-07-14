@@ -1,6 +1,12 @@
 # Runner contract
 
-## Routing happens before spawn
+## Caller execution is the default
+
+`startCueLineRun` and `runCueLine` default to `executor: "caller"`. With the built-in browser, one durable submission returns `awaiting_controller`; later continuations observe the same URL/request once without resending. A validated dispatch then persists pending jobs and returns them to the current Codex; it does not spawn `codex exec`. The caller executes each exact `advise` task with its own permitted local tools, submits one terminal result through `submitCueLineCallerJobResult`, and continues the same run. Duplicate terminal submissions return `already_terminal`.
+
+The ChatGPT web controller only emits a text command. It does not inspect the repository, call tools, or run the job itself. Caller execution rejects `work` with `CALLER_WORK_REQUIRES_CLAIM`; use caller `advise`, or explicitly opt into the process executor after the user has authorized local mutation.
+
+## Process routing happens before spawn
 
 A controller job names a lane, not arbitrary shell text. CueLine loads an enabled lane and examines candidates in configured order. Disabled or unavailable candidates are skipped before execution. The first available candidate becomes the resolved route.
 
@@ -35,10 +41,12 @@ interface RunnerSpec {
 - `CUELINE_DEPTH=1` is injected into the child.
 - A pre-existing `CUELINE_DEPTH` in the process or job environment rejects nested routing.
 - Standard input is closed unless the route explicitly selects stdin task input; stdout and stderr are captured as UTF-8 text.
-- The effective output is stdout, stderr, or both in that order.
+- Full stdout and stderr are persisted separately. Successful non-empty stdout is the preferred controller evidence; combined output remains diagnostic status only.
 - Exit code 0 is `succeeded`; a non-zero exit or spawn error is `failed`.
 - At timeout CueLine sends `SIGTERM`, then schedules `SIGKILL` after 250 ms if needed; the result is `timed_out`.
 - Cancellation uses the same owned-process termination path. `advise` becomes `cancelled`; started `work` becomes `ambiguous`.
+- The owned POSIX process group is checked and settled on normal leader exit, cancellation, and timeout so surviving descendants cannot make a dead leader look terminal.
+- Any non-normal owned process-loop exit, including controller repair or round-limit exhaustion, cancels and settles every active job before releasing runtime ownership. `advise` becomes `cancelled` when termination is proven; started `work` remains `ambiguous` when side effects cannot be disproved.
 - Empty output is explicitly recorded instead of being replaced with invented content.
 - Results are never marked retryable by the process runner.
 
@@ -50,7 +58,13 @@ A foreground `start` waits for the single execution and persists its terminal st
 
 `cancel(jobId)` and `cancelAll()` operate only on executions owned by the current supervisor. Cross-session CLI cancellation is a durable request consumed by that owner. CueLine does not kill an unverified process merely because a stale status file contains a PID.
 
-The controller loop derives deterministic job IDs from the run, `job_key`, and job specification. A duplicate dispatch already present in run state is recorded as a notice and skipped. This is the run-level at-most-once gate; it is not a distributed transaction across hosts.
+The controller loop derives deterministic job IDs from the run, `job_key`, and job specification. A duplicate dispatch already present in run state is recorded as a notice and skipped. Caller result submission and continuation are runtime-lease serialized, so the first terminal evidence committed for a job wins and later submissions return `already_terminal`.
+
+That lease is **not** an execution claim. Two sessions can both perform the same caller `advise` task before either one submits a result. Coordinate a single caller executor when resuming a handoff. This is why caller mode is restricted to non-mutating `advise`; `work` is rejected until CueLine has a duplicate-safe execution claim.
+
+## Process concurrency
+
+Explicit process execution defaults to at most two active jobs globally and two active jobs per lane. `maxConcurrency` and `laneConcurrency` may reduce or increase those limits. An all-`advise` batch uses the bounded scheduler; a batch containing any `work` job is always serial in command order.
 
 ## Availability
 
@@ -62,6 +76,6 @@ Use `advise` for analysis that should not mutate the target. Use `work` only whe
 
 The controller chooses the intent; Codex and local runtime policy remain responsible for whether that intent is authorized and executable.
 
-## Bundled default
+## Bundled process route
 
-The `default` lane contains one candidate, `codex-default`. It runs `codex exec` without a shell, sends the task over stdin, uses the requested work directory, and maps `advise` to `read-only` and `work` to `workspace-write`. The default route is unavailable when the `codex` executable is not on `PATH`; CueLine reports that fact instead of selecting an unrelated worker.
+When `executor: "process"` is selected, the `default` lane contains one candidate, `codex-default`. It runs `codex exec` without a shell, sends the task over stdin, uses the requested work directory, and maps `advise` to `read-only` and `work` to `workspace-write`. The route is unavailable when the `codex` executable is not on `PATH`; CueLine reports that fact instead of selecting an unrelated worker.

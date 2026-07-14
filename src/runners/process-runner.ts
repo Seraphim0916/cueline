@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 
 import { CueLineError } from "../core/errors.js";
-import { runtimeEnvironment } from "../core/runtime.js";
+import { runtimeEnvironment, runtimePlatform } from "../core/runtime.js";
 import type {
   JobResult,
   RunnerAdapter,
@@ -26,6 +26,47 @@ function combineOutput(stdout: string, stderr: string): string {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function nativeProcess(): NodeJS.Process | undefined {
+  return typeof process === "undefined" ? undefined : process;
+}
+
+const SUPPORTS_PROCESS_GROUPS =
+  runtimePlatform() !== "win32" && typeof nativeProcess()?.kill === "function";
+
+function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (SUPPORTS_PROCESS_GROUPS && child.pid !== undefined) {
+    try {
+      nativeProcess()!.kill(-child.pid, signal);
+      return;
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ESRCH"
+      ) {
+        return;
+      }
+    }
+  }
+  child.kill(signal);
+}
+
+function processTreeIsAlive(child: ChildProcess | undefined): boolean {
+  if (!SUPPORTS_PROCESS_GROUPS || child?.pid === undefined) return false;
+  try {
+    nativeProcess()!.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code !== "ESRCH"
+    );
+  }
 }
 
 /**
@@ -95,6 +136,7 @@ export class ProcessRunner implements RunnerAdapter {
       let settled = false;
       let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
       let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+      let child: ChildProcess | undefined;
 
       const finish = (status: JobResult["status"], exitCode: number | null): void => {
         if (settled) {
@@ -106,6 +148,13 @@ export class ProcessRunner implements RunnerAdapter {
         }
         if (forceKillTimer !== undefined) {
           clearTimeout(forceKillTimer);
+          forceKillTimer = undefined;
+          if (child !== undefined && processTreeIsAlive(child)) {
+            terminateProcessTree(child, "SIGKILL");
+          }
+        }
+        if (child !== undefined && processTreeIsAlive(child)) {
+          terminateProcessTree(child, "SIGKILL");
         }
         spec.signal?.removeEventListener("abort", cancel);
         const output = combineOutput(stdout, stderr);
@@ -125,17 +174,24 @@ export class ProcessRunner implements RunnerAdapter {
         });
       };
 
-      let child: ChildProcess;
+      const terminate = (): void => {
+        if (child === undefined) return;
+        terminateProcessTree(child, "SIGTERM");
+        forceKillTimer ??= setTimeout(() => {
+          forceKillTimer = undefined;
+          if (child !== undefined) terminateProcessTree(child, "SIGKILL");
+        }, 250);
+      };
       const cancel = (): void => {
         if (settled || cancelled) return;
         cancelled = true;
-        child.kill("SIGTERM");
-        forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 250);
+        terminate();
       };
       cancelSpawned = cancel;
       try {
         child = spawn(executable, [...spec.argv.slice(1)], {
           cwd: spec.cwd,
+          detached: SUPPORTS_PROCESS_GROUPS,
           env: environment,
           shell: false,
           stdio: [spec.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
@@ -151,9 +207,10 @@ export class ProcessRunner implements RunnerAdapter {
 
       timeoutTimer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
-        forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 250);
+        terminate();
       }, spec.timeoutMs);
+
+      if (spec.signal?.aborted) cancel();
 
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string | Buffer) => {

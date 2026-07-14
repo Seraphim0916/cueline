@@ -35,7 +35,7 @@ export interface CancellationWatcherOptions {
   runId: string;
   intervalMs?: number;
   onRun(request: RunCancellationRequest): void | Promise<void>;
-  onJob(request: JobCancellationRequest): void | Promise<void>;
+  onJob(request: JobCancellationRequest): boolean | void | Promise<boolean | void>;
   onError(error: unknown): void;
 }
 
@@ -44,6 +44,15 @@ function assertJobId(jobId: string): void {
     throw new CueLineError("JOB_ID_INVALID", "job id contains unsupported path characters", {
       details: { jobId },
     });
+  }
+}
+
+function assertReason(reason: string): void {
+  if (reason.trim() === "") {
+    throw new CueLineError(
+      "CANCELLATION_REASON_INVALID",
+      "cancellation reason must contain at least one non-whitespace character",
+    );
   }
 }
 
@@ -96,6 +105,7 @@ export async function requestRunCancellation(
   reason: string,
   now: () => Date = () => new Date(),
 ): Promise<RunCancellationRequest> {
+  assertReason(reason);
   const request: RunCancellationRequest = {
     protocol: CANCELLATION_PROTOCOL,
     run_id: runId,
@@ -115,6 +125,7 @@ export async function requestJobCancellation(
   now: () => Date = () => new Date(),
 ): Promise<JobCancellationRequest> {
   assertJobId(jobId);
+  assertReason(reason);
   const request: JobCancellationRequest = {
     protocol: CANCELLATION_PROTOCOL,
     run_id: runId,
@@ -228,8 +239,8 @@ export class CancellationWatcher {
     }
     for (const request of await readJobCancellations(this.options.home, this.options.runId)) {
       if (this.#seenJobs.has(request.job_id)) continue;
-      this.#seenJobs.add(request.job_id);
-      await this.options.onJob(request);
+      const handled = await this.options.onJob(request);
+      if (handled !== false) this.#seenJobs.add(request.job_id);
     }
   }
 }

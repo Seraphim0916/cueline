@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { readdirSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,19 +15,27 @@ import type {
 import {
   cancelCueLineJob,
   cancelCueLineRun,
+  confirmManualControllerSubmission,
   continueCueLineRun,
   loadCueLineRunStatus,
+  reconcileCueLineRuntime,
+  runCueLine,
   startCueLineRun,
+  submitCueLineCallerJobResult,
 } from "../../src/api.js";
 import { CueLineError } from "../../src/core/errors.js";
 import { jobId } from "../../src/core/ids.js";
 import { continueControllerLoop, runControllerLoop } from "../../src/core/controller-loop.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
-import type { ControllerJobSpec } from "../../src/protocol/types.js";
-import type { JobStatus } from "../../src/jobs/status.js";
+import { CUELINE_PROTOCOL, type ControllerJobSpec } from "../../src/protocol/types.js";
+import { JobStatusStore, type JobStatus } from "../../src/jobs/status.js";
 import type { RunnerSpec } from "../../src/runners/runner-adapter.js";
-import { readEvents } from "../../src/state/event-log.js";
-import { requestRunCancellation } from "../../src/state/cancellation.js";
+import { createEventLog, readEvents } from "../../src/state/event-log.js";
+import {
+  CancellationWatcher,
+  requestJobCancellation,
+  requestRunCancellation,
+} from "../../src/state/cancellation.js";
 import { runPaths } from "../../src/state/paths.js";
 import { RuntimeLease } from "../../src/state/runtime-lease.js";
 import { RunStore } from "../../src/state/store.js";
@@ -34,6 +44,7 @@ import { FakeJobSupervisor } from "../fakes/fake-runner.js";
 
 function reply(
   command: (input: BrowserTurnInput) => Record<string, unknown>,
+  conversationUrl = "https://chatgpt.com/c/cueline-test",
 ): (input: BrowserTurnInput) => ControllerTurn {
   return (input) => ({
     text: `<CueLineControl>${JSON.stringify({
@@ -43,7 +54,7 @@ function reply(
       request_id: input.requestId,
       ...command(input),
     })}</CueLineControl>`,
-    conversationUrl: "https://chatgpt.com/c/cueline-test",
+    conversationUrl,
     model: {
       provider: "chatgpt",
       selectedLabel: "Pro",
@@ -108,7 +119,7 @@ function deferred<Value>(): {
 
 async function observeCondition(
   predicate: () => boolean,
-  timeoutMs = 1_000,
+  timeoutMs = 5_000,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -120,7 +131,7 @@ async function observeCondition(
 
 async function observeAsyncCondition(
   predicate: () => Promise<boolean>,
-  timeoutMs = 2_000,
+  timeoutMs = 5_000,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (!(await predicate())) {
@@ -304,6 +315,1142 @@ test("a dispatch containing work jobs preserves serial execution", async () => {
   assert.equal(result.status, "complete");
 });
 
+test("background work keeps its concurrency slot until the persisted job is terminal", async () => {
+  const runId = "run_serial_background_work_dispatch";
+  const specs = ["first", "second"].map((key) => ({
+    job_key: `${key}_background_work`,
+    lane: "default",
+    mode: "work" as const,
+    task: `Change ${key} in background`,
+    background: true,
+  }));
+  const ids = specs.map((spec) => jobId(runId, spec.job_key, spec));
+  const completions = new Map(ids.map((id) => [id, deferred<JobStatus>()]));
+  const starts: string[] = [];
+  const waits: string[] = [];
+  const supervisor = {
+    async start(spec: RunnerSpec): Promise<JobStatus> {
+      starts.push(spec.jobId);
+      return {
+        jobId: spec.jobId,
+        execution: "background",
+        status: "running",
+        startedAt: "2026-07-14T00:00:00.000Z",
+      };
+    },
+    async waitForCompletion(id: string): Promise<JobStatus> {
+      waits.push(id);
+      const completion = completions.get(id);
+      if (!completion) throw new Error(`UNEXPECTED_WAIT: ${id}`);
+      return completion.promise;
+    },
+    async inspect(id: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_INSPECT: ${id}`);
+    },
+  };
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: specs })),
+    reply(() => ({ action: "complete", final_delivery_text: "BACKGROUND_SERIAL_OK" })),
+  ]);
+
+  const running = runControllerLoop({
+    request: "Apply ordered background changes",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+    executor: "process",
+  });
+  assert.equal(await observeCondition(() => starts.length === 1 && waits.length === 1), true);
+  assert.deepEqual(starts, [ids[0]]);
+  completions.get(ids[0]!)?.resolve(terminalStatus(ids[0]!));
+  assert.equal(await observeCondition(() => starts.length === 2 && waits.length === 2), true);
+  completions.get(ids[1]!)?.resolve(terminalStatus(ids[1]!));
+
+  const result = await running;
+  assert.equal(result.status, "complete");
+  assert.deepEqual(starts, ids);
+});
+
+test("start defaults to caller execution, returns pending jobs, and never spawns a runner", async () => {
+  const runId = "run_caller_executor";
+  const stateHome = await home();
+  const sentinel = path.join(stateHome, "runner-must-not-spawn");
+  const routingConfig = {
+    version: 1 as const,
+    lanes: {
+      default: {
+        enabled: true,
+        candidates: [
+          {
+            id: "node",
+            argv: [
+              process.execPath,
+              "-e",
+              `require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'spawned')`,
+            ],
+            task_input: "stdin" as const,
+          },
+        ],
+      },
+    },
+  };
+  const specs = [
+    {
+      job_key: "caller_audit_one",
+      lane: "default",
+      mode: "advise" as const,
+      task: "Inspect one",
+    },
+    {
+      job_key: "caller_audit_two",
+      lane: "default",
+      mode: "advise" as const,
+      task: "Inspect two",
+    },
+  ];
+  const startBrowser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: specs })),
+  ]);
+
+  const created = await startCueLineRun({
+    request: "Let the current caller inspect locally",
+    runId,
+    home: stateHome,
+  });
+  assert.equal(created.status, "ready");
+  assert.equal(startBrowser.calls.length, 0);
+  const createdStatus = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(createdStatus.phase, "starting");
+  assert.equal(createdStatus.safeNextAction, "continue");
+
+  const paused = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser: startBrowser,
+    routingConfig,
+  });
+
+  assert.equal(paused.status, "awaiting_caller");
+  assert.equal(paused.state.executor, "caller");
+  assert.deepEqual(paused.pendingJobs?.map((job) => job.jobKey), [
+    "caller_audit_one",
+    "caller_audit_two",
+  ]);
+  await assert.rejects(access(sentinel), { code: "ENOENT" });
+  const pausedStatus = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(pausedStatus.phase, "caller_jobs_pending");
+  assert.equal(pausedStatus.safeNextAction, "execute_caller_jobs");
+  assert.equal(pausedStatus.runtime.ownership, "missing");
+  assert.equal(pausedStatus.jobs.counts.pending, 2);
+  assert.equal(pausedStatus.jobs.counts.orphaned, 0);
+
+  for (const [index, job] of (paused.pendingJobs ?? []).entries()) {
+    const submitted = await submitCueLineCallerJobResult(
+      runId,
+      job.jobId,
+      {
+        status: "succeeded",
+        stdout: `CALLER_EVIDENCE_${index + 1}`,
+        stderr: "diagnostic-only",
+      },
+      { home: stateHome },
+    );
+    assert.equal(submitted.outcome, "submitted");
+  }
+  const duplicate = await submitCueLineCallerJobResult(
+    runId,
+    paused.pendingJobs![0]!.jobId,
+    { status: "succeeded", stdout: "MUST_NOT_DUPLICATE" },
+    { home: stateHome },
+  );
+  assert.equal(duplicate.outcome, "already_terminal");
+
+  const finishBrowser = new FakeBrowserAdapter([
+    reply((input) => {
+      assert.match(input.prompt, /CALLER_EVIDENCE_1/);
+      assert.match(input.prompt, /CALLER_EVIDENCE_2/);
+      assert.doesNotMatch(input.prompt, /diagnostic-only/);
+      return { action: "complete", final_delivery_text: "CALLER_COMPLETE" };
+    }),
+  ]);
+  const completed = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser: finishBrowser,
+    routingConfig,
+  });
+
+  assert.equal(completed.status, "complete");
+  assert.equal(completed.finalDeliveryText, "CALLER_COMPLETE");
+  await assert.rejects(access(sentinel), { code: "ENOENT" });
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.filter((event) => event.type === "caller_jobs_ready").length, 1);
+  assert.equal(events.filter((event) => event.type === "caller_job_result_submitted").length, 2);
+  assert.equal(events.filter((event) => event.type === "job_registered").length, 2);
+});
+
+test("caller mode splits submission from Pro observation across outer calls", async () => {
+  const runId = "run_detached_controller_wait";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/detached-controller-wait";
+  const submissions: BrowserTurnInput[] = [];
+  const observations: BrowserTurnInput[] = [];
+  const observationsByRound = new Map<number, number>();
+  let recoverCalls = 0;
+  let sendCalls = 0;
+  const spec = {
+    job_key: "caller_detached_audit",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Inspect after Pro finishes",
+  };
+  const browser: BrowserAdapter = {
+    async submitTurn(input, hooks) {
+      submissions.push(structuredClone(input));
+      const checkpoint = {
+        composerPromptState: "inline_ready" as const,
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: input.round - 1,
+      };
+      await hooks?.onCheckpoint?.({ ...checkpoint, submissionState: "submitting" });
+      await hooks?.onCheckpoint?.({ ...checkpoint, submissionState: "submitted" });
+    },
+    async sendTurn() {
+      sendCalls += 1;
+      throw new Error("SEND_TURN_MUST_NOT_WAIT_INLINE");
+    },
+    async observeTurn(input) {
+      observations.push(structuredClone(input));
+      const attempt = (observationsByRound.get(input.round) ?? 0) + 1;
+      observationsByRound.set(input.round, attempt);
+      if (attempt === 1) return undefined;
+      return reply(() =>
+        input.round === 1
+          ? { action: "dispatch", jobs: [spec] }
+          : { action: "complete", final_delivery_text: "DETACHED_WAIT_COMPLETE" },
+      conversationUrl)(input);
+    },
+    async recoverTurn() {
+      recoverCalls += 1;
+      throw new Error("RECOVER_TURN_MUST_NOT_BLOCK");
+    },
+  };
+  const routingConfig = {
+    version: 1 as const,
+    lanes: {
+      default: {
+        enabled: true,
+        candidates: [
+          {
+            id: "never-spawned",
+            argv: ["never-spawned"],
+            task_input: "stdin" as const,
+          },
+        ],
+      },
+    },
+  };
+
+  const firstPause = await runCueLine({
+    request: "Let Pro think without holding the outer tool call",
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+  });
+  assert.equal(firstPause.status, "awaiting_controller");
+  assert.equal(submissions.length, 1);
+  assert.equal(sendCalls, 0);
+  const waitingStatus = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(waitingStatus.phase, "controller_response_pending");
+  assert.equal(waitingStatus.runtime.ownership, "missing");
+  assert.equal(waitingStatus.safeNextAction, "observe");
+  assert.equal(waitingStatus.continueAllowed, true);
+  assert.equal(waitingStatus.controller.responseAccepted, false);
+
+  const stillWaiting = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+  });
+  assert.equal(stillWaiting.status, "awaiting_controller");
+  const callerPause = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+  });
+  assert.equal(callerPause.status, "awaiting_caller");
+  assert.equal(observations.length, 2);
+  const job = callerPause.pendingJobs?.[0];
+  assert.equal(job?.jobKey, spec.job_key);
+  await submitCueLineCallerJobResult(
+    runId,
+    job!.jobId,
+    { status: "succeeded", stdout: "DETACHED_CALLER_EVIDENCE" },
+    { home: stateHome },
+  );
+
+  const secondPause = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+  });
+  assert.equal(secondPause.status, "awaiting_controller");
+  assert.equal(submissions.length, 2);
+  const secondWaitingStatus = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(secondWaitingStatus.phase, "controller_response_pending");
+  assert.equal(secondWaitingStatus.controller.pendingTurns, 1);
+  assert.equal(secondWaitingStatus.controller.responseAccepted, false);
+  assert.equal(secondWaitingStatus.controller.lastAcceptedAction, "dispatch");
+  const stillWaitingAgain = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+  });
+  assert.equal(stillWaitingAgain.status, "awaiting_controller");
+  const completed = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+  });
+
+  assert.equal(completed.status, "complete");
+  assert.equal(completed.finalDeliveryText, "DETACHED_WAIT_COMPLETE");
+  assert.equal(observations.length, 4);
+  assert.equal(recoverCalls, 0);
+  assert.equal(sendCalls, 0);
+});
+
+test("concurrent starts with the same run id create exactly one run", async () => {
+  const runId = "run_concurrent_create";
+  const stateHome = await home();
+  const starts = await Promise.allSettled([
+    startCueLineRun({ request: "first", runId, home: stateHome }),
+    startCueLineRun({ request: "second", runId, home: stateHome }),
+  ]);
+
+  assert.equal(starts.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(starts.filter((result) => result.status === "rejected").length, 1);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.deepEqual(events.map((event) => event.sequence), [1]);
+  assert.equal(events[0]?.type, "run_created");
+});
+
+test("start persists an explicit max round contract before any browser access", async () => {
+  const runId = "run_start_round_contract";
+  const stateHome = await home();
+  const created = await startCueLineRun({
+    request: "Persist the limit before sending",
+    runId,
+    home: stateHome,
+    maxRounds: 3,
+  });
+
+  assert.equal(created.status, "ready");
+  assert.equal(created.state.maxRounds, 3);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal((events[0]?.payload as Record<string, unknown>).max_rounds, 3);
+
+  const browser = new FakeBrowserAdapter([]);
+  await assert.rejects(
+    continueCueLineRun({
+      runId,
+      home: stateHome,
+      browser,
+      maxRounds: 4,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "RUN_MAX_ROUNDS_MISMATCH",
+  );
+  assert.equal(browser.calls.length, 0);
+});
+
+test("a marker without an authoritative first event is rejected", async () => {
+  const runId = "run_creation_marker_crash_recovery";
+  const stateHome = await home();
+  const paths = runPaths(stateHome, runId);
+  await mkdir(paths.runDir, { recursive: true });
+  await writeFile(paths.creationMarker, `${runId}\n`, "utf8");
+
+  await assert.rejects(
+    startCueLineRun({
+      request: "Must not invent a missing first event",
+      runId,
+      home: stateHome,
+      executor: "caller",
+    }),
+    /RUN_ALREADY_EXISTS/,
+  );
+  assert.deepEqual(await readEvents(paths.events), []);
+});
+
+test("an exact first event without a marker is recoverable exactly once", async () => {
+  const runId = "run_creation_event_crash_recovery";
+  const stateHome = await home();
+  const paths = runPaths(stateHome, runId);
+  const request = "Recover a durable interrupted run creation";
+  await createEventLog(paths.events, {
+    sequence: 1,
+    timestamp: "2026-07-15T00:00:00.000Z",
+    type: "run_created",
+    payload: { request, executor: "caller" },
+  });
+
+  const result = await startCueLineRun({ request, runId, home: stateHome, executor: "caller" });
+  assert.equal(result.status, "ready");
+  assert.equal((await readEvents(paths.events)).length, 1);
+  await assert.rejects(
+    startCueLineRun({ request, runId, home: stateHome, executor: "caller" }),
+    /RUN_ALREADY_EXISTS/,
+  );
+});
+
+test("a mismatched first event without a marker cannot be adopted", async () => {
+  const runId = "run_creation_mismatched_event";
+  const stateHome = await home();
+  const paths = runPaths(stateHome, runId);
+  await createEventLog(paths.events, {
+    sequence: 1,
+    timestamp: "2026-07-15T00:00:00.000Z",
+    type: "run_created",
+    payload: { request: "different request", executor: "caller" },
+  });
+
+  await assert.rejects(
+    startCueLineRun({
+      request: "requested run",
+      runId,
+      home: stateHome,
+      executor: "caller",
+    }),
+    /RUN_ALREADY_EXISTS/,
+  );
+});
+
+test("a segment directory without a creation marker is never adopted as a new run", async () => {
+  const runId = "run_creation_segment_only";
+  const stateHome = await home();
+  const paths = runPaths(stateHome, runId);
+  await mkdir(`${paths.events}.segments`, { recursive: true });
+
+  await assert.rejects(
+    startCueLineRun({
+      request: "Must not adopt segment-only state",
+      runId,
+      home: stateHome,
+      executor: "caller",
+    }),
+    /RUN_ALREADY_EXISTS/,
+  );
+});
+
+test("caller advise dispatch does not require a resolvable process runner", async () => {
+  const spec = {
+    job_key: "caller_only",
+    lane: "offline",
+    mode: "advise",
+    task: "Inspect with the current caller",
+  } as const;
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [spec] })),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Use caller tools",
+    runId: "run_caller_without_process_runner",
+    home: await home(),
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    validateJobSpec(job) {
+      assert.equal(job.lane, "offline");
+    },
+    resolveRunnerSpec() {
+      throw new Error("CALLER_MUST_NOT_RESOLVE_PROCESS_RUNNER");
+    },
+    executor: "caller",
+  });
+
+  assert.equal(result.status, "awaiting_caller");
+  assert.equal(result.pendingJobs?.[0]?.jobKey, "caller_only");
+});
+
+test("public caller prompt lists enabled lanes without process availability", async () => {
+  const spec = {
+    job_key: "caller_offline_lane",
+    lane: "offline",
+    mode: "advise",
+    task: "Inspect through the current Codex",
+  } as const;
+  const browser = new FakeBrowserAdapter([
+    reply((input) => {
+      assert.match(input.prompt, /Caller execution lanes: offline\./);
+      assert.match(input.prompt, /current Codex executes each task after handoff/);
+      assert.doesNotMatch(input.prompt, /offline \[unavailable\]/);
+      return { action: "dispatch", jobs: [spec] };
+    }),
+  ]);
+  const environment: NodeJS.ProcessEnv = { ...process.env, PATH: "" };
+  delete environment.CUELINE_DEPTH;
+
+  const result = await runCueLine({
+    request: "Use caller tools without a process executable",
+    runId: "run_caller_prompt_without_process_runner",
+    home: await home(),
+    browser,
+    environment,
+    routingConfig: {
+      version: 1,
+      lanes: {
+        offline: {
+          enabled: true,
+          candidates: [
+            {
+              id: "missing-process",
+              argv: ["definitely-missing-cueline-runner"],
+              task_input: "stdin",
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.equal(result.status, "awaiting_caller");
+  assert.equal(result.pendingJobs?.[0]?.jobKey, "caller_offline_lane");
+});
+
+test("caller execution rejects work jobs until duplicate-safe claims exist", async () => {
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "dispatch",
+      jobs: [
+        {
+          job_key: "unsafe_caller_work",
+          lane: "default",
+          mode: "work",
+          task: "Must not execute twice",
+        },
+      ],
+    })),
+    reply((input) => {
+      assert.match(input.prompt, /CALLER_WORK_REQUIRES_CLAIM/);
+      return {
+        action: "blocked",
+        reason: "Caller work requires an execution claim",
+        final_delivery_text: "NO_UNCLAIMED_WORK",
+      };
+    }),
+  ]);
+
+  const result = await runCueLine({
+    request: "Do not auto-spawn unsafe caller work",
+    runId: "run_caller_work_guard",
+    home: await home(),
+    browser,
+    routingConfig: {
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [
+            {
+              id: "node",
+              argv: [process.execPath, "-e", "process.exit(99)"],
+              task_input: "stdin",
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.finalDeliveryText, "NO_UNCLAIMED_WORK");
+  assert.deepEqual(result.state.jobs, {});
+  assert.equal(browser.calls.length, 2);
+});
+
+test("caller result retry finishes a partial durable submission without overwriting evidence", async () => {
+  const runId = "run_caller_partial_submission";
+  const stateHome = await home();
+  await startCueLineRun({ request: "Recover durable caller evidence", runId, home: stateHome });
+  const paused = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser: new FakeBrowserAdapter([
+      reply(() => ({
+        action: "dispatch",
+        jobs: [
+          {
+            job_key: "durable_audit",
+            lane: "default",
+            mode: "advise",
+            task: "Read only",
+          },
+        ],
+      })),
+    ]),
+    routingConfig: {
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [
+            { id: "node", argv: [process.execPath, "-e", "process.exit(0)"], task_input: "stdin" },
+          ],
+        },
+      },
+    },
+  });
+  const pending = paused.pendingJobs![0]!;
+  await new JobStatusStore(stateHome).write({
+    ...terminalStatus(pending.jobId, "DURABLE_ORIGINAL"),
+    runId,
+    jobKey: pending.jobKey,
+    lane: pending.spec.lane,
+    mode: pending.spec.mode,
+  });
+
+  const submitted = await submitCueLineCallerJobResult(
+    runId,
+    pending.jobId,
+    { status: "failed", stdout: "MUST_NOT_OVERWRITE", error: "conflicting retry" },
+    { home: stateHome },
+  );
+
+  assert.equal(submitted.outcome, "submitted");
+  const persisted = await new JobStatusStore(stateHome).read(pending.jobId);
+  assert.equal(persisted?.status, "succeeded");
+  assert.equal(persisted?.result?.stdout, "DURABLE_ORIGINAL");
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.filter((event) => event.type === "caller_job_result_submitted").length, 1);
+  const state = (await loadCueLineRunStatus(runId, { home: stateHome })).jobs.items[0];
+  assert.equal(state?.status, "succeeded");
+});
+
+test("concurrent caller result submissions commit exactly one terminal result", async () => {
+  const runId = "run_concurrent_caller_result";
+  const stateHome = await home();
+  await startCueLineRun({ request: "Serialize concurrent caller evidence", runId, home: stateHome });
+  const paused = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser: new FakeBrowserAdapter([
+      reply(() => ({
+        action: "dispatch",
+        jobs: [
+          {
+            job_key: "race_safe_audit",
+            lane: "default",
+            mode: "advise",
+            task: "Read only",
+          },
+        ],
+      })),
+    ]),
+    routingConfig: {
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [
+            { id: "node", argv: [process.execPath, "-e", "process.exit(0)"], task_input: "stdin" },
+          ],
+        },
+      },
+    },
+  });
+  const pending = paused.pendingJobs![0]!;
+  const candidates = [
+    { status: "succeeded" as const, stdout: "RACE_STDOUT_A", stderr: "RACE_STDERR_A" },
+    { status: "succeeded" as const, stdout: "RACE_STDOUT_B", stderr: "RACE_STDERR_B" },
+  ];
+
+  const attempts = await Promise.allSettled(
+    candidates.map((input) =>
+      submitCueLineCallerJobResult(runId, pending.jobId, input, { home: stateHome }),
+    ),
+  );
+  const submittedIndexes = attempts.flatMap((attempt, index) =>
+    attempt.status === "fulfilled" && attempt.value.outcome === "submitted" ? [index] : [],
+  );
+  assert.equal(submittedIndexes.length, 1);
+  const losingAttempt = attempts[submittedIndexes[0] === 0 ? 1 : 0];
+  if (losingAttempt?.status === "fulfilled") {
+    assert.equal(losingAttempt.value.outcome, "already_terminal");
+  } else {
+    assert.ok(losingAttempt?.reason instanceof CueLineError);
+    assert.equal(losingAttempt.reason.code, "RUN_ALREADY_ACTIVE");
+  }
+
+  const retry = await submitCueLineCallerJobResult(
+    runId,
+    pending.jobId,
+    { status: "failed", stdout: "MUST_NOT_OVERWRITE", stderr: "MUST_NOT_OVERWRITE" },
+    { home: stateHome },
+  );
+  assert.equal(retry.outcome, "already_terminal");
+
+  const winner = candidates[submittedIndexes[0]!]!;
+  const persisted = await new JobStatusStore(stateHome).read(pending.jobId);
+  assert.equal(persisted?.status, "succeeded");
+  assert.equal(persisted?.result?.stdout, winner.stdout);
+  assert.equal(persisted?.result?.stderr, winner.stderr);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.filter((event) => event.type === "caller_job_result_submitted").length, 1);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "job_status" &&
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        !Array.isArray(event.payload) &&
+        (event.payload as Record<string, unknown>).job_id === pending.jobId,
+    ).length,
+    1,
+  );
+});
+
+test("continuation replays an accepted caller dispatch interrupted during materialization", async () => {
+  const runId = "run_replay_accepted_caller_dispatch";
+  const requestId = "msg_replay_accepted_caller_dispatch";
+  const stateHome = await home();
+  const specs = ["first", "second"].map((key) => ({
+    job_key: `replay_${key}`,
+    lane: "default",
+    mode: "advise" as const,
+    task: `Inspect ${key}`,
+  }));
+  const command = {
+    protocol: CUELINE_PROTOCOL,
+    run_id: runId,
+    round: 1,
+    request_id: requestId,
+    action: "dispatch" as const,
+    jobs: specs,
+  };
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: "Replay accepted caller work",
+    executor: "caller",
+  });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: requestId,
+    prompt: "controller prompt",
+    prompt_hash: "controller-prompt-hash",
+  });
+  await store.append("controller_command_accepted", {
+    command,
+    command_hash: "accepted-dispatch-hash",
+  });
+  const firstId = jobId(runId, specs[0]!.job_key, specs[0]!);
+  await store.append("job_registered", {
+    job: {
+      jobId: firstId,
+      jobKey: specs[0]!.job_key,
+      required: true,
+      spec: specs[0],
+      status: "pending",
+      output: null,
+      error: null,
+    },
+  });
+  await store.append("run_failed", {
+    code: "INJECTED_MATERIALIZATION_CRASH",
+    message: "owner stopped after only one job registration",
+  });
+  await store.snapshot();
+
+  let browserCalls = 0;
+  const browser: BrowserAdapter = {
+    async sendTurn(): Promise<ControllerTurn> {
+      browserCalls += 1;
+      throw new Error("accepted command must replay before another controller round");
+    },
+  };
+  const result = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    executor: "caller",
+  });
+
+  assert.equal(result.status, "awaiting_caller");
+  assert.equal(browserCalls, 0);
+  assert.deepEqual(
+    result.pendingJobs?.map((job) => job.jobKey).sort(),
+    specs.map((spec) => spec.job_key).sort(),
+  );
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.filter((event) => event.type === "controller_command_accepted").length, 1);
+  assert.equal(
+    events.filter((event) => event.type === "controller_command_execution_completed").length,
+    1,
+  );
+  assert.equal(events.filter((event) => event.type === "job_registered").length, 2);
+});
+
+test("process execution enforces the global dispatch concurrency limit", async () => {
+  const runId = "run_bounded_parallel_dispatch";
+  const specs = ["one", "two", "three"].map((key) => ({
+    job_key: key,
+    lane: "triage",
+    mode: "advise" as const,
+    task: `Inspect ${key}`,
+  }));
+  const ids = specs.map((spec) => jobId(runId, spec.job_key, spec));
+  const completions = new Map(ids.map((id) => [id, deferred<JobStatus>()]));
+  const starts: string[] = [];
+  let active = 0;
+  let maximumActive = 0;
+  const supervisor = {
+    async start(spec: RunnerSpec): Promise<JobStatus> {
+      starts.push(spec.jobId);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      const completion = completions.get(spec.jobId);
+      if (!completion) throw new Error(`UNEXPECTED_JOB: ${spec.jobId}`);
+      return completion.promise.finally(() => {
+        active -= 1;
+      });
+    },
+    async waitForCompletion(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_WAIT: ${jobId}`);
+    },
+    async inspect(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_INSPECT: ${jobId}`);
+    },
+  };
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: specs })),
+    reply(() => ({ action: "complete", final_delivery_text: "BOUNDED" })),
+  ]);
+
+  const running = runControllerLoop({
+    request: "Bound parallel audits",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+    executor: "process",
+    maxConcurrency: 2,
+  });
+  assert.equal(await observeCondition(() => starts.length === 2), true);
+  assert.equal(starts.includes(ids[2]!), false);
+  completions.get(ids[0]!)?.resolve(terminalStatus(ids[0]!));
+  assert.equal(await observeCondition(() => starts.length === 3), true);
+  completions.get(ids[1]!)?.resolve(terminalStatus(ids[1]!));
+  completions.get(ids[2]!)?.resolve(terminalStatus(ids[2]!));
+  const result = await running;
+
+  assert.equal(result.status, "complete");
+  assert.equal(maximumActive, 2);
+});
+
+test("background advice keeps a concurrency slot until its persisted completion", async () => {
+  const runId = "run_bounded_background_advice";
+  const specs = ["one", "two", "three", "four"].map((key) => ({
+    job_key: key,
+    lane: "triage",
+    mode: "advise" as const,
+    task: `Inspect ${key} in background`,
+    background: true,
+  }));
+  const ids = specs.map((spec) => jobId(runId, spec.job_key, spec));
+  const completions = new Map(ids.map((id) => [id, deferred<JobStatus>()]));
+  const starts: string[] = [];
+  let active = 0;
+  let maximumActive = 0;
+  const supervisor = {
+    async start(spec: RunnerSpec): Promise<JobStatus> {
+      starts.push(spec.jobId);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      return {
+        jobId: spec.jobId,
+        execution: "background",
+        status: "running",
+        startedAt: "2026-07-15T00:00:00.000Z",
+      };
+    },
+    async waitForCompletion(id: string): Promise<JobStatus> {
+      const completion = completions.get(id);
+      if (!completion) throw new Error(`UNEXPECTED_WAIT: ${id}`);
+      return completion.promise.finally(() => {
+        active -= 1;
+      });
+    },
+    async inspect(id: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_INSPECT: ${id}`);
+    },
+  };
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: specs })),
+    reply(() => ({ action: "wait" })),
+    reply(() => ({ action: "blocked", reason: "probe complete" })),
+  ]);
+
+  const running = runControllerLoop({
+    request: "Bound background audits",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+    executor: "process",
+    maxConcurrency: 2,
+  });
+
+  assert.equal(await observeCondition(() => starts.length >= 2), true);
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  assert.equal(starts.length, 2, "background running statuses released both slots");
+  completions.get(ids[0]!)?.resolve(terminalStatus(ids[0]!));
+  assert.equal(await observeCondition(() => starts.length === 3), true);
+  completions.get(ids[1]!)?.resolve(terminalStatus(ids[1]!));
+  assert.equal(await observeCondition(() => starts.length === 4), true);
+  for (const id of ids.slice(2)) completions.get(id)?.resolve(terminalStatus(id));
+
+  const result = await running;
+  assert.equal(result.status, "blocked");
+  assert.equal(maximumActive, 2);
+});
+
+test("background advice from an earlier controller round occupies the global limit", async () => {
+  const runId = "run_cross_round_background_limit";
+  const firstRound = ["one", "two"].map((key) => ({
+    job_key: `earlier_${key}`,
+    lane: "triage",
+    mode: "advise" as const,
+    task: `Earlier ${key}`,
+    background: true,
+  }));
+  const later = {
+    job_key: "later_three",
+    lane: "triage",
+    mode: "advise" as const,
+    task: "Must wait for a cross-round slot",
+    background: true,
+  };
+  const specs = [...firstRound, later];
+  const ids = specs.map((spec) => jobId(runId, spec.job_key, spec));
+  const completions = new Map(ids.map((id) => [id, deferred<JobStatus>()]));
+  const starts: string[] = [];
+  let active = 0;
+  let maximumActive = 0;
+  const supervisor = {
+    async start(spec: RunnerSpec): Promise<JobStatus> {
+      starts.push(spec.jobId);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      return {
+        jobId: spec.jobId,
+        execution: "background" as const,
+        status: "running" as const,
+        startedAt: "2026-07-15T00:00:00.000Z",
+      };
+    },
+    async waitForCompletion(id: string): Promise<JobStatus> {
+      const completion = completions.get(id);
+      if (!completion) throw new Error(`UNEXPECTED_WAIT: ${id}`);
+      return completion.promise.finally(() => {
+        active -= 1;
+      });
+    },
+    async inspect(id: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_INSPECT: ${id}`);
+    },
+  };
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: firstRound })),
+    reply(() => ({ action: "dispatch", jobs: [later] })),
+    reply(() => ({ action: "wait" })),
+    reply(() => ({ action: "blocked", reason: "cross-round probe complete" })),
+  ]);
+
+  const running = runControllerLoop({
+    request: "Keep the global limit across controller rounds",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+    executor: "process",
+    maxConcurrency: 2,
+  });
+
+  assert.equal(await observeCondition(() => starts.length === 2), true);
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  assert.equal(starts.length, 2, "later round ignored earlier running occupancy");
+  completions.get(ids[0]!)?.resolve(terminalStatus(ids[0]!));
+  assert.equal(await observeCondition(() => starts.length === 3), true);
+  completions.get(ids[1]!)?.resolve(terminalStatus(ids[1]!));
+  completions.get(ids[2]!)?.resolve(terminalStatus(ids[2]!));
+
+  const result = await running;
+  assert.equal(result.status, "blocked");
+  assert.equal(maximumActive, 2);
+});
+
+test("a new caller session retires a dead outer owner and reconciles an attachment response", async () => {
+  const runId = "run_caller_outer_timeout_recovery";
+  const requestId = "msg_caller_outer_timeout_recovery";
+  const conversationUrl = "https://chatgpt.com/c/caller-outer-timeout-recovery";
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Recover after the outer waiter died", executor: "caller" });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: requestId,
+    prompt: "x".repeat(44_679),
+    prompt_hash: "outer-timeout-prompt-hash",
+  });
+  await store.append("controller_conversation_bound", {
+    request_id: requestId,
+    conversation_url: conversationUrl,
+  });
+  await store.append("controller_turn_submission_started", {
+    round: 1,
+    request_id: requestId,
+    submission_state: "submitting",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "attachment_ready",
+    baseline_assistant_message_count: 0,
+  });
+  await store.snapshot();
+  const heartbeat = new Date().toISOString();
+  await writeFile(
+    runPaths(stateHome, runId).runtimeLease,
+    `${JSON.stringify({
+      protocol: "cueline/runtime-lease/0.1",
+      run_id: runId,
+      owner_id: "dead-outer-owner",
+      pid: "2147483647",
+      state: "active",
+      claimed_at: heartbeat,
+      heartbeat_at: heartbeat,
+    })}\n`,
+    "utf8",
+  );
+  let resendCalls = 0;
+  const browser: BrowserAdapter = {
+    async sendTurn(): Promise<ControllerTurn> {
+      resendCalls += 1;
+      throw new Error("must reconcile instead of resending after outer timeout");
+    },
+    async recoverTurn(input): Promise<ControllerTurn> {
+      assert.equal(input.attachmentPromptExpected, true);
+      assert.equal(input.manualSendConfirmed, undefined);
+      return reply(
+        () => ({ action: "complete", final_delivery_text: "OUTER_TIMEOUT_RECOVERED" }),
+        conversationUrl,
+      )(input);
+    },
+  };
+  const routingConfig = {
+    version: 1 as const,
+    lanes: {
+      default: {
+        enabled: true,
+        candidates: [
+          {
+            id: "node",
+            argv: [process.execPath, "-e", "process.stdout.write('unused')"],
+            task_input: "stdin" as const,
+          },
+        ],
+      },
+    },
+  };
+
+  const result = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "OUTER_TIMEOUT_RECOVERED");
+  assert.equal(resendCalls, 0);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.some((event) => event.type === "runtime_dead_owner_retired"), true);
+});
+
+test("process execution queues jobs behind per-lane concurrency limits", async () => {
+  const runId = "run_lane_bounded_dispatch";
+  const specs = [
+    { job_key: "lane_a_one", lane: "lane-a", mode: "advise" as const, task: "A1" },
+    { job_key: "lane_a_two", lane: "lane-a", mode: "advise" as const, task: "A2" },
+    { job_key: "lane_b_one", lane: "lane-b", mode: "advise" as const, task: "B1" },
+  ];
+  const ids = specs.map((spec) => jobId(runId, spec.job_key, spec));
+  const completions = new Map(ids.map((id) => [id, deferred<JobStatus>()]));
+  const starts: string[] = [];
+  const supervisor = {
+    async start(spec: RunnerSpec): Promise<JobStatus> {
+      starts.push(spec.jobId);
+      const completion = completions.get(spec.jobId);
+      if (!completion) throw new Error(`UNEXPECTED_JOB: ${spec.jobId}`);
+      return completion.promise;
+    },
+    async waitForCompletion(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_WAIT: ${jobId}`);
+    },
+    async inspect(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_INSPECT: ${jobId}`);
+    },
+  };
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: specs })),
+    reply(() => ({ action: "complete", final_delivery_text: "LANES_BOUNDED" })),
+  ]);
+
+  const running = runControllerLoop({
+    request: "Bound each lane",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+    executor: "process",
+    maxConcurrency: 3,
+    laneConcurrency: { "lane-a": 1, "lane-b": 1 },
+  });
+  assert.equal(await observeCondition(() => starts.length === 2), true);
+  assert.deepEqual(new Set(starts), new Set([ids[0], ids[2]]));
+  completions.get(ids[0]!)?.resolve(terminalStatus(ids[0]!));
+  assert.equal(await observeCondition(() => starts.length === 3), true);
+  completions.get(ids[1]!)?.resolve(terminalStatus(ids[1]!));
+  completions.get(ids[2]!)?.resolve(terminalStatus(ids[2]!));
+  const result = await running;
+
+  assert.equal(result.status, "complete");
+  assert.equal(starts[2], ids[1]);
+});
+
 test("a second session cannot continue a legacy running run without ownership evidence", async () => {
   const runId = "run_active_owner";
   const stateHome = await home();
@@ -355,6 +1502,300 @@ test("a second session cannot continue a legacy running run without ownership ev
   assert.equal((await readEvents(runPaths(stateHome, runId).events)).length, eventsBefore.length);
 });
 
+test("continuation reconciles dead ownerless process jobs before resuming the controller", async () => {
+  const runId = "run_dead_owner_reconciliation";
+  const stateHome = await home();
+  const spec = {
+    job_key: "orphaned_audit",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Audit before the owner disappears",
+    required: true,
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, "", "process"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Recover a dead owner", executor: "process" });
+  await store.append("controller_command_accepted", {
+    command_hash: "orphaned-dispatch-hash",
+    command: {
+      protocol: CUELINE_PROTOCOL,
+      run_id: runId,
+      round: 1,
+      request_id: "msg_orphaned_dispatch",
+      action: "dispatch",
+      jobs: [spec],
+    },
+  });
+  await store.append("job_registered", {
+    job: {
+      jobId: id,
+      jobKey: spec.job_key,
+      required: true,
+      spec,
+      status: "pending",
+      output: null,
+      error: null,
+    },
+  });
+  await store.append("job_status", { job_id: id, status: "running" });
+  await store.snapshot();
+  await new JobStatusStore(stateHome).write({
+    jobId: id,
+    runId,
+    jobKey: spec.job_key,
+    lane: spec.lane,
+    mode: spec.mode,
+    pid: 2_147_483_647,
+    execution: "foreground",
+    status: "running",
+    startedAt: "2026-07-15T00:00:00.000Z",
+  });
+  const routingConfig = {
+    version: 1 as const,
+    lanes: {
+      default: {
+        enabled: true,
+        candidates: [
+          {
+            id: "node",
+            argv: [process.execPath, "-e", "process.stdout.write('unused')"],
+            task_input: "stdin" as const,
+          },
+        ],
+      },
+    },
+  };
+  const browser = new FakeBrowserAdapter([
+    reply((input) => {
+      assert.match(input.prompt, /worker process disappeared/i);
+      return { action: "complete", final_delivery_text: "ORPHAN_RECONCILED" };
+    }),
+  ]);
+
+  const result = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.state.jobs[id]?.status, "failed");
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.some((event) => event.type === "runtime_reconciliation_started"), true);
+  assert.equal(events.some((event) => event.type === "runtime_owner_loss_reconciled"), true);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === "run_failed" &&
+        (event.payload as Record<string, unknown>).code === "RUNTIME_OWNER_LOST",
+    ),
+    true,
+  );
+});
+
+test("runtime reconciliation leaves a live owner authoritative", async () => {
+  const runId = "run_live_owner_reconciliation";
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, "", "process"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Do not steal a live run", executor: "process" });
+  const lease = await RuntimeLease.claim({ home: stateHome, runId });
+  try {
+    const result = await reconcileCueLineRuntime(runId, { home: stateHome });
+    assert.equal(result.outcome, "owner_alive");
+    assert.equal(result.affectedJobs, 0);
+  } finally {
+    await lease.release();
+  }
+});
+
+test("runtime reconciliation refuses to settle while a leaderless process group survives", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX process groups are not available on Windows");
+    return;
+  }
+  const leader = spawn(
+    process.execPath,
+    [
+      "-e",
+      [
+        'const { spawn } = require("node:child_process");',
+        `const descendant = spawn(${JSON.stringify(process.execPath)}, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });`,
+        "descendant.unref();",
+        "process.exit(0);",
+      ].join("\n"),
+    ],
+    { detached: true, stdio: "ignore" },
+  );
+  const leaderPid = leader.pid;
+  if (leaderPid === undefined) throw new Error("leader process did not expose a PID");
+  await new Promise<void>((resolve, reject) => {
+    leader.once("exit", () => resolve());
+    leader.once("error", reject);
+  });
+  t.after(() => {
+    try {
+      process.kill(-leaderPid, "SIGKILL");
+    } catch {}
+  });
+  assert.doesNotThrow(() => process.kill(-leaderPid, 0));
+
+  const runId = "run_leaderless_process_group";
+  const stateHome = await home();
+  const spec = {
+    job_key: "escaped_descendant",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Must remain observable until the whole group exits",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, "", "process"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Reconcile process group", executor: "process" });
+  await store.append("job_registered", {
+    job: {
+      jobId: id,
+      jobKey: spec.job_key,
+      required: true,
+      spec,
+      status: "running",
+      output: null,
+      error: null,
+    },
+  });
+  await store.snapshot();
+  await new JobStatusStore(stateHome).write({
+    jobId: id,
+    runId,
+    jobKey: spec.job_key,
+    lane: spec.lane,
+    mode: spec.mode,
+    pid: leaderPid,
+    execution: "foreground",
+    status: "running",
+    startedAt: new Date().toISOString(),
+  });
+
+  const result = await reconcileCueLineRuntime(runId, { home: stateHome });
+
+  assert.equal(result.outcome, "processes_alive");
+  assert.deepEqual(result.survivingJobs, [id]);
+  const status = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(status.jobs.counts.orphaned, 1);
+  assert.equal(status.jobs.items[0]?.persistedStatus, "running");
+});
+
+test("runtime heartbeat loss settles owned jobs before recording run failure", { timeout: 5_000 }, async () => {
+  const runId = "run_heartbeat_loss_converges_jobs";
+  const stateHome = await home();
+  const spec = {
+    job_key: "owned_until_lease_loss",
+    lane: "default",
+    mode: "advise",
+    task: "Wait until runtime ownership is lost",
+  } as const;
+  const id = jobId(runId, spec.job_key, spec);
+  const completion = deferred<JobStatus>();
+  let started = false;
+  let cancelCalls = 0;
+  const workerKeepAlive = setInterval(() => undefined, 50);
+  const cancelled = terminalStatus(id);
+  cancelled.status = "cancelled";
+  cancelled.result!.status = "cancelled";
+  cancelled.result!.cancelled = true;
+  const supervisor = {
+    async start(): Promise<JobStatus> {
+      started = true;
+      return completion.promise;
+    },
+    async waitForCompletion(): Promise<JobStatus> {
+      return completion.promise;
+    },
+    async inspect(): Promise<JobStatus> {
+      return completion.promise;
+    },
+    cancelAll(): number {
+      cancelCalls += 1;
+      clearInterval(workerKeepAlive);
+      completion.resolve(cancelled);
+      return 1;
+    },
+  };
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [spec] })),
+  ]);
+
+  const running = runControllerLoop({
+    request: "Converge after lease loss",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+    executor: "process",
+    runtimeHeartbeatIntervalMs: 5,
+  });
+  let heartbeatFailure: unknown;
+  const expectedHeartbeatFailure = running.then(
+    () => {
+      throw new Error("runtime unexpectedly completed after lease loss");
+    },
+    (error: unknown) => {
+      heartbeatFailure = error;
+    },
+  );
+  assert.equal(await observeCondition(() => started), true);
+  const runtimePaths = runPaths(stateHome, runId);
+  const fence = JSON.parse(await readFile(`${runtimePaths.runtimeLease}.fence`, "utf8")) as {
+    generation: string;
+  };
+  const authoritativeLease = `${runtimePaths.runtimeLease}.epochs/${fence.generation}.json`;
+  const sabotage = setInterval(() => {
+    void writeFile(authoritativeLease, "invalid lease\n", "utf8");
+  }, 2);
+
+  try {
+    await expectedHeartbeatFailure;
+  } finally {
+    clearInterval(sabotage);
+    clearInterval(workerKeepAlive);
+  }
+  assert.equal(
+    heartbeatFailure instanceof CueLineError &&
+      heartbeatFailure.code === "RUNTIME_LEASE_HEARTBEAT_FAILED",
+    true,
+  );
+  assert.ok(cancelCalls >= 1);
+  const reloaded = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  assert.equal(reloaded.state.status, "failed");
+  assert.equal(reloaded.state.jobs[id]?.status, "cancelled");
+  assert.equal(
+    Object.values(reloaded.state.jobs).some(
+      (job) => job.status === "pending" || job.status === "running",
+    ),
+    false,
+  );
+});
+
 test("a durable cancellation request forbids continuation before browser access", async () => {
   const runId = "run_cancel_pending";
   const stateHome = await home();
@@ -382,6 +1823,38 @@ test("a durable cancellation request forbids continuation before browser access"
       error instanceof CueLineError && error.code === "RUN_CANCELLATION_PENDING",
   );
   assert.equal(browser.calls.length, 0);
+});
+
+test("job cancellation remains pending until a supervisor accepts it", async () => {
+  const stateHome = await home();
+  const runId = "run_cancellation_retry";
+  let attempts = 0;
+  let watcherError: unknown;
+  const watcher = new CancellationWatcher({
+    home: stateHome,
+    runId,
+    intervalMs: 5,
+    onRun() {},
+    onJob() {
+      attempts += 1;
+      return attempts >= 2;
+    },
+    onError(error) {
+      watcherError = error;
+    },
+  });
+  watcher.start();
+  await requestJobCancellation(
+    stateHome,
+    runId,
+    "job_cancellation_retry",
+    "retry until the job is owned",
+  );
+  assert.equal(await observeCondition(() => attempts >= 2), true);
+  await watcher.stop();
+
+  assert.equal(watcherError, undefined);
+  assert.equal(attempts, 2);
 });
 
 test("a failed run with a live owner cannot be continued by another session", async () => {
@@ -431,7 +1904,8 @@ test("run cancel reaches the active owner, terminates advise work, and closes th
       ],
     })),
   ]);
-  const running = startCueLineRun({
+  const running = runCueLine({
+    executor: "process",
     request: "Start a cancellable audit",
     runId,
     home: stateHome,
@@ -504,7 +1978,8 @@ test("job cancel reaches the active owner without cancelling the controller loop
     })),
     reply(() => ({ action: "complete", final_delivery_text: "CANCEL_OBSERVED" })),
   ]);
-  const running = startCueLineRun({
+  const running = runCueLine({
+    executor: "process",
     request: "Cancel only one audit",
     runId,
     home: stateHome,
@@ -570,13 +2045,17 @@ test("run timeout cancels owned work instead of abandoning the inner execution",
   ]);
 
   await assert.rejects(
-    startCueLineRun({
+    runCueLine({
+      executor: "process",
       request: "Bound the whole run",
       runId,
       home: stateHome,
       browser,
-      runTimeoutMs: 100,
-      defaultTimeoutMs: 1_000,
+      // Leave enough time for the controller command and fsynced registration
+      // to complete even when the full test suite is running in parallel; the
+      // assertion is about cancelling already-owned work, not startup speed.
+      runTimeoutMs: 2_000,
+      defaultTimeoutMs: 5_000,
       routingConfig: {
         version: 1,
         lanes: {
@@ -651,21 +2130,57 @@ test("a repeated deterministic dispatch never spawns a duplicate job", async () 
   assert.match(browser.calls[2]?.prompt ?? "", /duplicate/i);
 });
 
-test("required running work blocks completion until the controller decides blocked", async () => {
+test("a reused job key with a changed specification is rejected before execution", async () => {
+  const runId = "run_job_key_identity_mismatch";
+  const original = {
+    job_key: "stable_key",
+    lane: "triage",
+    mode: "advise",
+    task: "Inspect original scope",
+  } as const;
+  const changed = { ...original, task: "Inspect a different scope" };
+  const id = jobId(runId, original.job_key, original);
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [original] })),
+    reply(() => ({ action: "dispatch", jobs: [changed] })),
+    reply((input) => {
+      assert.match(input.prompt, /JOB_KEY_IDENTITY_MISMATCH/);
+      return { action: "complete", final_delivery_text: "IDENTITY_GUARDED" };
+    }),
+  ]);
+  const supervisor = new FakeJobSupervisor([terminalStatus(id)]);
+
+  const result = await runControllerLoop({
+    request: "Keep logical job identity stable",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+    executor: "process",
+  });
+
+  assert.equal(result.finalDeliveryText, "IDENTITY_GUARDED");
+  assert.equal(supervisor.starts.length, 1);
+});
+
+test("no terminal command can orphan an optional background job", async () => {
   const runId = "run_running";
   const spec = {
     job_key: "background",
     lane: "triage",
     mode: "advise",
     task: "Keep running",
-    required: true,
+    required: false,
     background: true,
   } as const;
   const id = jobId(runId, spec.job_key, spec);
   const browser = new FakeBrowserAdapter([
     reply(() => ({ action: "dispatch", jobs: [spec] })),
     reply(() => ({ action: "complete", final_delivery_text: "TOO_EARLY" })),
-    reply(() => ({ action: "blocked", reason: "Required job is still running" })),
+    reply(() => ({ action: "blocked", reason: "ALSO_TOO_EARLY" })),
+    reply(() => ({ action: "wait", job_ids: [id] })),
+    reply(() => ({ action: "complete", final_delivery_text: "SETTLED" })),
   ]);
   const supervisor = new FakeJobSupervisor([
     {
@@ -674,7 +2189,7 @@ test("required running work blocks completion until the controller decides block
       status: "running",
       startedAt: "2026-07-14T00:00:00.000Z",
     },
-  ]);
+  ], [terminalStatus(id)]);
 
   const result = await runControllerLoop({
     request: "Background gate",
@@ -685,9 +2200,86 @@ test("required running work blocks completion until the controller decides block
     resolveRunnerSpec: resolver,
   });
 
-  assert.equal(result.status, "blocked");
-  assert.notEqual(result.finalDeliveryText, "TOO_EARLY");
-  assert.equal(browser.calls.length, 3);
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "SETTLED");
+  assert.equal(result.state.jobs[id]?.status, "succeeded");
+  assert.equal(browser.calls.length, 5);
+  assert.equal(
+    result.state.notices.some((notice) => notice.includes("complete rejected")),
+    true,
+  );
+  assert.equal(
+    result.state.notices.some((notice) => notice.includes("blocked rejected")),
+    true,
+  );
+});
+
+test("max-round failure cancels an optional background process before releasing ownership", async () => {
+  const runId = "run_round_limit_background_cleanup";
+  const stateHome = await home();
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "dispatch",
+      jobs: [
+        {
+          job_key: "optional_background_cleanup",
+          lane: "default",
+          mode: "advise",
+          task: "Stay alive until the failed loop cleans up",
+          required: false,
+          background: true,
+        },
+      ],
+    })),
+    reply(() => ({ action: "complete", final_delivery_text: "MUST_BE_REJECTED" })),
+  ]);
+
+  await assert.rejects(
+    runCueLine({
+      executor: "process",
+      request: "Never leave an optional background child behind",
+      runId,
+      home: stateHome,
+      browser,
+      maxRounds: 2,
+      defaultTimeoutMs: 30_000,
+      routingConfig: {
+        version: 1,
+        lanes: {
+          default: {
+            enabled: true,
+            candidates: [
+              {
+                id: "node",
+                argv: [process.execPath, "-e", "setInterval(() => {}, 1_000);"],
+                task_input: "stdin",
+              },
+            ],
+          },
+        },
+      },
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "MAX_ROUNDS_EXCEEDED",
+  );
+
+  const status = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(status.status, "failed");
+  assert.equal(status.jobs.counts.cancelled, 1);
+  assert.equal(status.jobs.counts.running, 0);
+  assert.equal(status.jobs.counts.orphaned, 0);
+  const id = status.jobs.items[0]?.jobId;
+  const persisted = await new JobStatusStore(stateHome).read(String(id));
+  assert.equal(persisted?.status, "cancelled");
+  assert.equal(typeof persisted?.pid, "number");
+  assert.throws(
+    () => process.kill(persisted!.pid!, 0),
+    (error: unknown) =>
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ESRCH",
+  );
 });
 
 test("max round exhaustion stops a controller that only waits", async () => {
@@ -711,7 +2303,177 @@ test("max round exhaustion stops a controller that only waits", async () => {
   assert.equal(browser.calls.length, 2);
 });
 
-test("continues a persisted run on later controller rounds without respawning jobs", async () => {
+test("split caller enforces the persisted max round limit across ownerless continuations", async () => {
+  const runId = "run_split_round_limit";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/split-round-limit";
+  let submissions = 0;
+  let observations = 0;
+  const browser: BrowserAdapter = {
+    async submitTurn(input, hooks) {
+      submissions += 1;
+      const checkpoint = {
+        composerPromptState: "inline_ready" as const,
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: input.round - 1,
+      };
+      await hooks?.onCheckpoint?.({ ...checkpoint, submissionState: "submitting" });
+      await hooks?.onCheckpoint?.({ ...checkpoint, submissionState: "submitted" });
+    },
+    async sendTurn() {
+      throw new Error("SPLIT_CALLER_MUST_NOT_SEND_INLINE");
+    },
+    async observeTurn(input) {
+      observations += 1;
+      return reply(() => ({ action: "wait" }), conversationUrl)(input);
+    },
+  };
+  const routingConfig = {
+    version: 1 as const,
+    lanes: {
+      default: {
+        enabled: true,
+        candidates: [
+          {
+            id: "never-spawned",
+            argv: ["never-spawned"],
+            task_input: "stdin" as const,
+          },
+        ],
+      },
+    },
+  };
+
+  const first = await runCueLine({
+    request: "Stop this split run after two total rounds",
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+    maxRounds: 2,
+  });
+  assert.equal(first.status, "awaiting_controller");
+  assert.equal(submissions, 1);
+
+  const second = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+  });
+  assert.equal(second.status, "awaiting_controller");
+  assert.equal(submissions, 2);
+
+  await assert.rejects(
+    continueCueLineRun({
+      runId,
+      home: stateHome,
+      browser,
+      routingConfig,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "MAX_ROUNDS_EXCEEDED",
+  );
+  assert.equal(submissions, 2);
+  assert.equal(observations, 2);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.filter((event) => event.type === "controller_turn_requested").length, 2);
+  const exhausted = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(exhausted.phase, "round_limit_reached");
+  assert.equal(exhausted.round, 2);
+  assert.equal(exhausted.maxRounds, 2);
+  assert.equal(exhausted.continueAllowed, false);
+  assert.equal(exhausted.safeNextAction, "return_result");
+
+  const beforeRepeatedContinue = await readEvents(runPaths(stateHome, runId).events);
+  await assert.rejects(
+    continueCueLineRun({
+      runId,
+      home: stateHome,
+      browser,
+      routingConfig,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "MAX_ROUNDS_EXCEEDED",
+  );
+  assert.deepEqual(
+    await readEvents(runPaths(stateHome, runId).events),
+    beforeRepeatedContinue,
+  );
+  assert.equal(submissions, 2);
+  assert.equal(observations, 2);
+});
+
+test("a different failure on the final allowed round remains resumable", async () => {
+  const runId = "run_non_limit_failure_at_max_round";
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, "", "caller", 1),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: "Do not confuse the current round with the failure cause",
+    executor: "caller",
+    max_rounds: 1,
+  });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: "msg_non_limit_failure",
+    prompt: "prompt",
+    prompt_hash: "prompt-hash",
+  });
+  await store.append("controller_turn_abandoned", {
+    round: 1,
+    request_id: "msg_non_limit_failure",
+    reason: "test_fixture",
+  });
+  await store.append("run_failed", { code: "CONTROLLER_PRO_EVIDENCE_UNVERIFIED" });
+
+  const status = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(status.round, 1);
+  assert.equal(status.maxRounds, 1);
+  assert.equal(status.phase, "resume_ready");
+  assert.equal(status.continueAllowed, true);
+  assert.equal(status.safeNextAction, "continue");
+});
+
+test("continuation rejects a max round limit that drifts from the run contract", async () => {
+  const runId = "run_round_limit_drift";
+  const stateHome = await home();
+  const browser = new FakeBrowserAdapter([reply(() => ({ action: "wait" }))]);
+
+  await assert.rejects(
+    runControllerLoop({
+      request: "Keep the original round contract",
+      runId,
+      home: stateHome,
+      browser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+      maxRounds: 1,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "MAX_ROUNDS_EXCEEDED",
+  );
+
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      browser: new FakeBrowserAdapter([]),
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+      maxRounds: 2,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "RUN_MAX_ROUNDS_MISMATCH",
+  );
+});
+
+test("a failed run at its persisted round limit cannot be widened or respawn jobs", async () => {
   const runId = "run_continue";
   const stateHome = await home();
   const spec = {
@@ -746,22 +2508,24 @@ test("continues a persisted run on later controller rounds without respawning jo
     (error: unknown) => error instanceof CueLineError && error.code === "MAX_ROUNDS_EXCEEDED",
   );
 
-  const resumedBrowser = new FakeBrowserAdapter([
-    reply(() => ({ action: "wait", job_ids: [id] })),
-    reply(() => ({ action: "complete", final_delivery_text: "RESUMED_OK" })),
-  ]);
+  const resumedBrowser = new FakeBrowserAdapter([]);
   const completed = terminalStatus(id, "LATER_OK");
-  const result = await continueControllerLoop({
-    runId,
-    home: stateHome,
-    browser: resumedBrowser,
-    jobSupervisor: new FakeJobSupervisor([], [completed]),
-    resolveRunnerSpec: resolver,
-  });
+  const resumedSupervisor = new FakeJobSupervisor([], [completed]);
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      browser: resumedBrowser,
+      jobSupervisor: resumedSupervisor,
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "MAX_ROUNDS_EXCEEDED",
+  );
 
-  assert.equal(result.status, "complete");
-  assert.equal(result.finalDeliveryText, "RESUMED_OK");
-  assert.deepEqual(resumedBrowser.calls.map((call) => call.round), [2, 3]);
+  assert.equal(resumedBrowser.calls.length, 0);
+  assert.equal(resumedSupervisor.starts.length, 0);
+  assert.equal(resumedSupervisor.inspections.length, 0);
 });
 
 test("persists submission checkpoints and failure diagnostics before observing a response", async () => {
@@ -772,12 +2536,14 @@ test("persists submission checkpoints and failure diagnostics before observing a
     async sendTurn(_input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<ControllerTurn> {
       await hooks?.onCheckpoint?.({
         submissionState: "possibly_sent",
+        composerPromptState: "inline_ready",
         conversationUrl,
         selectedModelLabel: "Pro",
         baselineAssistantMessageCount: 2,
       });
       await hooks?.onCheckpoint?.({
         submissionState: "submitted",
+        composerPromptState: "inline_ready",
         conversationUrl,
         selectedModelLabel: "Pro",
         baselineAssistantMessageCount: 2,
@@ -818,6 +2584,7 @@ test("persists submission checkpoints and failure diagnostics before observing a
     submission_state: "submitted",
     conversation_url: conversationUrl,
     selected_model_label: "Pro",
+    composer_prompt_state: "inline_ready",
     baseline_assistant_message_count: 2,
   });
   const failed = events.at(-1);
@@ -830,6 +2597,125 @@ test("persists submission checkpoints and failure diagnostics before observing a
     submission_state: "submitted",
     conversation_url: conversationUrl,
   });
+});
+
+test("a post-create submission failure exposes the generated run id for reconciliation", async () => {
+  const stateHome = await home();
+  const browser: BrowserAdapter = {
+    async sendTurn(input): Promise<ControllerTurn> {
+      throw new CueLineError(
+        "CONTROLLER_SUBMISSION_AMBIGUOUS",
+        "The single click may have been accepted.",
+        {
+          details: {
+            stage: "submitting",
+            submission_state: "possibly_sent",
+            request_id: input.requestId,
+          },
+        },
+      );
+    },
+  };
+  let failure: CueLineError | undefined;
+
+  try {
+    await runCueLine({
+      request: "Return the generated run ID after an ambiguous send",
+      home: stateHome,
+      browser,
+      routingConfig: {
+        version: 1,
+        lanes: {
+          default: {
+            enabled: true,
+            candidates: [
+              {
+                id: "never-spawned",
+                argv: ["never-spawned"],
+                task_input: "stdin",
+              },
+            ],
+          },
+        },
+      },
+    });
+  } catch (error) {
+    if (error instanceof CueLineError) failure = error;
+  }
+
+  assert.equal(failure?.code, "CONTROLLER_SUBMISSION_AMBIGUOUS");
+  const details = failure?.details as Record<string, unknown> | undefined;
+  assert.match(String(details?.run_id), /^run_[a-f0-9]{32}$/);
+  assert.equal(details?.submission_state, "possibly_sent");
+  const events = await readEvents(runPaths(stateHome, String(details?.run_id)).events);
+  assert.equal(events.at(-1)?.type, "run_failed");
+});
+
+test("a post-create lease-claim failure exposes the generated run id without unowned failure events", async () => {
+  const stateHome = await home();
+  const routingConfig = {
+    version: 1 as const,
+    lanes: {
+      default: {
+        enabled: true,
+        candidates: [
+          {
+            id: "never-spawned",
+            argv: ["never-spawned"],
+            task_input: "stdin" as const,
+          },
+        ],
+      },
+    },
+  };
+  let nowCalls = 0;
+  let generatedRunId = "";
+  let poisonedLockPath = "";
+  const now = (): Date => {
+    nowCalls += 1;
+    if (nowCalls === 3) {
+      generatedRunId = readdirSync(path.join(stateHome, "runs"))[0] ?? "";
+      poisonedLockPath = `${runPaths(stateHome, generatedRunId).runtimeLease}.lock`;
+      writeFileSync(poisonedLockPath, "not a directory", "utf8");
+      const stale = new Date("2020-01-01T00:00:00.000Z");
+      utimesSync(poisonedLockPath, stale, stale);
+    }
+    return new Date("2026-07-15T00:00:00.000Z");
+  };
+  let failure: CueLineError | undefined;
+
+  try {
+    await runCueLine({
+      request: "Keep the generated run recoverable after lease claim fails",
+      home: stateHome,
+      now,
+      browser: new FakeBrowserAdapter([]),
+      routingConfig,
+    });
+  } catch (error) {
+    if (error instanceof CueLineError) failure = error;
+  }
+
+  assert.notEqual(generatedRunId, "");
+  assert.equal(failure?.code, "ENOTDIR");
+  assert.equal((failure?.details as Record<string, unknown> | undefined)?.run_id, generatedRunId);
+  assert.equal(failure?.message, failure?.cause instanceof Error ? failure.cause.message : undefined);
+  assert.deepEqual(
+    (await readEvents(runPaths(stateHome, generatedRunId).events)).map((event) => event.type),
+    ["run_created"],
+  );
+
+  unlinkSync(poisonedLockPath);
+  const recovered = await continueCueLineRun({
+    runId: generatedRunId,
+    home: stateHome,
+    browser: new FakeBrowserAdapter([
+      reply(() => ({ action: "complete", final_delivery_text: "CLAIM_RECOVERED" })),
+    ]),
+    routingConfig,
+  });
+  assert.equal(recovered.status, "complete");
+  assert.equal(recovered.finalDeliveryText, "CLAIM_RECOVERED");
 });
 
 test("continues after a proven pre-submit failure without trying to recover a nonexistent reply", async () => {
@@ -923,7 +2809,10 @@ test("continues a failed pending turn by reconciling the exact conversation with
     },
     async recoverTurn(input: BrowserTurnInput): Promise<ControllerTurn> {
       recoverCalls += 1;
-      return reply(() => ({ action: "complete", final_delivery_text: "RECOVERED" }))(input);
+      return reply(
+        () => ({ action: "complete", final_delivery_text: "RECOVERED" }),
+        conversationUrl,
+      )(input);
     },
   };
 
@@ -938,7 +2827,7 @@ test("continues a failed pending turn by reconciling the exact conversation with
 
   assert.equal(result.status, "complete");
   assert.equal(result.finalDeliveryText, "RECOVERED");
-  assert.equal(result.conversationUrl, "https://chatgpt.com/c/cueline-test");
+  assert.equal(result.conversationUrl, conversationUrl);
   assert.equal(recoverCalls, 1);
   assert.equal(resendCalls, 0);
   const eventTypes = (await readEvents(runPaths(stateHome, runId).events)).map(
@@ -946,6 +2835,389 @@ test("continues a failed pending turn by reconciling the exact conversation with
   );
   assert.ok(eventTypes.includes("controller_conversation_bound"));
   assert.ok(eventTypes.includes("controller_response_reconciled"));
+});
+
+test("restores an abandoned manually sent attachment turn through an append-only confirmation event", async () => {
+  const runId = "run_manual_attachment_restore";
+  const requestId = "msg_manual_attachment_restore";
+  const conversationUrl = "https://chatgpt.com/c/manual-attachment-restore";
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Recover the manually sent attachment" });
+  await store.append("controller_turn_requested", {
+    round: 2,
+    request_id: requestId,
+    prompt: "x".repeat(44_679),
+    prompt_hash: "attachment-prompt-hash",
+    repair_attempt: 0,
+  });
+  await store.append("controller_conversation_bound", {
+    request_id: requestId,
+    conversation_url: conversationUrl,
+  });
+  await store.append("controller_turn_abandoned", {
+    round: 2,
+    request_id: requestId,
+    reason: "legacy_empty_composer_misclassification",
+  });
+  await store.append("run_failed", {
+    code: "CONTROLLER_RECONCILIATION_MISMATCH",
+    request_id: requestId,
+    stage: "reconciling",
+    submission_state: "possibly_sent",
+  });
+  await store.snapshot();
+
+  const confirmation = await confirmManualControllerSubmission(runId, {
+    home: stateHome,
+    requestId,
+    conversationUrl,
+  });
+  assert.equal(confirmation.outcome, "confirmed");
+
+  let recoverCalls = 0;
+  let resendCalls = 0;
+  const browser: BrowserAdapter = {
+    async sendTurn(): Promise<ControllerTurn> {
+      resendCalls += 1;
+      throw new Error("manual attachment recovery must never resend");
+    },
+    async recoverTurn(input): Promise<ControllerTurn> {
+      recoverCalls += 1;
+      assert.equal(input.manualSendConfirmed, true);
+      assert.equal(input.requestId, requestId);
+      return reply(
+        () => ({ action: "complete", final_delivery_text: "MANUAL_RECOVERED" }),
+        conversationUrl,
+      )(input);
+    },
+  };
+
+  const result = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    reconcileRequestId: requestId,
+    conversationUrl,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "MANUAL_RECOVERED");
+  assert.equal(recoverCalls, 1);
+  assert.equal(resendCalls, 0);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    events.filter((event) => event.type === "controller_turn_manual_submission_confirmed")
+      .length,
+    1,
+  );
+  assert.equal(events.filter((event) => event.type === "controller_command_accepted").length, 1);
+  assert.equal(events.some((event) => event.type === "job_registered"), false);
+});
+
+test("rejects a wrong manual-recovery envelope without repair or resend", async () => {
+  const runId = "run_manual_attachment_wrong_identity";
+  const requestId = "msg_manual_attachment_wrong_identity";
+  const conversationUrl = "https://chatgpt.com/c/manual-attachment-wrong-identity";
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Reject unrelated manual response" });
+  await store.append("controller_turn_requested", {
+    round: 2,
+    request_id: requestId,
+    prompt: "large attachment prompt",
+    prompt_hash: "wrong-identity-prompt-hash",
+    repair_attempt: 0,
+  });
+  await store.append("controller_conversation_bound", {
+    request_id: requestId,
+    conversation_url: conversationUrl,
+  });
+  await store.append("controller_turn_abandoned", {
+    round: 2,
+    request_id: requestId,
+    reason: "legacy_abandon",
+  });
+  await store.append("run_failed", { code: "LEGACY_FAILURE" });
+  await confirmManualControllerSubmission(runId, {
+    home: stateHome,
+    requestId,
+    conversationUrl,
+  });
+
+  let resendCalls = 0;
+  const browser: BrowserAdapter = {
+    async sendTurn(): Promise<ControllerTurn> {
+      resendCalls += 1;
+      throw new Error("must not repair or resend a manual response");
+    },
+    async recoverTurn(): Promise<ControllerTurn> {
+      return {
+        text: `<CueLineControl>${JSON.stringify({
+          protocol: CUELINE_PROTOCOL,
+          run_id: runId,
+          round: 2,
+          request_id: "msg_unrelated",
+          action: "complete",
+          final_delivery_text: "MUST_NOT_ACCEPT",
+        })}</CueLineControl>`,
+        conversationUrl,
+        model: {
+          provider: "chatgpt",
+          selectedLabel: "Pro",
+          responseModelSlug: "gpt-5-6-pro",
+          source: "composer_and_response",
+        },
+      };
+    },
+  };
+
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      reconcileRequestId: requestId,
+      conversationUrl,
+      browser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_MANUAL_RECONCILIATION_REJECTED",
+  );
+  assert.equal(resendCalls, 0);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.some((event) => event.type === "controller_command_accepted"), false);
+  const replayed = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  assert.equal(replayed.state.pendingControllerTurns[0]?.requestId, requestId);
+});
+
+test("manual recovery rejects every identity and controller-evidence mismatch without resending", async (t) => {
+  const cases: Array<{
+    name: string;
+    mutate: (envelope: Record<string, unknown>, turn: ControllerTurn) => void;
+    code: string;
+  }> = [
+    {
+      name: "protocol",
+      mutate: (envelope) => { envelope.protocol = "cueline/9.9"; },
+      code: "CONTROLLER_MANUAL_RECONCILIATION_REJECTED",
+    },
+    {
+      name: "run",
+      mutate: (envelope) => { envelope.run_id = "run_unrelated"; },
+      code: "CONTROLLER_MANUAL_RECONCILIATION_REJECTED",
+    },
+    {
+      name: "round",
+      mutate: (envelope) => { envelope.round = 99; },
+      code: "CONTROLLER_MANUAL_RECONCILIATION_REJECTED",
+    },
+    {
+      name: "request",
+      mutate: (envelope) => { envelope.request_id = "msg_unrelated"; },
+      code: "CONTROLLER_MANUAL_RECONCILIATION_REJECTED",
+    },
+    {
+      name: "conversation",
+      mutate: (_envelope, turn) => {
+        turn.conversationUrl = "https://chatgpt.com/c/unrelated-conversation";
+      },
+      code: "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+    },
+    {
+      name: "missing model",
+      mutate: (_envelope, turn) => { delete turn.model; },
+      code: "CONTROLLER_PRO_EVIDENCE_UNVERIFIED",
+    },
+    {
+      name: "composer model",
+      mutate: (_envelope, turn) => {
+        turn.model = {
+          provider: "chatgpt",
+          selectedLabel: "Instant",
+          responseModelSlug: "gpt-5-6-pro",
+          source: "composer_and_response",
+        };
+      },
+      code: "CONTROLLER_PRO_EVIDENCE_UNVERIFIED",
+    },
+    {
+      name: "response model",
+      mutate: (_envelope, turn) => {
+        turn.model = {
+          provider: "chatgpt",
+          selectedLabel: "Pro",
+          responseModelSlug: "not-pro-model",
+          source: "composer_and_response",
+        };
+      },
+      code: "CONTROLLER_PRO_EVIDENCE_UNVERIFIED",
+    },
+  ];
+
+  for (const [index, scenario] of cases.entries()) {
+    await t.test(scenario.name, async () => {
+      const runId = `run_manual_guard_${index}`;
+      const requestId = `msg_manual_guard_${index}`;
+      const conversationUrl = `https://chatgpt.com/c/manual-guard-${index}`;
+      const stateHome = await home();
+      const store = await RunStore.create({
+        home: stateHome,
+        runId,
+        initialState: initialRunState(runId, ""),
+        reducer: reduceRunState,
+      });
+      await store.append("run_created", { request: "Guard recovered controller evidence" });
+      await store.append("controller_turn_requested", {
+        round: 2,
+        request_id: requestId,
+        prompt: "attachment prompt",
+        prompt_hash: `manual-guard-hash-${index}`,
+      });
+      await store.append("controller_conversation_bound", {
+        request_id: requestId,
+        conversation_url: conversationUrl,
+      });
+      await store.append("controller_turn_abandoned", {
+        round: 2,
+        request_id: requestId,
+        reason: "legacy_abandon",
+      });
+      await store.append("run_failed", { code: "LEGACY_FAILURE" });
+      await confirmManualControllerSubmission(runId, {
+        home: stateHome,
+        requestId,
+        conversationUrl,
+      });
+      let sendCalls = 0;
+      const browser: BrowserAdapter = {
+        async sendTurn(): Promise<ControllerTurn> {
+          sendCalls += 1;
+          throw new Error("manual recovery must never resend");
+        },
+        async recoverTurn(): Promise<ControllerTurn> {
+          const envelope: Record<string, unknown> = {
+            protocol: CUELINE_PROTOCOL,
+            run_id: runId,
+            round: 2,
+            request_id: requestId,
+            action: "complete",
+            final_delivery_text: "MUST_NOT_ACCEPT",
+          };
+          const turn: ControllerTurn = {
+            text: "",
+            conversationUrl,
+            model: {
+              provider: "chatgpt",
+              selectedLabel: "Pro",
+              responseModelSlug: "gpt-5-6-pro",
+              source: "composer_and_response",
+            },
+          };
+          scenario.mutate(envelope, turn);
+          turn.text = `<CueLineControl>${JSON.stringify(envelope)}</CueLineControl>`;
+          return turn;
+        },
+      };
+
+      await assert.rejects(
+        continueControllerLoop({
+          runId,
+          home: stateHome,
+          reconcileRequestId: requestId,
+          conversationUrl,
+          browser,
+          jobSupervisor: new FakeJobSupervisor([]),
+          resolveRunnerSpec: resolver,
+        }),
+        (error: unknown) => error instanceof CueLineError && error.code === scenario.code,
+      );
+      assert.equal(sendCalls, 0);
+      const events = await readEvents(runPaths(stateHome, runId).events);
+      assert.equal(events.some((event) => event.type === "controller_command_accepted"), false);
+      assert.equal(events.some((event) => event.type === "job_registered"), false);
+    });
+  }
+});
+
+test("refuses manual confirmation for another conversation or a superseded round", async () => {
+  const runId = "run_manual_confirmation_guards";
+  const requestId = "msg_manual_confirmation_guards";
+  const conversationUrl = "https://chatgpt.com/c/manual-confirmation-guards";
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Guard manual confirmation" });
+  await store.append("controller_turn_requested", {
+    round: 2,
+    request_id: requestId,
+    prompt: "manual prompt",
+    prompt_hash: "manual-hash",
+  });
+  await store.append("controller_conversation_bound", {
+    request_id: requestId,
+    conversation_url: conversationUrl,
+  });
+  await store.append("controller_turn_abandoned", {
+    round: 2,
+    request_id: requestId,
+    reason: "legacy_abandon",
+  });
+
+  await assert.rejects(
+    confirmManualControllerSubmission(runId, {
+      home: stateHome,
+      requestId,
+      conversationUrl: "https://chatgpt.com/c/different-conversation",
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+  );
+
+  await store.append("controller_command_accepted", {
+    command_hash: "newer-command-hash",
+    command: {
+      protocol: CUELINE_PROTOCOL,
+      run_id: runId,
+      round: 2,
+      request_id: "msg_same_round_already_accepted",
+      action: "blocked",
+      reason: "newer decision",
+    },
+  });
+  await assert.rejects(
+    confirmManualControllerSubmission(runId, {
+      home: stateHome,
+      requestId,
+      conversationUrl,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "CONTROLLER_RECONCILIATION_SUPERSEDED",
+  );
 });
 
 test("recovered invalid routing is repaired before any job is registered", async () => {
@@ -978,27 +3250,33 @@ test("recovered invalid routing is repaired before any job is registered", async
   const browser: BrowserAdapter = {
     async recoverTurn(input): Promise<ControllerTurn> {
       recoverCalls += 1;
-      return reply(() => ({
-        action: "dispatch",
-        jobs: [
-          {
-            job_key: "invalid-route",
-            lane: "runner-id-not-lane",
-            mode: "advise",
-            task: "Must not start",
-          },
-        ],
-      }))(input);
+      return reply(
+        () => ({
+          action: "dispatch",
+          jobs: [
+            {
+              job_key: "invalid-route",
+              lane: "runner-id-not-lane",
+              mode: "advise",
+              task: "Must not start",
+            },
+          ],
+        }),
+        "https://chatgpt.com/c/reconcile-invalid-route",
+      )(input);
     },
     async sendTurn(input): Promise<ControllerTurn> {
       repairCalls += 1;
       assert.equal(input.requestId, requestId);
       assert.match(input.prompt, /ROUTE_LANE_UNKNOWN/);
-      return reply(() => ({
-        action: "blocked",
-        reason: "Correct route unavailable",
-        final_delivery_text: "ROUTE_REJECTED_SAFELY",
-      }))(input);
+      return reply(
+        () => ({
+          action: "blocked",
+          reason: "Correct route unavailable",
+          final_delivery_text: "ROUTE_REJECTED_SAFELY",
+        }),
+        "https://chatgpt.com/c/reconcile-invalid-route",
+      )(input);
     },
   };
 
@@ -1082,9 +3360,10 @@ test("requires explicit selection before reconciling one of multiple legacy pend
           "Selected page does not match this pending prompt",
         );
       }
-      return reply(() => ({ action: "complete", final_delivery_text: "LEGACY_RECOVERED" }))(
-        input,
-      );
+      return reply(
+        () => ({ action: "complete", final_delivery_text: "LEGACY_RECOVERED" }),
+        "https://chatgpt.com/c/legacy-pending",
+      )(input);
     },
   };
 
@@ -1151,6 +3430,214 @@ test("requires explicit selection before reconciling one of multiple legacy pend
     abandoned.map((event) => (event.payload as Record<string, unknown>).request_id),
     [secondRequestId],
   );
+});
+
+test("invalid selected reconciliation preserves every other pending turn", async () => {
+  const runId = "run_invalid_multi_reconciliation";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/invalid-multi-reconciliation";
+  const selectedRequestId = "msg_selected_invalid";
+  const otherRequestId = "msg_must_remain_pending";
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Preserve unselected recovery evidence" });
+  await store.append("controller_conversation_bound", { conversation_url: conversationUrl });
+  for (const [round, requestId] of [
+    [1, selectedRequestId],
+    [2, otherRequestId],
+  ] as const) {
+    await store.append("controller_turn_requested", {
+      round,
+      request_id: requestId,
+      prompt: `prompt ${round}`,
+      prompt_hash: `hash-${round}`,
+    });
+    await store.append("controller_turn_submission_started", {
+      round,
+      request_id: requestId,
+      submission_state: "possibly_sent",
+      conversation_url: conversationUrl,
+      selected_model_label: "Pro",
+      composer_prompt_state: "attachment_ready",
+      baseline_assistant_message_count: 0,
+    });
+  }
+  await store.append("run_failed", { code: "LEGACY_AMBIGUOUS_SUBMISSION" });
+  const browser: BrowserAdapter = {
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("reconciliation must not send");
+    },
+    async recoverTurn(input): Promise<ControllerTurn> {
+      const turn = reply(
+        () => ({ action: "complete", final_delivery_text: "MUST_NOT_ACCEPT" }),
+        conversationUrl,
+      )(input);
+      turn.model = {
+        provider: "chatgpt",
+        selectedLabel: "Pro",
+        responseModelSlug: "not-pro-model",
+        source: "composer_and_response",
+      };
+      return turn;
+    },
+  };
+
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      browser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+      reconcileRequestId: selectedRequestId,
+      abandonOtherPendingTurns: true,
+      conversationUrl,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "CONTROLLER_PRO_EVIDENCE_UNVERIFIED",
+  );
+
+  const reloaded = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  assert.deepEqual(
+    reloaded.state.pendingControllerTurns.map((turn) => turn.requestId).sort(),
+    [otherRequestId, selectedRequestId].sort(),
+  );
+  assert.equal(reloaded.state.abandonedControllerTurns.length, 0);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.some((event) => event.type === "controller_response_reconciled"), false);
+  assert.equal(events.some((event) => event.type === "controller_turn_abandoned"), false);
+});
+
+test("submission checkpoints cannot replace an already bound conversation", async () => {
+  const runId = "run_checkpoint_conversation_guard";
+  const stateHome = await home();
+  const originalUrl = "https://chatgpt.com/c/checkpoint-original";
+  const replacementUrl = "https://chatgpt.com/c/checkpoint-replacement";
+  const browser: BrowserAdapter = {
+    async sendTurn(_input, hooks): Promise<ControllerTurn> {
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitting",
+        composerPromptState: "inline_ready",
+        conversationUrl: replacementUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: 0,
+      });
+      throw new Error("checkpoint mismatch should stop before browser completion");
+    },
+  };
+
+  await assert.rejects(
+    runControllerLoop({
+      request: "Keep the canonical controller conversation",
+      runId,
+      home: stateHome,
+      conversationUrl: originalUrl,
+      browser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+      executor: "caller",
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+  );
+
+  const reloaded = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  assert.equal(reloaded.state.conversationUrl, originalUrl);
+  assert.equal(reloaded.state.pendingControllerTurns[0]?.conversationUrl, originalUrl);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.some((event) => event.type === "controller_turn_submission_started"), false);
+});
+
+test("state replay ignores a mismatched conversation checkpoint", async () => {
+  const runId = "run_checkpoint_replay_guard";
+  const stateHome = await home();
+  const originalUrl = "https://chatgpt.com/c/replay-original";
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Replay canonical URL", executor: "caller" });
+  await store.append("controller_conversation_bound", { conversation_url: originalUrl });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: "msg_checkpoint_replay_guard",
+    prompt: "prompt",
+    prompt_hash: "prompt-hash",
+  });
+  await store.append("controller_turn_submission_started", {
+    request_id: "msg_checkpoint_replay_guard",
+    submission_state: "submitting",
+    conversation_url: "https://chatgpt.com/c/replay-replacement",
+  });
+
+  const replayed = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  assert.equal(replayed.state.conversationUrl, originalUrl);
+  assert.equal(replayed.state.pendingControllerTurns[0]?.conversationUrl, originalUrl);
+});
+
+test("continuation rejects a replacement conversation URL before browser or event mutation", async () => {
+  const runId = "run_persisted_conversation_guard";
+  const stateHome = await home();
+  const originalUrl = "https://chatgpt.com/c/persisted-conversation";
+  const replacementUrl = "https://chatgpt.com/c/replacement-conversation";
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Keep the original controller conversation" });
+  await store.append("controller_conversation_bound", { conversation_url: originalUrl });
+  await store.append("run_failed", { code: "OUTER_WAIT_ENDED" });
+  const before = await readEvents(runPaths(stateHome, runId).events);
+  let browserCalls = 0;
+  const browser: BrowserAdapter = {
+    async sendTurn(): Promise<ControllerTurn> {
+      browserCalls += 1;
+      throw new Error("must reject before browser use");
+    },
+    async recoverTurn(): Promise<ControllerTurn> {
+      browserCalls += 1;
+      throw new Error("must reject before browser use");
+    },
+  };
+
+  await assert.rejects(
+    continueCueLineRun({
+      runId,
+      home: stateHome,
+      conversationUrl: replacementUrl,
+      browser,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+  );
+
+  assert.equal(browserCalls, 0);
+  assert.deepEqual(await readEvents(runPaths(stateHome, runId).events), before);
 });
 
 test("includes runtime routing instructions in every controller prompt", async () => {
@@ -1294,4 +3781,109 @@ test("controller prompt keeps worker-supplied control markers inside escaped JSO
   });
 
   assert.equal(result.finalDeliveryText, "SAFE");
+});
+
+test("controller feedback prefers successful stdout and bounds oversized worker evidence", async () => {
+  const runId = "run_compact_success_evidence";
+  const spec = {
+    job_key: "preflight",
+    lane: "default",
+    mode: "advise",
+    task: "Return a concise final report after a noisy tool trace",
+  } as const;
+  const id = jobId(runId, spec.job_key, spec);
+  const status = terminalStatus(id, `FINAL_SUMMARY\n${"S".repeat(30_000)}`);
+  status.result!.stderr = `TRACE_SENTINEL\n${"T".repeat(150_000)}`;
+  status.result!.output = `${status.result!.stdout}\n${status.result!.stderr}`;
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [spec] })),
+    reply((input) => {
+      assert.match(input.prompt, /FINAL_SUMMARY/);
+      assert.doesNotMatch(input.prompt, /TRACE_SENTINEL/);
+      assert.match(input.prompt, /\.\.\.\[truncated \d+ chars\]/);
+      assert.ok(input.prompt.length < 20_000, `prompt was ${input.prompt.length} chars`);
+      return { action: "complete", final_delivery_text: "COMPACT" };
+    }),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Review compact evidence",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: new FakeJobSupervisor([status]),
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.finalDeliveryText, "COMPACT");
+});
+
+test("controller evidence budget is global across multiple large jobs", async () => {
+  const runId = "run_global_evidence_budget";
+  const specs = ["one", "two", "three"].map((key) => ({
+    job_key: key,
+    lane: "default",
+    mode: "advise" as const,
+    task: `Large audit ${key}`,
+  }));
+  const statuses = specs.map((spec, index) =>
+    terminalStatus(
+      jobId(runId, spec.job_key, spec),
+      `REPORT_${index + 1}\n${String(index + 1).repeat(30_000)}`,
+    ),
+  );
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: specs })),
+    reply((input) => {
+      assert.match(input.prompt, /REPORT_1/);
+      assert.match(input.prompt, /\[truncated \d+ chars\]/);
+      assert.match(input.prompt, /controller evidence truncated or omitted/);
+      assert.ok(input.prompt.length < 20_000, `prompt was ${input.prompt.length} chars`);
+      return { action: "complete", final_delivery_text: "GLOBAL_BUDGET_OK" };
+    }),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Review several large reports",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: new FakeJobSupervisor(statuses),
+    resolveRunnerSpec: resolver,
+    maxConcurrency: 2,
+  });
+
+  assert.equal(result.finalDeliveryText, "GLOBAL_BUDGET_OK");
+});
+
+test("controller evidence budget applies after JSON safety escaping", async () => {
+  const runId = "run_encoded_evidence_budget";
+  const spec = {
+    job_key: "encoded",
+    lane: "default",
+    mode: "advise",
+    task: "Return markup-heavy evidence",
+  } as const;
+  const id = jobId(runId, spec.job_key, spec);
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [spec] })),
+    reply((input) => {
+      assert.match(input.prompt, /\\u003c/);
+      assert.match(input.prompt, /controller evidence truncated or omitted/);
+      assert.ok(input.prompt.length < 20_000, `prompt was ${input.prompt.length} chars`);
+      return { action: "complete", final_delivery_text: "ENCODED_BUDGET_OK" };
+    }),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Review encoded evidence safely",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: new FakeJobSupervisor([terminalStatus(id, "<".repeat(30_000))]),
+    resolveRunnerSpec: resolver,
+    executor: "process",
+  });
+
+  assert.equal(result.finalDeliveryText, "ENCODED_BUDGET_OK");
 });

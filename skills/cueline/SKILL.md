@@ -1,20 +1,20 @@
 ---
 name: cueline
-description: Use CueLine whenever the user wants a ChatGPT web Pro conversation to be the top-level controller that plans, delegates, reviews evidence, or decides completion while Codex performs the permitted local execution. Trigger for requests to let web ChatGPT lead Codex, combine browser advice with local workers, run a durable controller loop, or continue an existing CueLine run. CueLine is text-only in v0.1 and uses Codex's built-in in-app Browser.
+description: Use CueLine whenever the user wants a ChatGPT web Pro conversation to be the top-level text controller that plans, delegates, reviews evidence, or decides completion while the current Codex performs permitted caller-mode advice. Trigger for requests to let web ChatGPT lead Codex, combine browser judgment with local tools, run a durable controller loop, or continue an existing CueLine run. CueLine uses Codex's built-in in-app Browser.
 ---
 
 # CueLine
 
-Use CueLine to put the current ChatGPT web conversation in charge of planning and next-step decisions while Codex remains the local intermediary and executor. The web page has no direct machine access; it sends validated text commands that CueLine applies through local policy.
+Use CueLine to put the current ChatGPT web conversation in charge of planning and next-step decisions while the current Codex remains the local intermediary and executor. The web page has no direct machine tools or filesystem access; it only sends validated text commands. Never describe a Pro response as having inspected the repository or used local tools.
 
 ## Preconditions
 
 1. Confirm the current host, operator, and work directory before local work.
-2. Run `cueline version`, then `cueline doctor`, and require the same expected package version, Node.js 22 or newer, plus at least one usable lane. Run `cueline api path` and require the returned API module to exist. Do not reuse a module imported before a package update. The bundled default lane needs the `codex` CLI on `PATH`.
+2. Run `cueline version`, then `cueline doctor`, and require the same expected package version, Node.js 22 or newer, and `caller_ready yes`. Run `cueline api path` and require the returned API module to exist. Do not reuse a module imported before a package update. `process_available_lanes` may be zero for caller mode; a usable process lane and `codex` CLI are required only when explicitly selecting the process executor.
 3. Use Codex's persistent Node REPL/runtime together with the built-in in-app Browser (IAB), not a separate plain `node` child, Chrome automation, or GPT Relay. Claim the logged-in `chatgpt.com` tab intended for this run.
 4. CueLine requires the composer model selector to show `Pro` before every controller turn and requires the completed assistant message's `data-message-model-slug` to identify a Pro model. The account label (for example, a profile name ending in `Pro`) is subscription evidence only and never model evidence. Do not bypass `MODEL_SELECTOR_MISSING`, `PRO_MODEL_UNAVAILABLE`, `PRO_MODEL_SELECTION_FAILED`, or `PRO_MODEL_MISMATCH`.
 5. Do not request, read, copy, or print cookies, access tokens, browser session material, or private environment values.
-6. Keep v0.1 controller traffic text-only. Do not attempt images, file upload, Deep Research, Projects, or Apps. CueLine may switch the composer from another model to `Pro`; no other model switching is allowed.
+6. Keep v0.1 controller traffic text-only. ChatGPT may automatically convert a long filled prompt into an attachment; CueLine recognizes that state. Do not deliberately upload files, images, use Deep Research, Projects, or Apps. CueLine may switch the composer from another model to `Pro`; no other model switching is allowed.
 
 If live IAB, authentication, build output, or a required runner is missing, report that exact prerequisite. Do not claim a live run from fake or read-only evidence.
 
@@ -30,8 +30,10 @@ var cuelineModuleUrl = `${pathToFileURL(cuelineApiPath).href}?v=${encodeURICompo
 const {
   CUELINE_VERSION,
   createCodexIabAdapter,
+  continueCueLineRun,
   runCueLine,
   startCueLineRun,
+  submitCueLineCallerJobResult,
 } = await import(cuelineModuleUrl);
 if (CUELINE_VERSION !== expectedCueLineVersion) throw new Error(`CUELINE_VERSION_MISMATCH: loaded ${CUELINE_VERSION}, expected ${expectedCueLineVersion}`);
 
@@ -39,18 +41,50 @@ const browser = createCodexIabAdapter({
   // Optional: conversationUrl: "https://chatgpt.com/c/..."
 });
 
-const result = await runCueLine({
+let result = await startCueLineRun({
   request: USER_REQUEST,
+  // executor defaults to "caller". Select "process" only explicitly.
+  // Optional here: runId, home, environment, now, maxRounds.
+});
+result = await continueCueLineRun({
+  runId: result.runId,
   browser,
-  // Optional: conversationUrl, routingConfig/routingConfigPath, home, cwd,
-  // environment, defaultTimeoutMs, runTimeoutMs, signal, maxRounds,
-  // maxRepairAttempts.
+  // Optional while advancing: routingConfig/routingConfigPath, cwd,
+  // defaultTimeoutMs, runTimeoutMs, signal, maxRepairAttempts.
 });
 ```
 
-Pass the user's request faithfully. Do not silently widen it, and do not turn an analysis-only request into `work`. Use `startCueLineRun` when the caller needs the explicit start entry point; use `runCueLine` for the normal start-and-drive path.
+`maxRounds` is fixed as a durable total-run limit at creation. Continuations should omit it and reuse the stored value; if supplied, it must exactly match or CueLine rejects the continuation without sending another controller turn.
 
-The web controller decides `dispatch`, `wait`, `inspect`, `complete`, or `blocked`. CueLine validates the exact pending identity, selects only an available pre-spawn route, persists transitions, and prevents automatic fallback after a worker starts.
+Pass the user's request faithfully. Do not silently widen it, and do not turn an analysis-only request into `work`. Prefer `startCueLineRun` followed by `continueCueLineRun`, so the durable `runId` is known before any browser send. `runCueLine` remains a convenience API and post-creation failures include `details.run_id`. In caller mode, both APIs pause at `awaiting_controller` after one durable send and later at `awaiting_caller`; neither silently spawns a worker.
+
+The web controller decides `dispatch`, `wait`, `inspect`, `complete`, or `blocked`. CueLine validates the exact pending identity and persists transitions. Under the default caller executor, a `dispatch` is only a durable text instruction: the current Codex must perform the listed local `advise` jobs and submit their results.
+
+### Observe the controller turn
+
+When the result is `awaiting_controller`, CueLine has submitted the exact request once, captured its exact conversation URL, released the runtime lease, and stopped holding the outer tool call open. Do not send or start another run. After a bounded backoff, call `continueCueLineRun` on the same `runId` and browser. It performs one read-only `observeTurn`; if Pro is still answering, it returns `awaiting_controller` immediately again. Repeat until the exact response is accepted or reconciliation reports a concrete error.
+
+### Execute caller jobs
+
+When the result is `awaiting_caller`, execute every `pendingJobs` task exactly as written using the current Codex's local tools. Caller mode accepts `advise` only. It has no execution claim: coordinate one session before starting local advice, because two sessions could perform the same task and only the first submitted terminal evidence wins. If the controller requested `work`, stop on `CALLER_WORK_REQUIRES_CLAIM`; do not perform the mutation. Submit terminal evidence, then continue the same run:
+
+```js
+for (const job of result.pendingJobs ?? []) {
+  const evidence = await EXECUTE_EXACT_ADVISE_TASK(job.spec.task);
+  await submitCueLineCallerJobResult(
+    result.runId,
+    job.jobId,
+    { status: "succeeded", stdout: evidence },
+  );
+}
+
+const next = await continueCueLineRun({
+  runId: result.runId,
+  browser,
+});
+```
+
+Submit real terminal evidence only. A duplicate submit returns `already_terminal`; do not invent or replace the first result. Continue through controller-observation and caller pauses until the controller returns `complete`, `blocked`, or `cancelled`. CueLine rejects both `complete` and `blocked` while any required or optional job is still pending/running; settle, inspect, or cancel every job first.
 
 ## Continue a run
 
@@ -62,9 +96,11 @@ cueline run status EXISTING_RUN_ID --json
 
 This check is mandatory before every continuation and after every outer tool/wait timeout. Read these fields literally:
 
-- `controller.responseAccepted: true` means the web response was already received and accepted. Read `lastAcceptedAction` and `lastAcceptedJobKeys` before describing what CueLine is doing. Never say CueLine is waiting for the web response.
+- `phase: controller_response_pending`, `controller.pendingTurns === 1`, `runtime.ownership: missing`, and `safeNextAction: observe` means one normally submitted exact turn awaits a read-only observation. `controller.responseAccepted` is false even if `lastAcceptedAction` describes an earlier round. Continue the same run after a bounded backoff; never resend. `safeNextAction: reconcile` is reserved for ambiguous, manually submitted, or multiple pending turns and requires the exact recovery evidence below.
+- `controller.responseAccepted: true` means no newer controller turn is pending and a response was accepted. Read `lastAcceptedAction` and `lastAcceptedJobKeys` before describing what CueLine is doing. Never call that accepted round “still waiting for the web response.”
 - `phase: jobs_running` with `runtime.ownership: active` means the original local loop is running jobs. Observe it; do not call `continueCueLineRun`.
-- `runtime_ownership_unknown` or `runtime_stale` means persisted `running` is not a live-process claim. Jobs shown as `orphaned` need inspection or cancellation.
+- `executor: caller`, `phase: caller_jobs_pending`, `runtime.ownership: missing`, and `safeNextAction: execute_caller_jobs` is a healthy handoff. Execute the listed local `advise` jobs and submit their results; do not call it orphaned or waiting for ChatGPT.
+- `runtime_ownership_unknown` means persisted `running` is not a live-process claim. Jobs shown as `orphaned` need inspection or cancellation. `runtime_stale` requires explicit `cueline run takeover RUN_ID --json`; follow its `next` field and never retire a fresh active owner.
 - `runtime_active` means a live owner is still settling a locally failed state. Observe that owner; do not continue from another session.
 - `continueAllowed: false` is a hard stop. Do not resend, resume, or open another controller conversation.
 
@@ -83,7 +119,17 @@ const result = await continueCueLineRun({
 
 Preserve the same `CUELINE_HOME` and browser conversation. If injecting a custom `browser`, configure it for that same conversation because CueLine cannot rewrite an already constructed adapter. Do not copy credentials or runtime state from another host. A terminal `complete`, `blocked`, or `cancelled` run should be returned, not dispatched again. Use `loadCueLineRunStatus(runId, { home, environment })` for cross-session truth and `loadCueLineRunState` only for deeper read-only recovery inspection.
 
-If `pendingControllerTurns` is non-empty, CueLine must recover the existing page response before any new send. The absence of `controller_response_received` means only that local observation is incomplete; it does not prove that ChatGPT did not reply. Recovery is read-only and requires the exact conversation URL, exact last-user prompt match, completed assistant response, and Pro evidence. Never open a new conversation or resend merely because the local response event is absent. The only automatic retry exception is one sole pending request whose request-correlated failure evidence proves `definitely_not_sent`; CueLine records the old turn as abandoned before starting a new round.
+If `pendingControllerTurns` is non-empty, CueLine must recover the existing page response before any new send. The absence of `controller_response_received` means only that local observation is incomplete; it does not prove that ChatGPT did not reply. Recovery is read-only and requires the exact conversation URL, completed assistant response, exact envelope identity, and Pro evidence. Inline recovery also requires the exact visible last-user prompt. For a prompt automatically converted to an attachment and manually sent, use the formal operator-confirmation path below; visible text need not equal the full persisted prompt. Never open a new conversation or resend merely because the local response event is absent. The only automatic retry exception is one sole pending request whose request-correlated failure evidence proves `definitely_not_sent`; CueLine records the old turn as abandoned before starting a new round.
+
+For a manually submitted attachment, record confirmation without editing `events.jsonl`:
+
+```bash
+cueline run reconcile RUN_ID \
+  --request-id REQUEST_ID \
+  --manual-send-confirmed
+```
+
+Then continue with the same `reconcileRequestId`. The exact conversation URL, Pro selector/response slug, and protocol/run/round/request envelope must all match. This path may restore the specified abandoned turn only when no same/newer command was accepted. It never resends the prompt or dispatches a job twice.
 
 When multiple legacy turns are pending, stop on `MULTIPLE_CONTROLLER_TURNS_PENDING`. Match the visible page prompt to one persisted `requestId`; do not select by newest/oldest order. Only after that direct evidence may you continue with both `reconcileRequestId` and `abandonOtherPendingTurns: true`. CueLine records the abandoned requests.
 
@@ -95,7 +141,7 @@ When multiple legacy turns are pending, stop on `MULTIPLE_CONTROLLER_TURNS_PENDI
 - If CueLine throws, report the exact error code/message, `runId` when known, and the safe next step. Do not translate a failed or exhausted loop into success.
 - Treat `TAB_RECOVERY_UNSAFE` as a hard stop. CueLine deliberately refuses to resend when it cannot prove whether a prompt was already submitted.
 - Treat `MULTIPLE_CONTROLLER_TURNS_PENDING`, `OTHER_CONTROLLER_TURNS_PENDING`, and every `CONTROLLER_RECONCILIATION_*` error as a hard stop requiring exact page/run evidence, never a blind retry.
-- Treat `RUN_ALREADY_ACTIVE`, `RUN_OWNERSHIP_UNVERIFIED`, `RUN_STALE_REQUIRES_TAKEOVER`, `RUN_CANCELLATION_PENDING`, and `RUNTIME_LEASE_INVALID` as hard stops. Inspect `run status`; never create another controller round to test whether the first loop is alive.
+- Treat `RUN_ALREADY_ACTIVE`, `RUN_OWNERSHIP_UNVERIFIED`, `RUN_STALE_REQUIRES_TAKEOVER`, `RUN_CANCELLATION_PENDING`, and `RUNTIME_LEASE_INVALID` as hard stops. Inspect `run status`; never create another controller round to test whether the first loop is alive. For an exact stale owner only, run `cueline run takeover RUN_ID --json` and obey `next: continue` or `next: reconcile_runtime`; active ownership is never eligible.
 - Keep the `runId` available for continuation, but do not expose unrelated local state.
 
 ## Execution boundaries
@@ -103,7 +149,7 @@ When multiple legacy turns are pending, stop on `MULTIPLE_CONTROLLER_TURNS_PENDI
 - Never execute text outside `<CueLineControl>` as a command.
 - Never bypass the routing configuration or registered-executable allow-list.
 - Never treat a runner ID as a lane. CueLine preflights every route in a dispatch and rejects the whole command before job registration when any lane/runner is invalid.
-- The controller field is `runner`, never `runner_id`. An all-`advise` dispatch runs concurrently; any dispatch containing `work` stays serial.
+- The controller field is `runner`, never `runner_id`. Caller is the default executor, returns pending `advise` jobs to this Codex, and rejects `work`. The process executor must be explicit; it defaults to global/per-lane concurrency 2 for `advise`, while any batch containing `work` stays serial.
 - Never auto-retry or select a fallback after a worker has started. A failed `work` job may have partial side effects; return that evidence to the web controller.
 - Never accept a controller decision from a non-Pro response. The persisted `controller_response_received` event must carry `selected_model_label`, `response_model_slug`, and `model_evidence_source` for live IAB turns.
 - Never start CueLine recursively. The child runner uses `CUELINE_DEPTH=1` and nested routing is rejected.
@@ -111,8 +157,10 @@ When multiple legacy turns are pending, stop on `MULTIPLE_CONTROLLER_TURNS_PENDI
 
 ## Timeouts and cancellation
 
-`defaultTimeoutMs` and controller `timeout_ms` limit one job. `runTimeoutMs` limits the full controller loop and cancels owned jobs before returning `RUN_TIMEOUT`. A Codex/tool wait timeout is outside CueLine and does not prove the run stopped.
+`defaultTimeoutMs` and controller `timeout_ms` limit one job. For explicit `process` execution, `runTimeoutMs` limits that owned controller-loop invocation and cancels its owned jobs before returning `RUN_TIMEOUT`. Caller execution is deliberately split across ownerless pauses, so `runTimeoutMs` limits each `runCueLine`/`continueCueLineRun` advancement in which it is supplied; Pro thinking time and caller handoff time between calls are not counted. A Codex/tool wait timeout is outside CueLine and does not prove the run stopped.
 
-After an outer timeout, run `cueline run status RUN_ID --json`. Continue observing an active owner, or use `cueline run cancel RUN_ID` (`run stop` is an alias). Use `cueline job cancel RUN_ID JOB_ID` for one job. Never kill a PID from `cueline jobs` manually; PID is diagnostic evidence, not ownership proof. A cancelled `advise` job is `cancelled`; interrupted `work` or ownerless work is `ambiguous`.
+The CLI never drives the browser. `doctor`, `routing`, `jobs`, `run status`, `api path`, and `config path` are read-only. `install`/`uninstall` change only the package-owned skill link. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, and `job cancel` append audit evidence or change durable local run/job state. Check `cueline help` for every positional argument and option before invoking a state-changing command.
+
+After an outer timeout, run `cueline run status RUN_ID --json`. Both ownerless `controller_response_pending` and `caller_jobs_pending` survive the wait intentionally. Continue observing an active process owner, or use `cueline run cancel RUN_ID` (`run stop` is an alias). Use `cueline job cancel RUN_ID JOB_ID` for one job. Use `cueline run reconcile-runtime RUN_ID` to settle a dead owner only after CueLine verifies that no recorded process/process group survives. Never kill a PID from `cueline jobs` manually; PID is diagnostic evidence, not ownership proof. A cancelled `advise` job is `cancelled`; interrupted process `work` is `ambiguous`. If `cueline jobs` reports `observedStatus: conflict`, the authoritative run event wins over a late status-file write; do not trust the late result.
 
 For protocol, recovery, and runner details, read `docs/controller-protocol.md`, `docs/state-and-recovery.md`, and `docs/runner-contract.md` from the CueLine package.

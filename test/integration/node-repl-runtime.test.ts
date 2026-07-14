@@ -31,7 +31,13 @@ const browser = {
         action: 'complete',
         final_delivery_text: 'NODE_REPL_OK'
       }) + '</CueLineControl>',
-      conversationUrl: 'https://chatgpt.com/c/node-repl-test'
+      conversationUrl: 'https://chatgpt.com/c/node-repl-test',
+      model: {
+        provider: 'chatgpt',
+        selectedLabel: 'Pro',
+        responseModelSlug: 'gpt-5-6-pro',
+        source: 'composer_and_response'
+      }
     };
   }
 };

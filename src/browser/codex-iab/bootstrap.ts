@@ -1,12 +1,22 @@
 import { CueLineError } from "../../core/errors.js";
+import type { ComposerPromptState } from "../browser-adapter.js";
 
 export interface PageChatState {
+  /** URL captured in the same DOM evaluation as the response evidence. */
+  pageUrl: string;
   isAnswering: boolean;
   assistantText: string;
   assistantMessageCount: number;
   assistantModelSlug: string | null;
   lastUserText: string | null;
   lastMessageRole: "assistant" | "user" | null;
+}
+
+export interface PageComposerState {
+  state: ComposerPromptState | "empty";
+  inlineTextLength: number;
+  attachmentCount: number;
+  sendButtonEnabled: boolean;
 }
 
 export interface IabLocator {
@@ -135,6 +145,7 @@ export async function readPageChatState(tab: IabTab): Promise<PageChatState> {
     const lastMessageRole =
       lastRole === "assistant" || lastRole === "user" ? lastRole : null;
     return {
+      pageUrl: window.location.href,
       isAnswering,
       assistantText,
       assistantMessageCount: assistantMessages.length,
@@ -143,4 +154,74 @@ export async function readPageChatState(tab: IabTab): Promise<PageChatState> {
       lastMessageRole,
     };
   });
+}
+
+export async function readPageComposerState(
+  tab: IabTab,
+  expectedPrompt: string,
+  sendButtonNames: readonly string[],
+): Promise<PageComposerState> {
+  return tab.playwright.evaluate(
+    ({ composerProbe: _composerProbe, expectedPrompt, sendButtonNames }) => {
+      const normalize = (value: unknown): string =>
+        String(value ?? "")
+          .replace(/\u00a0/g, " ")
+          .replace(/\r\n/g, "\n")
+          .trim();
+      const composer = document.querySelector('#prompt-textarea[contenteditable="true"]');
+      const inlineText = normalize(
+        composer && "innerText" in composer
+          ? (composer as HTMLElement).innerText
+          : composer?.textContent,
+      );
+      const expected = normalize(expectedPrompt);
+      const root = composer?.closest("form") ?? composer?.parentElement?.parentElement ?? document;
+      const attachmentElements = new Set<Element>();
+      for (const element of Array.from(
+        root.querySelectorAll(
+          '[data-testid="file-upload-preview"], [data-testid*="attachment"][data-testid*="preview"], [data-testid*="file"][data-testid*="preview"], [class*="attachment"][class*="pill"], [class*="file"][class*="pill"], button[aria-label]',
+        ),
+      )) {
+        const label = normalize(element.getAttribute("aria-label"));
+        const testId = normalize(element.getAttribute("data-testid"));
+        const classes = normalize(element.getAttribute("class"));
+        const isAttachment =
+          /(?:remove|delete).*(?:file|attachment)|(?:file|attachment).*(?:remove|delete)|移除.*(?:檔案|附件)|刪除.*(?:檔案|附件)/i.test(
+            label,
+          ) ||
+          /(?:file-upload-preview|attachment.*preview|file.*preview)/i.test(testId) ||
+          /(?:attachment|file).*(?:pill|chip)|(?:pill|chip).*(?:attachment|file)/i.test(classes);
+        if (isAttachment) attachmentElements.add(element);
+      }
+      const sendButtonEnabled = Array.from(root.querySelectorAll("button")).some((element) => {
+        const button = element as HTMLButtonElement;
+        const label = normalize(
+          button.getAttribute("aria-label") ?? button.innerText ?? button.textContent,
+        );
+        return (
+          sendButtonNames.includes(label) &&
+          !button.disabled &&
+          button.getAttribute("aria-disabled") !== "true"
+        );
+      });
+      const attachmentCount = attachmentElements.size;
+      const state: PageComposerState["state"] =
+        inlineText !== "" && inlineText === expected
+          ? "inline_ready"
+          : attachmentCount > 0
+            ? "attachment_ready"
+            : "empty";
+      return {
+        state,
+        inlineTextLength: inlineText.length,
+        attachmentCount,
+        sendButtonEnabled,
+      };
+    },
+    {
+      composerProbe: true,
+      expectedPrompt,
+      sendButtonNames: [...sendButtonNames],
+    },
+  );
 }

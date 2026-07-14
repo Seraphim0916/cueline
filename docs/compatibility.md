@@ -6,8 +6,9 @@
 |---|---|---|
 | Node.js 22+ ESM | Supported | Core protocol, state, router, runners, fake browser tests |
 | Codex Node REPL + built-in Browser (IAB) | Required for live control | Provides the imported API with the authenticated ChatGPT tab/browser client |
-| `codex` CLI | Required by default route | Custom routing may register a different executable |
-| ChatGPT web conversation | Supported, text only | Uses the model currently selected in the page |
+| Current Codex caller | Default local executor | Performs durable caller-mode `advise` jobs and submits their results |
+| `codex` CLI | Required only by bundled process route | `executor: "process"` is explicit; custom routing may register a different executable |
+| ChatGPT web conversation | Supported, text commands | Controller has no direct local tools; CueLine requires a Pro composer and Pro response slug |
 | macOS | Primary supported desktop | Codex desktop + symlink installer target |
 | Linux | Core/CI target | Live Codex IAB availability depends on the host product |
 | Windows | Not verified | `install.sh` and symlink layout are not a Windows installer |
@@ -16,9 +17,9 @@ The npm package has no runtime dependencies. Development requires TypeScript and
 
 ## ChatGPT requirements
 
-CueLine is designed for a conversation already authenticated by the user at `chatgpt.com`, including a ChatGPT Pro account when Pro is the intended controller. CueLine neither handles credentials nor verifies plan entitlement. It does not switch models; the page's current selection is authoritative.
+CueLine is designed for a conversation already authenticated by the user at `chatgpt.com`. CueLine neither handles credentials nor verifies plan entitlement. Before each controller turn it may switch the composer to `Pro`; that is its only automatic model switch. It also requires Pro evidence on the completed response.
 
-The v0.1 adapter relies on accessible textbox/button roles and assistant-message markup in the current ChatGPT web UI. UI changes can cause explicit `COMPOSER_MISSING`, `SEND_BUTTON_MISSING`, or response-timeout errors. A fake adapter test cannot prove that the current live page still matches.
+The v0.1 adapter relies on accessible textbox/button roles, attachment chips, and assistant-message markup in the current ChatGPT web UI. ChatGPT's automatic conversion of a long filled prompt into an attachment is supported. Deliberate file upload is not. UI changes can cause explicit `COMPOSER_MISSING`, `SEND_BUTTON_MISSING`, or response-timeout errors. A fake adapter test cannot prove that the current live page still matches.
 
 ## Supported in v0.1
 
@@ -26,29 +27,34 @@ The v0.1 adapter relies on accessible textbox/button roles and assistant-message
 - text controller observations and commands
 - `dispatch`, `wait`, `inspect`, `complete`, and `blocked`
 - foreground and background local jobs
-- concurrent all-`advise` batches and serialized batches containing `work`
+- caller-first execution: durable pending `advise` jobs are performed by the current Codex and submitted through the API
+- durable built-in-IAB submit/one-shot-observe pauses that let Pro think beyond one outer tool waiter without resending
+- explicit process execution with default global/per-lane concurrency of two and serialized batches containing `work`
 - deterministic routing before spawn
 - append-only run recovery and atomic snapshots
 - continuation by run ID and stored conversation URL
 - read-only persisted-state loading through `loadCueLineRunState`
 - cross-session run status, runtime ownership, run/job cancellation, and optional run deadlines
+- automatic long-text attachment recognition, one-click ambiguous-send safety, and operator-confirmed manual reconciliation
+- bounded controller evidence (successful stdout preferred; full stdout/stderr retained locally)
 - injected fake browser/runner for offline tests
 
 ## Not supported in v0.1
 
-- automatic model selection or switching in ChatGPT
+- model switching other than CueLine selecting `Pro`
 - images, screenshots as controller input, audio, or binary payloads
 - file upload/download through the ChatGPT page
 - Deep Research, Projects, Apps, or custom GPT UI flows
 - multiple simultaneous controller conversations for one run
 - direct browser-to-local tool calls
+- caller-mode `work` execution (explicit process execution is required)
 - automatic retry/fallback after a worker starts
 - cross-host transfer of browser sessions, credentials, child processes, or local runtime state
 - unattended guarantee across ChatGPT UI or authentication changes
 
 ## CLI boundary
 
-`cueline doctor`, `routing`, `jobs`, `run status`, `run cancel` / `run stop`, `job cancel`, and `config path` diagnose or control the local runtime state. They do not drive the ChatGPT page. Live orchestration is an imported API run inside Codex so that the IAB browser object can be injected or resolved.
+`cueline doctor`, `routing`, `jobs`, `run status`, `api path`, and `config path` are read-only. `install`/`uninstall` change only the package-owned skill link. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel` / `run stop`, and `job cancel` append audit evidence or change local durable state; `cueline help` lists their exact positional syntax and options. None drives the ChatGPT page. `run reconcile --manual-send-confirmed` records an operator's exact manual send; the imported API still performs identity/Pro reconciliation through Codex's IAB browser object. `run takeover` retires only an exact stale owner/heartbeat and refuses a fresh active owner.
 
 ## Live readiness checklist
 
@@ -56,7 +62,7 @@ The v0.1 adapter relies on accessible textbox/button roles and assistant-message
 2. `npm run build` succeeds for a checkout, or the installed package contains `dist/`.
 3. Codex exposes its built-in Browser runtime.
 4. A logged-in `https://chatgpt.com/` tab is open and the intended model/conversation is selected.
-5. `cueline doctor` reports a readable routing config and `codex-default` (or a configured alternative) as available.
-6. A text-only live smoke completes one harmless controller round before using `work` mode.
+5. `cueline doctor` reports `caller_ready yes` and at least one enabled caller lane. `process_available_lanes` may be zero without degrading caller mode; explicit process mode additionally requires `codex-default` (or a configured alternative) to be available.
+6. A live smoke completes one harmless controller round and one caller `advise` result handoff before explicit process `work` is considered.
 
 Readiness does not prove a worker will succeed. Preserve the run evidence and report the exact missing prerequisite when a step fails.

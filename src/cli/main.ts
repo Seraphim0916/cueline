@@ -8,8 +8,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   cancelCueLineJob,
   cancelCueLineRun,
+  confirmManualControllerSubmission,
   loadCueLineRunStatus,
+  reconcileCueLineRuntime,
   routingConfigPath,
+  takeoverCueLineRuntime,
 } from "../api.js";
 import { CueLineError } from "../core/errors.js";
 import type { JobStatus } from "../jobs/status.js";
@@ -18,7 +21,7 @@ import { loadRoutingConfig } from "../router/config-loader.js";
 import { resolveRoute } from "../router/resolver.js";
 import { defaultCueLineHome } from "../state/paths.js";
 import { readRuntimeLease } from "../state/runtime-lease.js";
-import { readEvents } from "../state/event-log.js";
+import { readAuthoritativeRunEvents } from "../state/store.js";
 import { CUELINE_VERSION } from "../version.js";
 import { installSkill, uninstallSkill } from "./skill-links.js";
 
@@ -33,7 +36,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -45,10 +48,13 @@ function help(): string {
     "commands:",
     "  install        link the bundled skill into Codex",
     "  uninstall      remove only the skill link owned by this package",
-    "  doctor         report Node, routing config, state home, and usable lanes",
+    "  doctor         report Node, caller readiness, state home, and process lanes",
     "  routing        list every lane and the candidate that would be selected",
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
     "  run status     summarize one persisted run for safe cross-session handoff",
+    "  run reconcile  confirm one manually sent controller turn; never resends it",
+    "  run takeover   explicitly retire one exact stale runtime owner",
+    "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
     "  run cancel     request safe cancellation; ownerless work becomes ambiguous",
     "  run stop       alias for `run cancel`",
     "  job cancel     request cancellation for one job in one run",
@@ -56,6 +62,24 @@ function help(): string {
     "  config path    print the routing configuration file in effect",
     "  help           print this text",
     "  version        print the CueLine version",
+    "",
+    "command syntax:",
+    "  cueline install",
+    "  cueline uninstall",
+    "  cueline doctor",
+    "  cueline routing",
+    "  cueline jobs [--json]",
+    "  cueline run status <run-id> [--json]",
+    "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--json]",
+    "  cueline run takeover <run-id> [--json]",
+    "  cueline run reconcile-runtime <run-id> [--json]",
+    "  cueline run cancel <run-id> [--json]",
+    "  cueline run stop <run-id> [--json]",
+    "  cueline job cancel <run-id> <job-id> [--json]",
+    "  cueline api path",
+    "  cueline config path",
+    "  cueline help",
+    "  cueline version",
     "",
     "flags:",
     "  -h, --help     same as `cueline help`",
@@ -70,8 +94,14 @@ function help(): string {
     "  1  the command ran but the surface is degraded or unreadable",
     "  2  the arguments were not understood",
     "",
-    "These commands only diagnose the local installation. A live run is driven",
-    "through the imported API inside Codex, where the built-in Browser lives.",
+    "state effects:",
+    "  Read-only: doctor, routing, jobs, run status, api path, config path, help, version.",
+    "  Local setup: install and uninstall change only the package-owned skill link.",
+    "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
+    "  and job cancel append evidence or change local run/job state.",
+    "",
+    "No CLI command drives the browser. A live run is driven through the imported API",
+    "inside Codex, where the built-in Browser lives.",
   ].join("\n");
 }
 
@@ -100,13 +130,17 @@ async function routingCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promis
   return available > 0 ? 0 : 1;
 }
 
-type ObservedJobStatus = JobStatus["status"] | "orphaned" | "unverified";
-type ListedJobStatus = JobStatus & { observedStatus: ObservedJobStatus };
+type ObservedJobStatus = JobStatus["status"] | "orphaned" | "unverified" | "conflict";
+type ListedJobStatus = JobStatus & {
+  observedStatus: ObservedJobStatus;
+  task?: string;
+  persistedStatus?: JobStatus["status"];
+};
 
-type LegacyJobMetadata = Pick<JobStatus, "runId" | "jobKey" | "lane" | "mode">;
+type RunJobMetadata = JobStatus & { task?: string };
 
-async function readLegacyJobMetadata(home: string): Promise<Map<string, LegacyJobMetadata>> {
-  const metadata = new Map<string, LegacyJobMetadata>();
+async function readRunJobMetadata(home: string): Promise<Map<string, RunJobMetadata>> {
+  const metadata = new Map<string, RunJobMetadata>();
   let entries;
   try {
     entries = await readdir(path.join(home, "runs"), { withFileTypes: true });
@@ -116,37 +150,61 @@ async function readLegacyJobMetadata(home: string): Promise<Map<string, LegacyJo
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const events = await readEvents(path.join(home, "runs", entry.name, "events.jsonl"));
+    const events = await readAuthoritativeRunEvents(home, entry.name);
     for (const event of events) {
       if (
-        event.type !== "job_registered" ||
         typeof event.payload !== "object" ||
         event.payload === null ||
         Array.isArray(event.payload)
-      ) {
-        continue;
+      ) continue;
+      const payload = event.payload as Record<string, unknown>;
+      if (event.type === "job_registered") {
+        const job = payload.job;
+        if (typeof job !== "object" || job === null || Array.isArray(job)) continue;
+        const record = job as Record<string, unknown>;
+        const spec =
+          typeof record.spec === "object" && record.spec !== null && !Array.isArray(record.spec)
+            ? (record.spec as Record<string, unknown>)
+            : {};
+        if (
+          typeof record.jobId !== "string" ||
+          typeof record.jobKey !== "string" ||
+          typeof spec.lane !== "string" ||
+          typeof spec.task !== "string" ||
+          (spec.mode !== "advise" && spec.mode !== "work")
+        ) continue;
+        metadata.set(record.jobId, {
+          jobId: record.jobId,
+          runId: entry.name,
+          jobKey: record.jobKey,
+          lane: spec.lane,
+          mode: spec.mode,
+          task: spec.task,
+          execution: "foreground",
+          status: "pending",
+          startedAt: event.timestamp,
+        });
+      } else if (event.type === "job_status" && typeof payload.job_id === "string") {
+        const existing = metadata.get(payload.job_id);
+        const status = payload.status;
+        if (
+          existing === undefined ||
+          (status !== "pending" &&
+            status !== "running" &&
+            status !== "succeeded" &&
+            status !== "failed" &&
+            status !== "timed_out" &&
+            status !== "cancelled" &&
+            status !== "ambiguous")
+        ) continue;
+        metadata.set(payload.job_id, {
+          ...existing,
+          status,
+          ...(status === "pending" || status === "running"
+            ? {}
+            : { finishedAt: event.timestamp }),
+        });
       }
-      const job = (event.payload as { job?: unknown }).job;
-      if (typeof job !== "object" || job === null || Array.isArray(job)) continue;
-      const record = job as Record<string, unknown>;
-      const spec =
-        typeof record.spec === "object" && record.spec !== null && !Array.isArray(record.spec)
-          ? (record.spec as Record<string, unknown>)
-          : {};
-      if (
-        typeof record.jobId !== "string" ||
-        typeof record.jobKey !== "string" ||
-        typeof spec.lane !== "string" ||
-        (spec.mode !== "advise" && spec.mode !== "work")
-      ) {
-        continue;
-      }
-      metadata.set(record.jobId, {
-        runId: entry.name,
-        jobKey: record.jobKey,
-        lane: spec.lane,
-        mode: spec.mode,
-      });
     }
   }
   return metadata;
@@ -158,8 +216,8 @@ async function readJobs(home: string): Promise<ListedJobStatus[]> {
   try {
     names = await readdir(directory);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") names = [];
+    else throw error;
   }
   const statuses: JobStatus[] = [];
   for (const name of names.filter((candidate) => candidate.endsWith(".json")).sort()) {
@@ -171,13 +229,34 @@ async function readJobs(home: string): Promise<ListedJobStatus[]> {
       });
     }
   }
-  const legacyMetadata = await readLegacyJobMetadata(home);
+  const runMetadata = await readRunJobMetadata(home);
+  const persistedById = new Map(statuses.map((status) => [status.jobId, status]));
+  for (const [jobId, metadata] of runMetadata) {
+    if (!persistedById.has(jobId)) statuses.push(metadata);
+  }
   const ownership = new Map<string, Awaited<ReturnType<typeof readRuntimeLease>>>();
   const listed: ListedJobStatus[] = [];
   for (const persisted of statuses) {
-    const status: JobStatus = { ...legacyMetadata.get(persisted.jobId), ...persisted };
-    let observedStatus: ObservedJobStatus = status.status;
-    if (status.status === "running") {
+    const authoritative = runMetadata.get(persisted.jobId);
+    const conflict = authoritative !== undefined && authoritative.status !== persisted.status;
+    const status: RunJobMetadata = conflict
+      ? {
+          ...Object.fromEntries(
+            Object.entries(persisted).filter(
+              ([key]) => key !== "result" && key !== "error" && key !== "finishedAt",
+            ),
+          ),
+          ...authoritative,
+          execution: persisted.execution,
+          startedAt: persisted.startedAt,
+        } as RunJobMetadata
+      : {
+          ...authoritative,
+          ...persisted,
+          status: authoritative?.status ?? persisted.status,
+        };
+    let observedStatus: ObservedJobStatus = conflict ? "conflict" : status.status;
+    if (!conflict && status.status === "running") {
       if (status.runId === undefined) {
         observedStatus = "unverified";
       } else {
@@ -189,7 +268,11 @@ async function readJobs(home: string): Promise<ListedJobStatus[]> {
         observedStatus = runtime.ownership === "active" ? "running" : "orphaned";
       }
     }
-    listed.push({ ...status, observedStatus });
+    listed.push({
+      ...status,
+      ...(conflict ? { persistedStatus: persisted.status } : {}),
+      observedStatus,
+    });
   }
   return listed.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
 }
@@ -210,7 +293,7 @@ async function jobsCommand(
   }
   for (const job of jobs) {
     io.stdout(
-      `${job.jobId}\t${job.runId ?? "-"}\t${job.jobKey ?? "-"}\t${job.lane ?? "-"}\t${job.mode ?? "-"}\t${job.pid ?? "-"}\t${job.execution}\t${job.observedStatus}\t${job.startedAt}`,
+      `${job.jobId}\t${job.runId ?? "-"}\t${job.jobKey ?? "-"}\t${job.lane ?? "-"}\t${job.mode ?? "-"}\t${job.pid ?? "-"}\t${job.execution}\t${job.observedStatus}\t${job.startedAt}\ttask=${JSON.stringify(job.task ?? "")}`,
     );
   }
   return 0;
@@ -236,6 +319,7 @@ async function runStatusCommand(
   io.stdout(`run\t${status.runId}`);
   io.stdout(`version\t${CUELINE_VERSION}`);
   io.stdout(`status\t${status.status}`);
+  io.stdout(`executor\t${status.executor}`);
   io.stdout(`phase\t${status.phase}`);
   io.stdout(
     `runtime\t${status.runtime.ownership}${
@@ -253,7 +337,7 @@ async function runStatusCommand(
   );
   for (const job of status.jobs.items) {
     io.stdout(
-      `job\t${job.jobId}\t${job.jobKey}\t${job.status}\t${job.mode}\t${job.lane}\trequired=${job.required}\tpersisted=${job.persistedStatus}`,
+      `job\t${job.jobId}\t${job.jobKey}\t${job.status}\t${job.mode}\t${job.lane}\trequired=${job.required}\tpersisted=${job.persistedStatus}\ttask=${JSON.stringify(job.task)}`,
     );
   }
   io.stdout(
@@ -271,24 +355,28 @@ async function doctorCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promise
   const nodeOk = major >= 22;
   const config = await loadRoutingConfig(configPath);
   const availability = executableAvailability(environment);
-  let availableLanes = 0;
+  let callerLanes = 0;
+  let processAvailableLanes = 0;
   for (const [lane, laneConfig] of Object.entries(config.lanes)) {
     if (!laneConfig.enabled) continue;
+    callerLanes += 1;
     try {
       resolveRoute(lane, config, availability);
-      availableLanes += 1;
+      processAvailableLanes += 1;
     } catch {
       // Doctor reports the aggregate below; `cueline routing` shows lane details.
     }
   }
-  const ok = nodeOk && availableLanes > 0;
+  const callerReady = nodeOk && callerLanes > 0;
   io.stdout(`CueLine ${CUELINE_VERSION}`);
-  io.stdout(`status\t${ok ? "ok" : "degraded"}`);
+  io.stdout(`status\t${callerReady ? "ok" : "degraded"}`);
   io.stdout(`node\t${process.versions.node}\t${nodeOk ? "ok" : "requires >=22"}`);
   io.stdout(`config\t${configPath}\tvalid`);
   io.stdout(`home\t${home}`);
-  io.stdout(`available_lanes\t${availableLanes}`);
-  return ok ? 0 : 1;
+  io.stdout(`caller_ready\t${callerReady ? "yes" : "no"}`);
+  io.stdout(`caller_lanes\t${callerLanes}`);
+  io.stdout(`process_available_lanes\t${processAvailableLanes}`);
+  return callerReady ? 0 : 1;
 }
 
 export async function main(
@@ -336,6 +424,76 @@ export async function main(
     }
     if (
       args[0] === "run" &&
+      args[1] === "takeover" &&
+      typeof args[2] === "string" &&
+      (args.length === 3 || (args.length === 4 && args[3] === "--json"))
+    ) {
+      const result = await takeoverCueLineRuntime(args[2], { environment });
+      if (args[3] === "--json") io.stdout(JSON.stringify(result, null, 2));
+      else {
+        io.stdout(
+          `${result.runId}\t${result.outcome}\tnext=${result.next}${
+            result.previousOwnerId === undefined
+              ? ""
+              : `\tprevious_owner=${result.previousOwnerId}`
+          }`,
+        );
+      }
+      return 0;
+    }
+    if (
+      args[0] === "run" &&
+      args[1] === "reconcile-runtime" &&
+      typeof args[2] === "string" &&
+      (args.length === 3 || (args.length === 4 && args[3] === "--json"))
+    ) {
+      const result = await reconcileCueLineRuntime(args[2], { environment });
+      if (args[3] === "--json") io.stdout(JSON.stringify(result, null, 2));
+      else {
+        io.stdout(
+          `${result.runId}\t${result.outcome}\taffected_jobs=${result.affectedJobs}\tsurviving_jobs=${result.survivingJobs.length}`,
+        );
+      }
+      return result.outcome === "owner_alive" || result.outcome === "processes_alive" ? 1 : 0;
+    }
+    if (
+      args[0] === "run" &&
+      args[1] === "reconcile" &&
+      typeof args[2] === "string"
+    ) {
+      let requestId: string | undefined;
+      let manualConfirmed = false;
+      let json = false;
+      let valid = true;
+      for (let index = 3; index < args.length; index += 1) {
+        const argument = args[index];
+        if (argument === "--request-id" && typeof args[index + 1] === "string") {
+          requestId = args[index + 1];
+          index += 1;
+        } else if (argument === "--manual-send-confirmed") {
+          manualConfirmed = true;
+        } else if (argument === "--json") {
+          json = true;
+        } else {
+          valid = false;
+        }
+      }
+      if (!valid || !requestId || !manualConfirmed) {
+        throw new CueLineError(
+          "CLI_ARGUMENTS_INVALID",
+          "usage: cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--json]",
+        );
+      }
+      const result = await confirmManualControllerSubmission(args[2], {
+        environment,
+        requestId,
+      });
+      if (json) io.stdout(JSON.stringify(result, null, 2));
+      else io.stdout(`${result.runId}\t${result.requestId}\t${result.outcome}\tno_resend`);
+      return 0;
+    }
+    if (
+      args[0] === "run" &&
       args[1] === "status" &&
       typeof args[2] === "string" &&
       (args.length === 3 || (args.length === 4 && args[3] === "--json"))
@@ -380,7 +538,7 @@ export async function main(
     return 2;
   } catch (error) {
     io.stderr(`CueLine: ${errorMessage(error)}`);
-    return 1;
+    return error instanceof CueLineError && error.code === "CLI_ARGUMENTS_INVALID" ? 2 : 1;
   }
 }
 

@@ -2,12 +2,14 @@ import type {
   BrowserAdapter,
   BrowserTurnHooks,
   BrowserTurnInput,
+  ComposerPromptState,
   ControllerModelEvidence,
   ControllerTurn,
 } from "../browser-adapter.js";
 import { CueLineError } from "../../core/errors.js";
 import {
   readPageChatState,
+  readPageComposerState,
   resolveIabBrowser,
   type IabBrowser,
   type IabLocator,
@@ -15,6 +17,10 @@ import {
   type PageChatState,
 } from "./bootstrap.js";
 import { CHATGPT_URL, COMPOSER_TEXTBOX_NAMES, SEND_BUTTON_NAMES } from "./selectors.js";
+import { hasExactControllerEnvelopeIdentity, isProLabel, isProModelSlug,
+  normalizedConversationUrl, normalizedMessageText } from "./recovery-evidence.js";
+import { captureConversationUrlAfterSubmit } from "./submission-url.js";
+import type { ExpectedControllerIdentity } from "../../protocol/types.js";
 
 export interface CodexIabAdapterOptions {
   browser?: IabBrowser;
@@ -34,6 +40,8 @@ const REQUIRED_MODEL_LABEL = "Pro";
 const MODEL_LABEL_READ_ATTEMPTS = 50;
 const MODEL_LABEL_RETRY_INTERVAL_MS = 100;
 const TAB_DISCOVERY_RETRY_MS = 100;
+const COMPOSER_READY_TIMEOUT_MS = 30_000;
+const COMPOSER_READY_STABLE_MS = 250;
 
 type TurnStage = "pre_submit" | "submitting" | "submitted";
 
@@ -41,7 +49,12 @@ interface TurnAttemptContext {
   stage: TurnStage;
   baseline?: PageChatState;
   selectedModelLabel?: string;
+  composerPromptState?: ComposerPromptState;
 }
+
+type SendTarget =
+  | { kind: "locator"; locator: IabLocator }
+  | { kind: "coordinate"; x: number; y: number };
 
 function throwIfCancelled(signal: AbortSignal | undefined): void {
   if (signal?.aborted !== true) return;
@@ -84,8 +97,10 @@ async function findUniqueLocator(
   return undefined;
 }
 
-async function clickVisibleSendButtonByCoordinates(tab: IabTab): Promise<boolean> {
-  if (!tab.cua?.click) return false;
+async function findVisibleSendButtonCoordinates(
+  tab: IabTab,
+): Promise<{ x: number; y: number } | undefined> {
+  if (!tab.cua?.click) return undefined;
   const target = await tab.playwright.evaluate(
     ({ sendButtonNames }) => {
       const normalize = (value: unknown): string =>
@@ -127,11 +142,9 @@ async function clickVisibleSendButtonByCoordinates(tab: IabTab): Promise<boolean
     target.x < 0 ||
     target.y < 0
   ) {
-    return false;
+    return undefined;
   }
-  await tab.cua.click({ x: Math.round(target.x), y: Math.round(target.y) });
-  await tab.playwright.waitForTimeout(100);
-  return true;
+  return { x: Math.round(target.x), y: Math.round(target.y) };
 }
 
 async function findHydratedComposer(tab: IabTab): Promise<IabLocator | undefined> {
@@ -149,11 +162,6 @@ function isConversationUrl(url: string): boolean {
   return /^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+/.test(url);
 }
 
-function isTransientClickError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /deadline exceeded|timed? out|timeout|detached|stale|not enabled|not visible/i.test(message);
-}
-
 function isTabUnavailableError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /tab not found|existing tabs: none|webview attach|cdp operation exceeded|target closed|page closed|browser.*disconnected/i.test(
@@ -161,25 +169,12 @@ function isTabUnavailableError(error: unknown): boolean {
   );
 }
 
-function normalizedConversationUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return url;
-  }
-}
-
-function isProLabel(label: string | null): label is string {
-  return /^Pro(?:\s+(?:Standard|Extended))?$/i.test(label ?? "");
-}
-
-function isProModelSlug(slug: string | null): slug is string {
-  return /(?:^|-)pro(?:-|$)/i.test(slug ?? "");
-}
-
-function normalizedMessageText(value: string | null): string {
-  return (value ?? "").replace(/\r\n/g, "\n").trim();
+function ambiguousSubmissionError(error: unknown): CueLineError {
+  return new CueLineError(
+    "CONTROLLER_SUBMISSION_AMBIGUOUS",
+    "The send-button click failed without proving whether ChatGPT accepted the prompt. Refusing a second click; reconcile the exact conversation instead.",
+    { cause: error },
+  );
 }
 
 function submissionStateForStage(
@@ -370,6 +365,7 @@ class CodexIabAdapter implements BrowserAdapter {
     }
     return (
       await readPageChatState(tab).catch(() => ({
+        pageUrl: "",
         isAnswering: false,
         assistantText: "",
         assistantMessageCount: 0,
@@ -380,47 +376,31 @@ class CodexIabAdapter implements BrowserAdapter {
     ).isAnswering;
   }
 
-  async #clickSend(tab: IabTab): Promise<void> {
-    const previousUrl = (await tab.url()) ?? "";
-    let lastError: unknown;
-    let locatorClickAttempted = false;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const button = await findUniqueLocator(tab, "button", SEND_BUTTON_NAMES);
-      if (!button) {
-        if (attempt > 0 && await this.#submissionStarted(tab, previousUrl)) {
-          return;
-        }
-        lastError = new CueLineError(
-          "SEND_BUTTON_MISSING",
-          "Could not find ChatGPT's send button.",
-        );
-        break;
-      }
-      try {
-        locatorClickAttempted = true;
-        await button.click({ timeoutMs: 10_000 });
-        return;
-      } catch (error) {
-        if (await this.#submissionStarted(tab, previousUrl)) {
-          return;
-        }
-        if (!isTransientClickError(error)) {
-          throw error;
-        }
-        lastError = error;
-        if (attempt === 0) {
-          await tab.playwright.domSnapshot();
-          await tab.playwright.waitForTimeout(250);
-          if (await this.#submissionStarted(tab, previousUrl)) return;
-          if (await clickVisibleSendButtonByCoordinates(tab)) return;
-        }
-      }
-    }
-    if (!locatorClickAttempted && await clickVisibleSendButtonByCoordinates(tab)) return;
-    throw lastError ?? new CueLineError(
+  async #resolveSendTarget(tab: IabTab): Promise<SendTarget> {
+    const locator = await findUniqueLocator(tab, "button", SEND_BUTTON_NAMES);
+    if (locator) return { kind: "locator", locator };
+    const coordinate = await findVisibleSendButtonCoordinates(tab);
+    if (coordinate) return { kind: "coordinate", ...coordinate };
+    throw new CueLineError(
       "SEND_BUTTON_MISSING",
       "Could not find ChatGPT's send button.",
     );
+  }
+
+  async #clickSend(tab: IabTab, target: SendTarget): Promise<void> {
+    const previousUrl = (await tab.url()) ?? "";
+    try {
+      if (target.kind === "locator") {
+        await target.locator.click({ timeoutMs: 10_000 });
+      } else {
+        await tab.cua!.click({ x: target.x, y: target.y });
+        await tab.playwright.waitForTimeout(100);
+      }
+    } catch (error) {
+      if (await this.#submissionStarted(tab, previousUrl)) return;
+      if (isTabUnavailableError(error)) throw error;
+      throw ambiguousSubmissionError(error);
+    }
   }
 
   async #waitForCompletion(
@@ -458,25 +438,41 @@ class CodexIabAdapter implements BrowserAdapter {
   async #waitForRecoveredCompletion(
     tab: IabTab,
     expectedPrompt: string,
+    allowVisiblePromptMismatch: boolean,
+    manualSendConfirmed: boolean,
+    baselineAssistantMessageCount: number | undefined,
+    expectedConversationUrl: string,
+    expectedIdentity: ExpectedControllerIdentity,
     signal?: AbortSignal,
   ): Promise<PageChatState> {
+    const attachmentBaseline = allowVisiblePromptMismatch
+      ? baselineAssistantMessageCount
+      : undefined;
+    if (
+      allowVisiblePromptMismatch &&
+      attachmentBaseline === undefined &&
+      !manualSendConfirmed
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_BASELINE_REQUIRED",
+        "Attachment recovery requires the durable pre-submit assistant message count; refusing to import a possibly stale response.",
+      );
+    }
     const deadline = Date.now() + this.#options.timeoutMs;
     let stableText = "";
     let stableSince = 0;
     while (Date.now() < deadline) {
       throwIfCancelled(signal);
-      const state = await readPageChatState(tab);
-      if (normalizedMessageText(state.lastUserText) !== normalizedMessageText(expectedPrompt)) {
-        throw new CueLineError(
-          "CONTROLLER_RECONCILIATION_MISMATCH",
-          "The exact conversation's last user message does not match the pending CueLine prompt. Refusing to import an unrelated response.",
-        );
-      }
-      if (
-        !state.isAnswering &&
-        state.lastMessageRole === "assistant" &&
-        state.assistantText !== ""
-      ) {
+      const state = await this.#readRecoveredCandidate(
+        tab,
+        expectedPrompt,
+        allowVisiblePromptMismatch,
+        manualSendConfirmed,
+        attachmentBaseline,
+        expectedConversationUrl,
+        expectedIdentity,
+      );
+      if (state !== undefined) {
         if (state.assistantText !== stableText) {
           stableText = state.assistantText;
           stableSince = Date.now();
@@ -491,6 +487,142 @@ class CodexIabAdapter implements BrowserAdapter {
     throw new CueLineError(
       "CONTROLLER_RECONCILIATION_TIMEOUT",
       "The existing ChatGPT response did not become readable before timeout; no prompt was sent.",
+    );
+  }
+
+  async #readRecoveredCandidate(
+    tab: IabTab,
+    expectedPrompt: string,
+    allowVisiblePromptMismatch: boolean,
+    manualSendConfirmed: boolean,
+    attachmentBaseline: number | undefined,
+    expectedConversationUrl: string,
+    expectedIdentity: ExpectedControllerIdentity,
+  ): Promise<PageChatState | undefined> {
+    const state = await readPageChatState(tab);
+    if (
+      normalizedConversationUrl(state.pageUrl) !==
+      normalizedConversationUrl(expectedConversationUrl)
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+        "The response evidence was read from a different ChatGPT conversation DOM.",
+      );
+    }
+    if (
+      attachmentBaseline !== undefined &&
+      state.assistantMessageCount <= attachmentBaseline
+    ) return undefined;
+    if (
+      manualSendConfirmed &&
+      attachmentBaseline === undefined &&
+      !hasExactControllerEnvelopeIdentity(state.assistantText, expectedIdentity)
+    ) return undefined;
+    if (state.lastUserText === null && !manualSendConfirmed) return undefined;
+    if (
+      !allowVisiblePromptMismatch &&
+      normalizedMessageText(state.lastUserText) !== normalizedMessageText(expectedPrompt)
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_MISMATCH",
+        "The exact conversation's last user message does not match the pending CueLine prompt. Refusing to import an unrelated response.",
+      );
+    }
+    return !state.isAnswering &&
+      state.lastMessageRole === "assistant" &&
+      state.assistantText !== ""
+      ? state
+      : undefined;
+  }
+
+  async #observeRecoveredCompletion(
+    tab: IabTab,
+    expectedPrompt: string,
+    allowVisiblePromptMismatch: boolean,
+    manualSendConfirmed: boolean,
+    baselineAssistantMessageCount: number | undefined,
+    expectedConversationUrl: string,
+    expectedIdentity: ExpectedControllerIdentity,
+    signal?: AbortSignal,
+  ): Promise<PageChatState | undefined> {
+    if (
+      allowVisiblePromptMismatch &&
+      baselineAssistantMessageCount === undefined &&
+      !manualSendConfirmed
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_BASELINE_REQUIRED",
+        "Attachment recovery requires the durable pre-submit assistant message count; refusing to import a possibly stale response.",
+      );
+    }
+    throwIfCancelled(signal);
+    const first = await this.#readRecoveredCandidate(
+      tab,
+      expectedPrompt,
+      allowVisiblePromptMismatch,
+      manualSendConfirmed,
+      allowVisiblePromptMismatch ? baselineAssistantMessageCount : undefined,
+      expectedConversationUrl,
+      expectedIdentity,
+    );
+    if (first === undefined) return undefined;
+    if (this.#options.stableMs > 0) await delay(this.#options.stableMs, signal);
+    const second = await this.#readRecoveredCandidate(
+      tab,
+      expectedPrompt,
+      allowVisiblePromptMismatch,
+      manualSendConfirmed,
+      allowVisiblePromptMismatch ? baselineAssistantMessageCount : undefined,
+      expectedConversationUrl,
+      expectedIdentity,
+    );
+    return second !== undefined &&
+      second.assistantText === first.assistantText &&
+      second.assistantMessageCount === first.assistantMessageCount &&
+      second.assistantModelSlug === first.assistantModelSlug
+      ? second
+      : undefined;
+  }
+
+  async #waitForComposerReady(
+    tab: IabTab,
+    expectedPrompt: string,
+    baselineAttachmentCount: number,
+    signal?: AbortSignal,
+  ): Promise<ComposerPromptState> {
+    const deadline = Date.now() + Math.min(COMPOSER_READY_TIMEOUT_MS, this.#options.timeoutMs);
+    const stableRequirement = Math.min(COMPOSER_READY_STABLE_MS, this.#options.stableMs);
+    let stableSignature = "";
+    let stableSince = 0;
+    let lastState = await readPageComposerState(tab, expectedPrompt, SEND_BUTTON_NAMES);
+    while (Date.now() < deadline) {
+      throwIfCancelled(signal);
+      const state = await readPageComposerState(tab, expectedPrompt, SEND_BUTTON_NAMES);
+      lastState = state;
+      const ready =
+        state.sendButtonEnabled &&
+        (state.state === "inline_ready" ||
+          (state.state === "attachment_ready" &&
+            state.attachmentCount > baselineAttachmentCount));
+      const signature = `${state.state}:${state.inlineTextLength}:${state.attachmentCount}:${state.sendButtonEnabled}`;
+      if (ready) {
+        if (signature !== stableSignature) {
+          stableSignature = signature;
+          stableSince = Date.now();
+        }
+        if (Date.now() - stableSince >= stableRequirement && ready) {
+          return state.state === "inline_ready" ? "inline_ready" : "attachment_ready";
+        }
+      } else {
+        stableSignature = "";
+        stableSince = 0;
+      }
+      await delay(Math.min(this.#options.pollIntervalMs, 100), signal);
+    }
+    throw new CueLineError(
+      "CONTROLLER_PROMPT_NOT_READY",
+      "ChatGPT exposed neither the exact inline prompt nor an attachment with an enabled send button after the composer settled.",
+      { details: { composer_state: lastState.state, attachment_count: lastState.attachmentCount } },
     );
   }
 
@@ -511,7 +643,10 @@ class CodexIabAdapter implements BrowserAdapter {
         },
       );
     }
-    const conversationUrl = (await tab.url()) ?? "";
+    // Bind response text and URL from one DOM evaluation. A later CDP URL
+    // read can observe navigation to another conversation and must never be
+    // paired with this completed assistant message.
+    const conversationUrl = completed.pageUrl;
     if (isConversationUrl(conversationUrl)) this.#conversationUrl = conversationUrl;
     const title = await tab.title?.();
     const model: ControllerModelEvidence = {
@@ -528,11 +663,12 @@ class CodexIabAdapter implements BrowserAdapter {
     };
   }
 
-  async #sendTurnOnce(
+  async #submitTurnOnce(
     input: BrowserTurnInput,
     context: TurnAttemptContext,
     hooks?: BrowserTurnHooks,
-  ): Promise<ControllerTurn> {
+    requireRecoverableCheckpoint = false,
+  ): Promise<IabTab> {
     throwIfCancelled(input.signal);
     const tab = await this.#getTab();
     throwIfCancelled(input.signal);
@@ -544,29 +680,84 @@ class CodexIabAdapter implements BrowserAdapter {
     }
     context.selectedModelLabel = await this.#ensureProModel(tab);
     context.baseline = await readPageChatState(tab);
+    const composerBaseline = await readPageComposerState(
+      tab,
+      input.prompt,
+      SEND_BUTTON_NAMES,
+    );
+    if (composerBaseline.attachmentCount > 0) {
+      throw new CueLineError(
+        "CONTROLLER_PROMPT_NOT_READY",
+        "The ChatGPT composer already contains an attachment. Refusing to mix it with the current controller prompt.",
+        {
+          details: {
+            composer_state: composerBaseline.state,
+            attachment_count: composerBaseline.attachmentCount,
+          },
+        },
+      );
+    }
     await composer.fill(input.prompt, {});
     throwIfCancelled(input.signal);
-    await this.#emitCheckpoint(tab, context, hooks, "possibly_sent");
+    context.composerPromptState = await this.#waitForComposerReady(
+      tab,
+      input.prompt,
+      composerBaseline.attachmentCount,
+      input.signal,
+    );
+    const sendTarget = await this.#resolveSendTarget(tab);
+    await this.#emitCheckpoint(tab, context, hooks, "submitting");
     context.stage = "submitting";
-    await this.#clickSend(tab);
+    await this.#clickSend(tab, sendTarget);
+    if (requireRecoverableCheckpoint) {
+      this.#conversationUrl = await captureConversationUrlAfterSubmit(
+        tab,
+        this.#conversationUrl,
+        this.#options.timeoutMs,
+        this.#options.pollIntervalMs,
+        input.signal,
+      );
+    }
     context.stage = "submitted";
-    await this.#emitCheckpoint(tab, context, hooks, "submitted");
-    const completed = await this.#waitForCompletion(tab, context.baseline, input.signal);
-    return this.#resultFromCompletedTurn(tab, context.selectedModelLabel, completed);
+    await this.#emitCheckpoint(
+      tab,
+      context,
+      hooks,
+      "submitted",
+      requireRecoverableCheckpoint ? this.#conversationUrl : undefined,
+    );
+    return tab;
+  }
+
+  async #sendTurnOnce(
+    input: BrowserTurnInput,
+    context: TurnAttemptContext,
+    hooks?: BrowserTurnHooks,
+  ): Promise<ControllerTurn> {
+    const tab = await this.#submitTurnOnce(input, context, hooks);
+    const completed = await this.#waitForCompletion(tab, context.baseline!, input.signal);
+    return this.#resultFromCompletedTurn(tab, context.selectedModelLabel!, completed);
   }
 
   async #emitCheckpoint(
     tab: IabTab,
     context: TurnAttemptContext,
     hooks: BrowserTurnHooks | undefined,
-    submissionState: "possibly_sent" | "submitted",
+    submissionState: "submitting" | "submitted",
+    capturedConversationUrl?: string,
   ): Promise<void> {
-    if (!context.baseline || !context.selectedModelLabel) return;
-    const currentUrl = (await tab.url().catch(() => "")) ?? "";
-    if (isConversationUrl(currentUrl)) this.#conversationUrl = currentUrl;
+    if (!context.baseline || !context.selectedModelLabel || !context.composerPromptState) return;
+    const currentUrl = capturedConversationUrl ?? (await tab.url().catch(() => "")) ?? "";
+    const checkpointUrl = isConversationUrl(currentUrl) ? currentUrl : this.#conversationUrl;
+    if (checkpointUrl !== undefined && isConversationUrl(checkpointUrl)) {
+      this.#conversationUrl = checkpointUrl;
+    }
     await hooks?.onCheckpoint?.({
       submissionState,
-      ...(isConversationUrl(currentUrl) ? { conversationUrl: currentUrl } : {}),
+      composerPromptState: context.composerPromptState,
+      ...(checkpointUrl !== undefined && isConversationUrl(checkpointUrl)
+        ? { conversationUrl: checkpointUrl }
+        : {}),
       selectedModelLabel: context.selectedModelLabel,
       baselineAssistantMessageCount: context.baseline.assistantMessageCount,
     });
@@ -669,7 +860,26 @@ class CodexIabAdapter implements BrowserAdapter {
     }
   }
 
-  async recoverTurn(input: BrowserTurnInput): Promise<ControllerTurn> {
+  async submitTurn(input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<void> {
+    const context: TurnAttemptContext = { stage: "pre_submit" };
+    try {
+      await this.#submitTurnOnce(input, context, hooks, true);
+    } catch (error) {
+      if (!isTabUnavailableError(error) || context.stage !== "pre_submit") {
+        throw this.#browserFailure(error, context, input);
+      }
+      this.#tab = undefined;
+      const retryContext: TurnAttemptContext = { stage: "pre_submit" };
+      await this.#submitTurnOnce(input, retryContext, hooks, true).catch((retryError) => {
+        throw this.#browserFailure(retryError, retryContext, input);
+      });
+    }
+  }
+
+  async #readExistingTurn(
+    input: BrowserTurnInput,
+    waitForCompletion: boolean,
+  ): Promise<ControllerTurn | undefined> {
     throwIfCancelled(input.signal);
     if (this.#conversationUrl === undefined) {
       throw new CueLineError(
@@ -684,44 +894,100 @@ class CodexIabAdapter implements BrowserAdapter {
         },
       );
     }
-    try {
-      const tab = await this.#getTab();
-      throwIfCancelled(input.signal);
-      const selectedModelLabel = await readComposerModelLabelWhenReady(tab, input.signal);
-      if (!isProLabel(selectedModelLabel)) {
-        throw new CueLineError(
-          "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
-          "The existing conversation does not currently expose a Pro composer label; refusing to import the response without both model checks.",
-        );
-      }
-      const completed = await this.#waitForRecoveredCompletion(
-        tab,
-        input.prompt,
-        input.signal,
-      );
-      return this.#resultFromCompletedTurn(tab, selectedModelLabel, completed);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const existingDetails =
-        error instanceof CueLineError &&
-        typeof error.details === "object" &&
-        error.details !== null &&
-        !Array.isArray(error.details)
-          ? (error.details as Record<string, unknown>)
-          : {};
+    const tab = await this.#getTab();
+    throwIfCancelled(input.signal);
+    const selectedModelLabel = await readComposerModelLabelWhenReady(tab, input.signal);
+    if (!isProLabel(selectedModelLabel)) {
       throw new CueLineError(
-        error instanceof CueLineError ? error.code : "IAB_RECONCILIATION_FAILED",
-        message,
-        {
-          cause: error,
-          details: {
-            ...existingDetails,
-            stage: "reconciling",
-            submission_state: "possibly_sent",
-            request_id: input.requestId,
-          },
-        },
+        "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
+        "The existing conversation does not currently expose a Pro composer label; refusing to import the response without both model checks.",
       );
+    }
+    const allowVisiblePromptMismatch =
+      input.manualSendConfirmed === true || input.attachmentPromptExpected === true;
+    const baselineAssistantMessageCount =
+      typeof input.baselineAssistantMessageCount === "number" &&
+      Number.isSafeInteger(input.baselineAssistantMessageCount) &&
+      input.baselineAssistantMessageCount >= 0
+        ? input.baselineAssistantMessageCount
+        : undefined;
+    const expectedIdentity: ExpectedControllerIdentity = {
+      runId: input.runId, round: input.round, requestId: input.requestId,
+    };
+    const completed = waitForCompletion
+      ? await this.#waitForRecoveredCompletion(
+          tab,
+          input.prompt,
+          allowVisiblePromptMismatch,
+          input.manualSendConfirmed === true,
+          baselineAssistantMessageCount,
+          this.#conversationUrl,
+          expectedIdentity,
+          input.signal,
+        )
+      : await this.#observeRecoveredCompletion(
+          tab,
+          input.prompt,
+          allowVisiblePromptMismatch,
+          input.manualSendConfirmed === true,
+          baselineAssistantMessageCount,
+          this.#conversationUrl,
+          expectedIdentity,
+          input.signal,
+        );
+    if (completed === undefined) return undefined;
+    const recoveredUrl = (await tab.url()) ?? "";
+    if (
+      normalizedConversationUrl(recoveredUrl) !==
+      normalizedConversationUrl(this.#conversationUrl)
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+        "The recovered response is no longer on the exact persisted ChatGPT conversation URL.",
+      );
+    }
+    return this.#resultFromCompletedTurn(tab, selectedModelLabel, completed);
+  }
+
+  #reconciliationFailure(error: unknown, input: BrowserTurnInput): CueLineError {
+    const message = error instanceof Error ? error.message : String(error);
+    const existingDetails =
+      error instanceof CueLineError &&
+      typeof error.details === "object" &&
+      error.details !== null &&
+      !Array.isArray(error.details)
+        ? (error.details as Record<string, unknown>)
+        : {};
+    return new CueLineError(
+      error instanceof CueLineError ? error.code : "IAB_RECONCILIATION_FAILED",
+      message,
+      {
+        cause: error,
+        details: {
+          ...existingDetails,
+          stage: "reconciling",
+          submission_state: "possibly_sent",
+          request_id: input.requestId,
+        },
+      },
+    );
+  }
+
+  async observeTurn(input: BrowserTurnInput): Promise<ControllerTurn | undefined> {
+    try {
+      return await this.#readExistingTurn(input, false);
+    } catch (error) {
+      throw this.#reconciliationFailure(error, input);
+    }
+  }
+
+  async recoverTurn(input: BrowserTurnInput): Promise<ControllerTurn> {
+    try {
+      const turn = await this.#readExistingTurn(input, true);
+      if (turn === undefined) throw new Error("IAB_RECOVERY_RETURNED_WITHOUT_RESPONSE");
+      return turn;
+    } catch (error) {
+      throw this.#reconciliationFailure(error, input);
     }
   }
 }

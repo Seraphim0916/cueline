@@ -24,12 +24,14 @@ export type CueLineRunPhase =
   | "controller_response_pending"
   | "jobs_running"
   | "controller_decision_pending"
+  | "caller_jobs_pending"
   | "runtime_active"
   | "runtime_stale"
   | "runtime_ownership_unknown"
   | "cancellation_pending"
   | "reconciliation_required"
   | "job_recovery_required"
+  | "round_limit_reached"
   | "resume_ready"
   | "complete"
   | "blocked"
@@ -41,13 +43,16 @@ export type CueLineSafeNextAction =
   | "inspect_jobs_then_continue"
   | "inspect_runtime"
   | "continue"
+  | "execute_caller_jobs"
   | "return_result";
 
 export interface CueLineRunStatusSummary {
   runId: string;
   status: CueLineRunState["status"];
+  executor: CueLineRunState["executor"];
   phase: CueLineRunPhase;
   round: number;
+  maxRounds: number;
   lastEventSequence: number;
   runtime: RuntimeLeaseObservation;
   cancellation: CancellationObservation;
@@ -68,6 +73,7 @@ export interface CueLineRunStatusSummary {
       required: boolean;
       lane: string;
       mode: string;
+      task: string;
       status: CueLineObservedJobStatus;
       persistedStatus: StoredJobStatus;
     }>;
@@ -121,6 +127,25 @@ function activeJobCount(state: CueLineRunState): number {
   ).length;
 }
 
+function isPristineRun(state: CueLineRunState): boolean {
+  return (
+    state.round === 0 &&
+    state.pendingControllerTurns.length === 0 &&
+    state.commandHashes.length === 0 &&
+    Object.keys(state.jobs).length === 0
+  );
+}
+
+function roundLimitReached(state: CueLineRunState): boolean {
+  return (
+    state.status === "failed" &&
+    state.lastFailure?.code === "MAX_ROUNDS_EXCEEDED" &&
+    state.pendingControllerTurns.length === 0 &&
+    activeJobCount(state) === 0 &&
+    state.round >= state.maxRounds
+  );
+}
+
 function safeNextActionFor(
   state: CueLineRunState,
   runtime: RuntimeLeaseObservation,
@@ -133,11 +158,24 @@ function safeNextActionFor(
     return runtime.ownership === "active" ? "observe" : "inspect_runtime";
   }
   if (runtime.ownership === "active") return "observe";
+  if (state.executor === "caller" && activeJobCount(state) > 0) {
+    return "execute_caller_jobs";
+  }
   if (runtime.ownership === "stale" || runtime.ownership === "invalid") {
     return "inspect_runtime";
   }
+  if (state.pendingControllerTurns.length > 0) {
+    const turn = state.pendingControllerTurns[0];
+    const normallySubmitted =
+      state.pendingControllerTurns.length === 1 &&
+      turn?.submissionState === "submitted" &&
+      !turn.manualSendConfirmed;
+    return normallySubmitted ? "observe" : "reconcile";
+  }
+  if (roundLimitReached(state)) return "return_result";
+  if (isPristineRun(state) && state.status === "running") return "continue";
+  if (state.executor === "caller" && state.status === "running") return "continue";
   if (state.status === "running") return "inspect_runtime";
-  if (state.pendingControllerTurns.length > 0) return "reconcile";
   if (activeJobCount(state) > 0) return "inspect_jobs_then_continue";
   return "continue";
 }
@@ -153,13 +191,29 @@ export function cueLineRunPhase(
   if (cancellation.runRequested) return "cancellation_pending";
   if (state.status === "failed" && runtime.ownership === "active") return "runtime_active";
   if (runtime.ownership === "stale") return "runtime_stale";
+  if (isPristineRun(state) && runtime.ownership !== "active") return "starting";
+  if (state.status === "running" && state.pendingControllerTurns.length > 0) {
+    return "controller_response_pending";
+  }
+  if (
+    state.executor === "caller" &&
+    runtime.ownership !== "active" &&
+    activeJobCount(state) > 0
+  ) {
+    return "caller_jobs_pending";
+  }
   if (state.status === "failed") {
     if (state.pendingControllerTurns.length > 0) return "reconciliation_required";
     if (activeJobCount(state) > 0) return "job_recovery_required";
+    if (roundLimitReached(state)) return "round_limit_reached";
     return "resume_ready";
   }
-  if (runtime.ownership !== "active") return "runtime_ownership_unknown";
-  if (state.pendingControllerTurns.length > 0) return "controller_response_pending";
+  if (runtime.ownership !== "active") {
+    if (state.executor === "caller") {
+      return state.commandHashes.length > 0 ? "controller_decision_pending" : "starting";
+    }
+    return "runtime_ownership_unknown";
+  }
   if (activeJobCount(state) > 0) return "jobs_running";
   if (state.commandHashes.length > 0) return "controller_decision_pending";
   return "starting";
@@ -200,6 +254,18 @@ export function assertRunCanContinue(
     );
   }
   if (state.status !== "running") return;
+  if (
+    isPristineRun(state) &&
+    (runtime.ownership === "missing" || runtime.ownership === "released")
+  ) {
+    return;
+  }
+  if (
+    state.executor === "caller" &&
+    (runtime.ownership === "missing" || runtime.ownership === "released")
+  ) {
+    return;
+  }
   throw new CueLineError(
     "RUN_OWNERSHIP_UNVERIFIED",
     `CueLine run '${state.runId}' is marked running but has no verifiable active owner. ${inspect}`,
@@ -224,6 +290,7 @@ export function summarizeCueLineRunState(
   const items = Object.values(state.jobs).map((job) => {
     const status: CueLineObservedJobStatus =
       (job.status === "pending" || job.status === "running") &&
+      state.executor !== "caller" &&
       runtime.ownership !== "active"
         ? "orphaned"
         : job.status;
@@ -234,21 +301,26 @@ export function summarizeCueLineRunState(
       required: job.required,
       lane: job.spec.lane,
       mode: job.spec.mode,
+      task: job.spec.task,
       status,
       persistedStatus: job.status,
     };
   });
   const phase = cueLineRunPhase(state, runtime, cancellation);
   const continueAllowed =
-    state.status === "failed" &&
     !cancellation.runRequested &&
-    (runtime.ownership === "missing" || runtime.ownership === "released");
+    !roundLimitReached(state) &&
+    (runtime.ownership === "missing" || runtime.ownership === "released") &&
+    ((state.status === "failed") ||
+      (state.executor === "caller" && activeJobCount(state) === 0));
   const safeNextAction = safeNextActionFor(state, runtime, cancellation);
   return {
     runId: state.runId,
     status: state.status,
+    executor: state.executor,
     phase,
     round: state.round,
+    maxRounds: state.maxRounds,
     lastEventSequence,
     runtime,
     cancellation,
@@ -256,8 +328,8 @@ export function summarizeCueLineRunState(
       pendingTurns: state.pendingControllerTurns.length,
       acceptedCommands: state.commandHashes.length,
       responseAccepted:
-        acceptedCommand.action !== null ||
-        (state.pendingControllerTurns.length === 0 && state.commandHashes.length > 0),
+        state.pendingControllerTurns.length === 0 &&
+        (acceptedCommand.action !== null || state.commandHashes.length > 0),
       lastAcceptedAction: acceptedCommand.action,
       lastAcceptedRequestId: acceptedCommand.requestId,
       lastAcceptedJobKeys: acceptedCommand.jobKeys,

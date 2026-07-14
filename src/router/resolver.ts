@@ -1,11 +1,61 @@
 import { CueLineError } from "../core/errors.js";
 import type {
   CandidateAvailabilityChecker,
+  LaneConfig,
   ResolvedRoute,
   RouteAvailability,
   RouteCandidate,
   RoutingConfig,
 } from "./types.js";
+
+export function validateRouteReference(
+  lane: string,
+  config: RoutingConfig,
+  requestedCandidateId?: string,
+): LaneConfig {
+  const laneConfig = config.lanes[lane];
+  if (laneConfig === undefined) {
+    const runnerLanes = Object.entries(config.lanes)
+      .filter(([, candidateLane]) =>
+        candidateLane.candidates.some((candidate) => candidate.id === lane),
+      )
+      .map(([name]) => name);
+    const correction =
+      runnerLanes.length === 0
+        ? ""
+        : ` '${lane}' is a runner ID; use lane '${runnerLanes[0]}' with runner '${lane}'.`;
+    throw new CueLineError(
+      "ROUTE_LANE_UNKNOWN",
+      `unknown routing lane: ${lane}.${correction}`,
+      { details: { lane, ...(runnerLanes.length === 0 ? {} : { runner_lanes: runnerLanes }) } },
+    );
+  }
+  if (!laneConfig.enabled) {
+    throw new CueLineError("ROUTE_LANE_DISABLED", `routing lane is disabled: ${lane}`, {
+      details: { lane },
+    });
+  }
+  if (requestedCandidateId !== undefined) {
+    const candidate = laneConfig.candidates.find(
+      (entry) => entry.id === requestedCandidateId,
+    );
+    if (candidate === undefined) {
+      throw new CueLineError(
+        "ROUTE_RUNNER_UNKNOWN",
+        `runner '${requestedCandidateId}' is not configured for lane: ${lane}`,
+        { details: { lane, runner: requestedCandidateId } },
+      );
+    }
+    if (candidate.enabled === false) {
+      throw new CueLineError(
+        "ROUTE_RUNNER_DISABLED",
+        `runner '${requestedCandidateId}' is disabled for lane: ${lane}`,
+        { details: { lane, runner: requestedCandidateId } },
+      );
+    }
+  }
+  return laneConfig;
+}
 
 function isAvailabilityChecker(value: RouteAvailability): value is CandidateAvailabilityChecker {
   return typeof value === "object" && value !== null && "isAvailable" in value;
@@ -31,47 +81,16 @@ export function resolveRoute(
   availability: RouteAvailability,
   requestedCandidateId?: string,
 ): ResolvedRoute {
-  const laneConfig = config.lanes[lane];
-  if (laneConfig === undefined) {
-    const runnerLanes = Object.entries(config.lanes)
-      .filter(([, candidateLane]) =>
-        candidateLane.candidates.some((candidate) => candidate.id === lane),
-      )
-      .map(([name]) => name);
-    const correction =
-      runnerLanes.length === 0
-        ? ""
-        : ` '${lane}' is a runner ID; use lane '${runnerLanes[0]}' with runner '${lane}'.`;
-    throw new CueLineError(
-      "ROUTE_LANE_UNKNOWN",
-      `unknown routing lane: ${lane}.${correction}`,
-      { details: { lane, ...(runnerLanes.length === 0 ? {} : { runner_lanes: runnerLanes }) } },
-    );
-  }
-  if (!laneConfig.enabled) {
-    throw new CueLineError("ROUTE_LANE_DISABLED", `routing lane is disabled: ${lane}`, {
-      details: { lane },
-    });
-  }
+  const laneConfig = validateRouteReference(lane, config, requestedCandidateId);
 
   if (requestedCandidateId !== undefined) {
     const candidateIndex = laneConfig.candidates.findIndex(
       (candidate) => candidate.id === requestedCandidateId,
     );
-    if (candidateIndex < 0) {
-      throw new CueLineError(
-        "ROUTE_RUNNER_UNKNOWN",
-        `runner '${requestedCandidateId}' is not configured for lane: ${lane}`,
-        { details: { lane, runner: requestedCandidateId } },
-      );
-    }
+    if (candidateIndex < 0) throw new Error("ROUTE_REFERENCE_VALIDATION_INCONSISTENT");
     const candidate = laneConfig.candidates[candidateIndex];
     if (candidate === undefined || candidate.enabled === false) {
-      throw new CueLineError(
-        "ROUTE_RUNNER_DISABLED",
-        `runner '${requestedCandidateId}' is disabled for lane: ${lane}`,
-        { details: { lane, runner: requestedCandidateId } },
-      );
+      throw new Error("ROUTE_REFERENCE_VALIDATION_INCONSISTENT");
     }
     if (!isAvailable(availability, candidate, lane)) {
       throw new CueLineError(

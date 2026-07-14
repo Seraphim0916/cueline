@@ -6,6 +6,7 @@ import type {
   IabBrowser,
   IabLocator,
   IabTab,
+  PageComposerState,
   PageChatState,
 } from "../../src/browser/codex-iab/bootstrap.js";
 
@@ -15,7 +16,7 @@ class FakeLocator implements IabLocator {
   clicks = 0;
   countResult = 1;
   failFirstClick = false;
-  failEveryClick = false;
+  invokeOnClickBeforeFailure = false;
   firstClickError = "Playwright timeout: detached button";
 
   constructor(readonly onClick?: () => void) {}
@@ -34,7 +35,8 @@ class FakeLocator implements IabLocator {
 
   async click(): Promise<void> {
     this.clicks += 1;
-    if (this.failEveryClick || (this.failFirstClick && this.clicks === 1)) {
+    if (this.failFirstClick && this.clicks === 1) {
+      if (this.invokeOnClickBeforeFailure) this.onClick?.();
       throw new Error(this.firstClickError);
     }
     this.onClick?.();
@@ -43,7 +45,11 @@ class FakeLocator implements IabLocator {
 
 function fakeBrowser(options: {
   states: Array<
-    Omit<PageChatState, "assistantModelSlug" | "lastUserText" | "lastMessageRole"> & {
+    Omit<
+      PageChatState,
+      "pageUrl" | "assistantModelSlug" | "lastUserText" | "lastMessageRole"
+    > & {
+      pageUrl?: string;
       assistantModelSlug?: string | null;
       lastUserText?: string | null;
       lastMessageRole?: "assistant" | "user" | null;
@@ -52,25 +58,33 @@ function fakeBrowser(options: {
   initialUrl?: string;
   submittedUrl?: string;
   failFirstClick?: boolean;
-  failEverySendClick?: boolean;
+  firstSendClickSubmitsBeforeThrow?: boolean;
   cuaAvailable?: boolean;
+  coordinateClickError?: string;
+  coordinateClickSubmitsBeforeThrow?: boolean;
   firstClickError?: string;
   failStateReadAt?: number;
   stateReadError?: string;
   hydratedComposer?: boolean;
-  missingSendButtonAfterRetry?: boolean;
+  sendButtonAvailable?: boolean;
   initialModel?: string | null;
   legacyModelPickerPresent?: boolean;
   modelReadSequence?: Array<string | null>;
   proOptionAvailable?: boolean;
   proSelectionSucceeds?: boolean;
   responseModelSlug?: string | null;
+  composerStates?: PageComposerState[];
+  urlReadSequence?: string[];
 }) {
   const composer = new FakeLocator();
   const hydratedComposer = new FakeLocator();
   const missingHydratedComposer = new FakeLocator();
   missingHydratedComposer.countResult = 0;
-  const sendButtons = [new FakeLocator(), new FakeLocator()];
+  let sendSubmissions = 0;
+  const sendButtons = [
+    new FakeLocator(() => { sendSubmissions += 1; }),
+    new FakeLocator(() => { sendSubmissions += 1; }),
+  ];
   const missingSendButton = new FakeLocator();
   missingSendButton.countResult = 0;
   let modelLabel = options.initialModel === undefined ? "Pro" : options.initialModel;
@@ -82,9 +96,10 @@ function fakeBrowser(options: {
   const missingProOption = new FakeLocator();
   missingProOption.countResult = 0;
   sendButtons[0]!.failFirstClick = options.failFirstClick ?? false;
+  sendButtons[0]!.invokeOnClickBeforeFailure =
+    options.firstSendClickSubmitsBeforeThrow ?? false;
   sendButtons[0]!.firstClickError = options.firstClickError ?? sendButtons[0]!.firstClickError;
   for (const sendButton of sendButtons) {
-    sendButton.failEveryClick = options.failEverySendClick ?? false;
     sendButton.firstClickError = options.firstClickError ?? sendButton.firstClickError;
   }
   const requestedRoles: Array<{ role: string; name: string }> = [];
@@ -92,9 +107,10 @@ function fakeBrowser(options: {
   let stateIndex = 0;
   let stateRead = 0;
   let url = options.initialUrl ?? "https://chatgpt.com/";
-  let snapshots = 0;
   let sendLookup = 0;
   let coordinateClicks = 0;
+  let composerStateRead = 0;
+  let urlRead = 0;
 
   const playwright = {
     locator(selector: string) {
@@ -108,7 +124,7 @@ function fakeBrowser(options: {
       if (role === "menuitemradio" && query.name === "Pro") {
         return options.proOptionAvailable === false ? missingProOption : proOption;
       }
-      if (options.missingSendButtonAfterRetry && snapshots > 0) {
+      if (options.sendButtonAvailable === false) {
         return missingSendButton;
       }
       const locator = sendButtons[Math.min(sendLookup, sendButtons.length - 1)]!;
@@ -119,6 +135,26 @@ function fakeBrowser(options: {
       _pageFunction: (argument: Argument) => Result | Promise<Result>,
       argument?: Argument,
     ) {
+      if (
+        typeof argument === "object" &&
+        argument !== null &&
+        "composerProbe" in argument
+      ) {
+        const states = options.composerStates ?? [
+          {
+            state: "inline_ready",
+            inlineTextLength:
+              typeof (argument as { expectedPrompt?: unknown }).expectedPrompt === "string"
+                ? (argument as unknown as { expectedPrompt: string }).expectedPrompt.length
+                : 1,
+            attachmentCount: 0,
+            sendButtonEnabled: true,
+          },
+        ];
+        const state = states[Math.min(composerStateRead, states.length - 1)]!;
+        composerStateRead += 1;
+        return state as Result;
+      }
       if (
         typeof argument === "object" &&
         argument !== null &&
@@ -154,6 +190,7 @@ function fakeBrowser(options: {
       }
       return {
         ...state,
+        pageUrl: state.pageUrl ?? url,
         lastUserText: state.lastUserText ?? null,
         lastMessageRole:
           state.lastMessageRole ?? (state.assistantMessageCount > 0 ? "assistant" : null),
@@ -165,7 +202,6 @@ function fakeBrowser(options: {
       } as Result;
     },
     async domSnapshot() {
-      snapshots += 1;
       return {};
     },
     async waitForTimeout() {},
@@ -176,6 +212,13 @@ function fakeBrowser(options: {
       url = nextUrl;
     },
     async url() {
+      if (options.urlReadSequence) {
+        const next = options.urlReadSequence[
+          Math.min(urlRead, options.urlReadSequence.length - 1)
+        ];
+        urlRead += 1;
+        if (next !== undefined) return next;
+      }
       return url;
     },
     playwright,
@@ -185,6 +228,9 @@ function fakeBrowser(options: {
       async click({ x, y }) {
         assert.deepEqual({ x, y }, { x: 1024, y: 398 });
         coordinateClicks += 1;
+        if (options.coordinateClickSubmitsBeforeThrow) sendSubmissions += 1;
+        if (options.coordinateClickError) throw new Error(options.coordinateClickError);
+        sendSubmissions += 1;
       },
     };
   }
@@ -203,7 +249,7 @@ function fakeBrowser(options: {
     requestedSelectors,
     sendButtons,
     coordinateClicks: () => coordinateClicks,
-    snapshots: () => snapshots,
+    sendSubmissions: () => sendSubmissions,
   };
 }
 
@@ -244,6 +290,662 @@ test("fills the ChatGPT composer and returns the completed assistant control tex
   );
 });
 
+test("submitTurn returns after one durable submission without waiting for Pro", async () => {
+  const fixture = fakeBrowser({
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+    ],
+    submittedUrl: "https://chatgpt.com/c/detached-controller-wait",
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+  const checkpoints: string[] = [];
+
+  await adapter.submitTurn!(
+    {
+      runId: "run_detached_controller_wait",
+      round: 1,
+      requestId: "msg_detached_controller_wait",
+      prompt: "Let Pro think beyond the outer waiter",
+    },
+    {
+      async onCheckpoint(checkpoint) {
+        checkpoints.push(checkpoint.submissionState);
+      },
+    },
+  );
+
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.deepEqual(checkpoints, ["submitting", "submitted"]);
+});
+
+test("submitTurn waits for a delayed exact conversation URL after clicking only once", async () => {
+  const conversationUrl = "https://chatgpt.com/c/delayed-conversation-url";
+  const fixture = fakeBrowser({
+    initialUrl: "https://chatgpt.com/",
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    urlReadSequence: [
+      "https://chatgpt.com/",
+      "https://chatgpt.com/",
+      conversationUrl,
+      "https://chatgpt.com/c/unrelated-later-navigation",
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+  const checkpoints: Array<{ state: string; url?: string }> = [];
+
+  await adapter.submitTurn!(
+    {
+      runId: "run_delayed_conversation_url",
+      round: 1,
+      requestId: "msg_delayed_conversation_url",
+      prompt: "Capture the exact URL without a second click",
+    },
+    {
+      async onCheckpoint(checkpoint) {
+        checkpoints.push({
+          state: checkpoint.submissionState,
+          ...(checkpoint.conversationUrl === undefined
+            ? {}
+            : { url: checkpoint.conversationUrl }),
+        });
+      },
+    },
+  );
+
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.deepEqual(checkpoints, [
+    { state: "submitting" },
+    { state: "submitted", url: conversationUrl },
+  ]);
+});
+
+test("submitTurn refuses a post-click navigation away from an existing conversation", async () => {
+  const conversationUrl = "https://chatgpt.com/c/existing-conversation-a";
+  const navigatedUrl = "https://chatgpt.com/c/unrelated-conversation-b";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    urlReadSequence: [conversationUrl, conversationUrl, navigatedUrl],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+  const checkpoints: Array<{ state: string; url?: string }> = [];
+
+  await assert.rejects(
+    adapter.submitTurn!(
+      {
+        runId: "run_existing_conversation_navigation",
+        round: 2,
+        requestId: "msg_existing_conversation_navigation",
+        prompt: "Never bind a post-click navigation to the persisted run",
+      },
+      {
+        async onCheckpoint(checkpoint) {
+          checkpoints.push({
+            state: checkpoint.submissionState,
+            ...(checkpoint.conversationUrl === undefined
+              ? {}
+              : { url: checkpoint.conversationUrl }),
+          });
+        },
+      },
+    ),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH" &&
+      "details" in error &&
+      (error.details as { submission_state?: unknown }).submission_state === "possibly_sent",
+  );
+
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.deepEqual(checkpoints, [
+    { state: "submitting", url: conversationUrl },
+  ]);
+});
+
+test("submitTurn reports possibly sent when a new conversation never exposes an exact URL", async () => {
+  const fixture = fakeBrowser({
+    initialUrl: "https://chatgpt.com/",
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    urlReadSequence: ["https://chatgpt.com/"],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 5,
+  });
+
+  await assert.rejects(
+    adapter.submitTurn!({
+      runId: "run_missing_conversation_url",
+      round: 1,
+      requestId: "msg_missing_conversation_url",
+      prompt: "Never click twice when the URL is late",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_CONVERSATION_URL_UNAVAILABLE" &&
+      "details" in error &&
+      (error.details as { submission_state?: unknown }).submission_state === "possibly_sent",
+  );
+  assert.equal(fixture.sendSubmissions(), 1);
+});
+
+test("observeTurn checks once without resending and later returns the exact completed Pro turn", async () => {
+  const conversationUrl = "https://chatgpt.com/c/observed-controller-turn";
+  const prompt = "Let Pro finish after the outer caller returns";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    submittedUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "",
+        assistantMessageCount: 0,
+      },
+      {
+        isAnswering: true,
+        assistantText: "still thinking",
+        assistantMessageCount: 0,
+        lastUserText: prompt,
+        lastMessageRole: "user",
+      },
+      {
+        isAnswering: false,
+        assistantText: "completed controller response",
+        assistantMessageCount: 1,
+        lastUserText: prompt,
+        lastMessageRole: "assistant",
+      },
+      {
+        isAnswering: false,
+        assistantText: "completed controller response",
+        assistantMessageCount: 1,
+        lastUserText: prompt,
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await adapter.submitTurn!({
+    runId: "run_observed_controller_turn",
+    round: 1,
+    requestId: "msg_observed_controller_turn",
+    prompt,
+  });
+  const unfinished = await adapter.observeTurn!({
+    runId: "run_observed_controller_turn",
+    round: 1,
+    requestId: "msg_observed_controller_turn",
+    prompt,
+  });
+  const completed = await adapter.observeTurn!({
+    runId: "run_observed_controller_turn",
+    round: 1,
+    requestId: "msg_observed_controller_turn",
+    prompt,
+  });
+
+  assert.equal(unfinished, undefined);
+  assert.equal(completed?.text, "completed controller response");
+  assert.equal(completed?.conversationUrl, conversationUrl);
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.deepEqual(fixture.composer.fills, [prompt]);
+});
+
+test("returns the conversation URL captured with the completed response DOM", async () => {
+  const responseUrl = "https://chatgpt.com/c/response-conversation";
+  const fixture = fakeBrowser({
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      {
+        pageUrl: responseUrl,
+        isAnswering: false,
+        assistantText: "response from A",
+        assistantMessageCount: 1,
+      },
+    ],
+    // Simulate a navigation that a later tab.url() call would observe.
+    submittedUrl: "https://chatgpt.com/c/later-conversation",
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_same_dom_url",
+    round: 1,
+    requestId: "msg_same_dom_url",
+    prompt: "Controller prompt",
+  });
+
+  assert.equal(turn.text, "response from A");
+  assert.equal(turn.conversationUrl, responseUrl);
+});
+
+test("recognizes a long prompt converted to an attachment and clicks send exactly once", async () => {
+  const fixture = fakeBrowser({
+    composerStates: [
+      {
+        state: "empty",
+        inlineTextLength: 0,
+        attachmentCount: 0,
+        sendButtonEnabled: false,
+      },
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: true,
+      },
+    ],
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+  const checkpoints: string[] = [];
+
+  const turn = await adapter.sendTurn(
+    {
+      runId: "run_attachment_ready",
+      round: 1,
+      requestId: "msg_attachment_ready",
+      prompt: "x".repeat(44_679),
+    },
+    {
+      async onCheckpoint(checkpoint) {
+        checkpoints.push(`${checkpoint.submissionState}:${checkpoint.composerPromptState}`);
+      },
+    },
+  );
+
+  assert.equal(turn.text, "complete");
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.deepEqual(checkpoints, [
+    "submitting:attachment_ready",
+    "submitted:attachment_ready",
+  ]);
+});
+
+test("refuses an empty composer even when the send button is enabled", async () => {
+  const fixture = fakeBrowser({
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: true },
+    ],
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 20,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_empty_enabled",
+      round: 1,
+      requestId: "msg_empty_enabled",
+      prompt: "must exist before send",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_PROMPT_NOT_READY" &&
+      "details" in error &&
+      typeof error.details === "object" &&
+      error.details !== null &&
+      (error.details as Record<string, unknown>).submission_state === "definitely_not_sent",
+  );
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("refuses a pre-existing attachment even if the current fill would add another", async () => {
+  const fixture = fakeBrowser({
+    composerStates: [
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: true,
+      },
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 2,
+        sendButtonEnabled: true,
+      },
+    ],
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "must not be accepted", assistantMessageCount: 1 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 20,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_preexisting_attachment",
+      round: 1,
+      requestId: "msg_preexisting_attachment",
+      prompt: "new prompt must create new evidence",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_PROMPT_NOT_READY" &&
+      "details" in error &&
+      typeof error.details === "object" &&
+      error.details !== null &&
+      (error.details as Record<string, unknown>).submission_state === "definitely_not_sent",
+  );
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("does not classify an empty composer as unsent while an attachment is still settling", async () => {
+  const fixture = fakeBrowser({
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: true,
+      },
+    ],
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await adapter.sendTurn({
+    runId: "run_attachment_settling",
+    round: 1,
+    requestId: "msg_attachment_settling",
+    prompt: "long prompt",
+  });
+
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendSubmissions(), 1);
+});
+
+test("allows operator-confirmed attachment recovery without matching visible user text", async () => {
+  const conversationUrl = "https://chatgpt.com/c/manual-attachment-recovery";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "previous unrelated response",
+        assistantMessageCount: 1,
+        lastUserText: "previous-user-message",
+        lastMessageRole: "assistant",
+      },
+      {
+        isAnswering: false,
+        assistantText: "existing complete response",
+        assistantMessageCount: 2,
+        lastUserText: "controller-observation.txt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_manual_attachment",
+    round: 2,
+    requestId: "msg_manual_attachment",
+    prompt: "x".repeat(44_679),
+    manualSendConfirmed: true,
+    baselineAssistantMessageCount: 1,
+  });
+
+  assert.equal(turn.text, "existing complete response");
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("allows a legacy operator-confirmed attachment recovery without a stored baseline", async () => {
+  const conversationUrl = "https://chatgpt.com/c/manual-legacy-attachment-recovery";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: `<CueLineControl>${JSON.stringify({
+          protocol: "cueline/0.1",
+          run_id: "run_manual_legacy_attachment",
+          round: 2,
+          request_id: "msg_manual_legacy_attachment",
+          action: "complete",
+          final_delivery_text: "legacy exact-envelope response",
+        })}</CueLineControl>`,
+        assistantMessageCount: 3,
+        lastUserText: null,
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_manual_legacy_attachment",
+    round: 2,
+    requestId: "msg_manual_legacy_attachment",
+    prompt: "x".repeat(44_679),
+    manualSendConfirmed: true,
+  });
+
+  assert.match(turn.text, /legacy exact-envelope response/);
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("legacy manual recovery ignores an old assistant response until the exact envelope appears", async () => {
+  const conversationUrl = "https://chatgpt.com/c/manual-legacy-race";
+  const exactResponse = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: "run_manual_legacy_race",
+    round: 2,
+    request_id: "msg_manual_legacy_race",
+    action: "complete",
+    final_delivery_text: "NEW_EXACT_RESPONSE",
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: `<CueLineControl>${JSON.stringify({
+          protocol: "cueline/0.1",
+          run_id: "run_manual_legacy_race",
+          round: 1,
+          request_id: "msg_previous",
+          action: "complete",
+          final_delivery_text: "OLD_RESPONSE",
+        })}</CueLineControl>`,
+        assistantMessageCount: 1,
+        lastUserText: "previous attachment",
+        lastMessageRole: "assistant",
+      },
+      {
+        isAnswering: false,
+        assistantText: exactResponse,
+        assistantMessageCount: 2,
+        lastUserText: "controller-observation.txt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_manual_legacy_race",
+    round: 2,
+    requestId: "msg_manual_legacy_race",
+    prompt: "x".repeat(44_679),
+    manualSendConfirmed: true,
+  });
+
+  assert.equal(turn.text, exactResponse);
+  assert.doesNotMatch(turn.text, /OLD_RESPONSE/);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("recovers a CueLine-submitted attachment without requiring visible prompt equality", async () => {
+  const conversationUrl = "https://chatgpt.com/c/automatic-attachment-recovery";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "existing attachment response",
+        assistantMessageCount: 1,
+        lastUserText: "controller-observation.txt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_automatic_attachment",
+    round: 2,
+    requestId: "msg_automatic_attachment",
+    prompt: "x".repeat(44_679),
+    attachmentPromptExpected: true,
+    baselineAssistantMessageCount: 0,
+  });
+
+  assert.equal(turn.text, "existing attachment response");
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+});
+
+test("refuses attachment recovery without the pre-submit assistant baseline", async () => {
+  const conversationUrl = "https://chatgpt.com/c/attachment-recovery-without-baseline";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "must not import without a baseline",
+        assistantMessageCount: 1,
+        lastUserText: "controller-observation.txt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.recoverTurn!({
+      runId: "run_attachment_without_baseline",
+      round: 2,
+      requestId: "msg_attachment_without_baseline",
+      prompt: "x".repeat(44_679),
+      attachmentPromptExpected: true,
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_RECONCILIATION_BASELINE_REQUIRED",
+  );
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+});
+
 test("fills the hydrated contenteditable composer instead of the pre-hydration textbox", async () => {
   const fixture = fakeBrowser({
     states: [
@@ -273,7 +975,7 @@ test("fills the hydrated contenteditable composer instead of the pre-hydration t
   assert.equal(turn.text, "complete");
 });
 
-test("reacquires a replaced send button once after a transient click failure", async () => {
+test("refuses to reacquire a send button after an unverified click failure", async () => {
   const fixture = fakeBrowser({
     states: [
       { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
@@ -289,31 +991,82 @@ test("reacquires a replaced send button once after a transient click failure", a
     timeoutMs: 1_000,
   });
 
-  const turn = await adapter.sendTurn({
-    runId: "run_1",
-    round: 1,
-    requestId: "msg_1",
-    prompt: "Retry safely",
-  });
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_1",
+      round: 1,
+      requestId: "msg_1",
+      prompt: "Retry safely",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS" &&
+      "details" in error &&
+      typeof error.details === "object" &&
+      error.details !== null &&
+      (error.details as Record<string, unknown>).submission_state === "possibly_sent",
+  );
 
   assert.equal(fixture.sendButtons[0]?.clicks, 1);
-  assert.equal(fixture.sendButtons[1]?.clicks, 1);
-  assert.equal(fixture.snapshots(), 1);
-  assert.equal(turn.text, "complete");
+  assert.equal(fixture.sendButtons[1]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 0);
 });
 
-test("falls back to the visible send coordinate after a transient locator timeout", async () => {
+test("a failed post-click submitted checkpoint never triggers another click", async () => {
   const fixture = fakeBrowser({
     states: [
       { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
-      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 100,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn(
+      {
+        runId: "run_submitted_checkpoint_failure",
+        round: 1,
+        requestId: "msg_submitted_checkpoint_failure",
+        prompt: "Click only once",
+      },
+      {
+        async onCheckpoint(checkpoint) {
+          if (checkpoint.submissionState === "submitted") {
+            throw new Error("submitted checkpoint persistence failed");
+          }
+        },
+      },
+    ),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "IAB_READ_FAILED_AFTER_SUBMIT" &&
+      "details" in error &&
+      typeof error.details === "object" &&
+      error.details !== null &&
+      (error.details as Record<string, unknown>).submission_state === "submitted",
+  );
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendButtons[1]?.clicks, 0);
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.equal(fixture.coordinateClicks(), 0);
+});
+
+test("uses the visible send coordinate only when no locator click was attempted", async () => {
+  const fixture = fakeBrowser({
+    states: [
       { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
       { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
       { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
     ],
-    failEverySendClick: true,
+    sendButtonAvailable: false,
     cuaAvailable: true,
-    firstClickError: "Timed out running CDP command Runtime.evaluate",
   });
   const adapter = createCodexIabAdapter({
     browser: fixture.browser,
@@ -329,10 +1082,79 @@ test("falls back to the visible send coordinate after a transient locator timeou
     prompt: "Submit through the visible button",
   });
 
-  assert.equal(fixture.sendButtons[0]?.clicks, 1);
-  assert.equal(fixture.sendButtons[1]?.clicks, 0);
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
   assert.equal(fixture.coordinateClicks(), 1);
+  assert.equal(fixture.sendSubmissions(), 1);
   assert.equal(turn.text, "complete");
+});
+
+test("classifies a missing send target as definitely not sent when no click was attempted", async () => {
+  const fixture = fakeBrowser({
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    sendButtonAvailable: false,
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_missing_send_target",
+      round: 1,
+      requestId: "msg_missing_send_target",
+      prompt: "No click means definitely not sent",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "SEND_BUTTON_MISSING" &&
+      "details" in error &&
+      typeof error.details === "object" &&
+      error.details !== null &&
+      (error.details as Record<string, unknown>).submission_state === "definitely_not_sent",
+  );
+
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 0);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("classifies an unverified coordinate click as ambiguous without retrying", async () => {
+  const fixture = fakeBrowser({
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+    ],
+    sendButtonAvailable: false,
+    cuaAvailable: true,
+    coordinateClickError: "Timed out clicking the visible coordinate",
+    coordinateClickSubmitsBeforeThrow: true,
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_coordinate_ambiguous",
+      round: 1,
+      requestId: "msg_coordinate_ambiguous",
+      prompt: "Never repeat a coordinate click",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS",
+  );
+
+  assert.equal(fixture.coordinateClicks(), 1);
+  assert.equal(fixture.sendSubmissions(), 1);
 });
 
 test("does not retry a timed-out click when answering already started", async () => {
@@ -363,16 +1185,19 @@ test("does not retry a timed-out click when answering already started", async ()
   assert.equal(turn.text, "finished");
 });
 
-test("accepts submission when the send button disappears after a transient state read failure", async () => {
+test("does not send twice when an ambiguous locator failure hides a successful click", async () => {
   const fixture = fakeBrowser({
     states: [
       { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
-      { isAnswering: true, assistantText: "started", assistantMessageCount: 0 },
-      { isAnswering: false, assistantText: "finished", assistantMessageCount: 1 },
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
     ],
     failFirstClick: true,
-    failStateReadAt: 1,
-    missingSendButtonAfterRetry: true,
+    firstSendClickSubmitsBeforeThrow: true,
+    cuaAvailable: true,
+    firstClickError: "Timed out running CDP command Runtime.evaluate",
   });
   const adapter = createCodexIabAdapter({
     browser: fixture.browser,
@@ -381,17 +1206,58 @@ test("accepts submission when the send button disappears after a transient state
     timeoutMs: 1_000,
   });
 
-  const turn = await adapter.sendTurn({
-    runId: "run_transient",
-    round: 1,
-    requestId: "msg_transient",
-    prompt: "Recover without duplicate send",
-  });
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_ambiguous_click",
+      round: 1,
+      requestId: "msg_ambiguous_click",
+      prompt: "Never duplicate this prompt",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS",
+  );
 
   assert.equal(fixture.sendButtons[0]?.clicks, 1);
   assert.equal(fixture.sendButtons[1]?.clicks, 0);
-  assert.equal(fixture.snapshots(), 1);
-  assert.equal(turn.text, "finished");
+  assert.equal(fixture.coordinateClicks(), 0);
+  assert.equal(fixture.sendSubmissions(), 1);
+});
+
+test("treats an unreadable post-click state as ambiguous without another click", async () => {
+  const fixture = fakeBrowser({
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "started", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "finished", assistantMessageCount: 1 },
+    ],
+    failFirstClick: true,
+    failStateReadAt: 1,
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_transient",
+      round: 1,
+      requestId: "msg_transient",
+      prompt: "Recover without duplicate send",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS",
+  );
+
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendButtons[1]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 0);
 });
 
 test("does not mistake the previous stable assistant message for the new response", async () => {
@@ -552,7 +1418,7 @@ test("refuses to send when selecting Pro does not change the composer model", as
 test("rejects a response whose actual model slug is not Pro", async () => {
   const fixture = fakeBrowser({
     initialModel: "Pro",
-    responseModelSlug: "gpt-5-6-thinking",
+    responseModelSlug: "not-pro-model",
     states: [
       { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
       { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
@@ -972,6 +1838,47 @@ test("recovers an existing completed response from the exact conversation withou
   assert.equal(fixture.sendButtons[0]!.clicks, 0);
 });
 
+test("refuses recovery when response evidence and URL come from different DOM snapshots", async () => {
+  const conversationUrl = "https://chatgpt.com/c/exact-conversation";
+  const prompt = "Existing controller prompt";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        pageUrl: "https://chatgpt.com/c/different-conversation",
+        isAnswering: false,
+        assistantText: "must not import",
+        assistantMessageCount: 1,
+        lastUserText: prompt,
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.recoverTurn!({
+      runId: "run_cross_dom_response",
+      round: 1,
+      requestId: "msg_cross_dom_response",
+      prompt,
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+  );
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
 test("waits for the Pro model button to hydrate before reconciling", async () => {
   const conversationUrl = "https://chatgpt.com/c/hydrating-pro-button";
   const prompt = "Existing controller prompt";
@@ -1001,6 +1908,49 @@ test("waits for the Pro model button to hydrate before reconciling", async () =>
     runId: "run_hydrating_pro_button",
     round: 1,
     requestId: "msg_hydrating_pro_button",
+    prompt,
+  });
+
+  assert.equal(turn.text, "existing complete response");
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
+test("waits for the existing user prompt to hydrate before reconciling", async () => {
+  const conversationUrl = "https://chatgpt.com/c/hydrating-user-prompt";
+  const prompt = "Existing controller prompt";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "",
+        assistantMessageCount: 0,
+        lastUserText: null,
+        lastMessageRole: null,
+      },
+      {
+        isAnswering: false,
+        assistantText: "existing complete response",
+        assistantMessageCount: 1,
+        lastUserText: prompt,
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_hydrating_user_prompt",
+    round: 1,
+    requestId: "msg_hydrating_user_prompt",
     prompt,
   });
 

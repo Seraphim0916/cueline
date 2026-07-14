@@ -35,7 +35,7 @@ A stale or mismatched value is rejected. CueLine parses only the **last complete
 }
 ```
 
-Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, or `ambiguous`. Before browser submission, a single output/error field is bounded to 40,000 characters and only the most recent 20 notices are sent. The local event log remains the recovery record.
+Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, or `ambiguous`. Successful jobs with non-empty stdout use stdout as controller evidence instead of a combined stdout/stderr stream. Failed and timed-out jobs retain bounded diagnostic error evidence. All job evidence in one controller observation shares a global 12,000-character budget; omitted content is reported once with the exact omitted count. Full stdout/stderr remain in local job status, and only the most recent 20 notices are sent. The local event log remains the recovery record.
 
 ## Command envelope
 
@@ -81,9 +81,11 @@ Schedules one or more local jobs.
 }
 ```
 
-`job_key` must be unique inside the command and match the supported identifier form. `mode` is `advise` or `work`. Optional fields are `required`, `timeout_ms`, `runner`, `workdir`, and `background`. `runner_id` is invalid and produces an explicit correction to use `runner`. The local runtime—not ChatGPT—resolves the configured executable. `lane` must be a listed available lane; a runner ID is not a lane name. When `runner` is supplied, it must name an enabled, available candidate in the selected lane. CueLine validates every new route in the dispatch before registering or starting any job. One invalid route rejects the whole command and requests a corrected envelope with the same pending identity. Repeating an already persisted deterministic job is ignored rather than spawned again.
+`job_key` must be unique inside the command and match the supported identifier form. `mode` is `advise` or `work`. Optional fields are `required`, `timeout_ms`, `runner`, `workdir`, and `background`. `runner_id` is invalid and produces an explicit correction to use `runner`. The local runtime—not ChatGPT—resolves the configured executable. `lane` must be a listed available lane; a runner ID is not a lane name. When `runner` is supplied, it must name an enabled, available candidate in the selected lane. CueLine validates every new route in the dispatch before registering or starting any job. One invalid route rejects the whole command and requests a corrected envelope with the same pending identity. Repeating an already persisted deterministic job is ignored rather than executed again.
 
-If every job in one dispatch is `advise`, CueLine starts them concurrently and then reports all results. If any job is `work`, the entire dispatch remains serial in command order.
+The default executor is `caller`. It persists pending `advise` jobs and returns them to the current Codex, which executes the exact local inspections and submits terminal results. The web controller has no local tool access. Caller-mode `work` is rejected with `CALLER_WORK_REQUIRES_CLAIM` because CueLine cannot yet issue a duplicate-safe side-effect claim.
+
+The `process` executor must be selected explicitly. Independent `advise` jobs run with a default global concurrency of two and a default per-lane limit of two (both configurable). If any job is `work`, the entire batch remains serial in command order.
 
 ### `wait`
 
@@ -95,11 +97,11 @@ Asks CueLine to present the currently persisted job state on the next round. It 
 
 ### `complete`
 
-Ends the run with non-empty `final_delivery_text`. Completion is rejected while any required job remains `pending` or `running`; the controller receives a notice and must decide again. Completed required jobs may have failed—the controller is responsible for judging that evidence.
+Ends the run with non-empty `final_delivery_text`. Completion is rejected while any required or optional job remains `pending` or `running`; the controller receives a notice and must wait, inspect, cancel, or otherwise settle every job before deciding again. Terminal jobs may have failed—the controller is responsible for judging that evidence.
 
 ### `blocked`
 
-Ends the run with a non-empty `reason` and optional `final_delivery_text`. This is a terminal, explicit statement that the controller cannot responsibly proceed with the available evidence or authority.
+Ends the run with a non-empty `reason` and optional `final_delivery_text`. Like `complete`, it is rejected while any required or optional job remains active so terminalization cannot orphan background work. Once jobs are settled, it is an explicit statement that the controller cannot responsibly proceed with the available evidence or authority.
 
 ## Validation and repair
 

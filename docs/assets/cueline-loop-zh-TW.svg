@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 590" width="1000" height="590" role="img" aria-label="一次 CueLine 執行像一本提示本：機器送出觀測，主控端喊出一道指令，已註冊的 runner 執行它，直到主控端喊 complete。">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 612" width="1000" height="612" role="img" aria-label="一次 CueLine 執行像一本提示本：機器送出觀測，主控端喊出一道指令，已註冊的 runner 執行它，直到主控端喊 complete。">
   <title>一次 CueLine 執行，像讀一本提示本</title>
   <style>
     text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei", monospace }
@@ -28,8 +28,8 @@
 
   <text x="505" y="44" class="hd" text-anchor="end">ChatGPT 網頁對話</text>
   <text x="505" y="64" class="sub" text-anchor="end">主控端 — 規劃、喊 cue、審查證據</text>
-  <text x="555" y="44" class="hd">你的機器</text>
-  <text x="555" y="64" class="sub">CueLine — 驗證、路由、執行、記錄</text>
+  <text x="555" y="44" class="hd">目前的 Codex + CueLine</text>
+  <text x="555" y="64" class="sub">驗證、保存、交接、記錄</text>
 
   <path d="M40 84H505" class="rule"/>
   <path d="M555 84H960" class="rule"/>
@@ -45,23 +45,23 @@
   <path d="M545 162H565" class="tick"/>
   <text x="575" y="166" class="note">任何程序啟動之前就先決定路由</text>
 
-  <text x="555" y="200" class="note">codex exec（唯讀）→ 成功 · 輸出已保存</text>
+  <text x="555" y="200" class="note">目前的 Codex（caller advise）→ 結果已提交</text>
 
   <text x="40" y="264" class="rnd">第 2 輪</text>
   <path d="M505 260H524" class="tick"/>
-  <text x="555" y="264" class="obs">observation · 證據原樣送回</text>
+  <text x="555" y="264" class="obs">observation · 有界證據 · stdout 優先</text>
   <path d="M524 256 517 260 524 264z" class="cue"/>
 
   <path d="M536 296 545 300 536 304z" class="cue"/>
-  <text x="505" y="304" class="say" text-anchor="end">dispatch · patch · mode work</text>
+  <text x="505" y="304" class="say" text-anchor="end">dispatch · 後續查驗 · mode advise</text>
   <path d="M545 300H565" class="tick"/>
-  <text x="575" y="304" class="note">argv[0] 必須事先被允許</text>
+  <text x="575" y="304" class="note">持久 caller 交接</text>
 
-  <text x="555" y="338" class="note">codex exec（workspace-write）→ 成功</text>
+  <text x="555" y="338" class="note">目前的 Codex → 第二份結果已提交</text>
 
   <text x="40" y="402" class="rnd">第 3 輪</text>
   <path d="M505 398H524" class="tick"/>
-  <text x="555" y="402" class="obs">observation · 更新後的證據</text>
+  <text x="555" y="402" class="obs">observation · 更新後的有界證據</text>
   <path d="M524 394 517 398 524 402z" class="cue"/>
 
   <path d="M536 434 545 438 536 442z" class="cue"/>
@@ -73,5 +73,6 @@
 
   <path d="M40 520H960" class="rule"/>
   <text x="40" y="546" class="foot">只有五個動作 — dispatch · wait · inspect · complete · blocked。</text>
-  <text x="40" y="568" class="foot">封包以外的文字一律不執行；工作行程一旦啟動就不會自動重試。</text>
+  <text x="40" y="568" class="foot">只送一次 → awaiting_controller → 單次唯讀觀測；絕不重送。</text>
+  <text x="40" y="590" class="foot">Caller 只允許 advise；process 必須明確選用，而且不會偷偷重試。</text>
 </svg>

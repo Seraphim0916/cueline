@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { continueCueLineRun, runCueLine } from "../../src/api.js";
-import type { BrowserTurnInput } from "../../src/browser/browser-adapter.js";
+import type { BrowserTurnInput, ControllerTurn } from "../../src/browser/browser-adapter.js";
 import { CueLineError } from "../../src/core/errors.js";
 import type { RoutingConfig } from "../../src/router/types.js";
+import { readEvents } from "../../src/state/event-log.js";
 import { FakeBrowserAdapter } from "../fakes/fake-browser.js";
 
 function reply(
   action: (input: BrowserTurnInput) => Record<string, unknown>,
-): (input: BrowserTurnInput) => { text: string; conversationUrl: string } {
+): (input: BrowserTurnInput) => ControllerTurn {
   return (input) => ({
     text: `<CueLineControl>${JSON.stringify({
       protocol: "cueline/0.1",
@@ -22,6 +23,12 @@ function reply(
       ...action(input),
     })}</CueLineControl>`,
     conversationUrl: "https://chatgpt.com/c/cueline-smoke",
+    model: {
+      provider: "chatgpt",
+      selectedLabel: "Pro",
+      responseModelSlug: "gpt-5-6-pro",
+      source: "composer_and_response",
+    },
   });
 }
 
@@ -71,6 +78,7 @@ test("public API drives browser, routing, process execution, persistence, and fi
   ]);
 
   const result = await runCueLine({
+    executor: "process",
     request: "Run the standalone smoke",
     runId: "run_public_smoke",
     home,
@@ -81,9 +89,11 @@ test("public API drives browser, routing, process execution, persistence, and fi
 
   assert.equal(result.status, "complete");
   assert.equal(result.finalDeliveryText, "CUELINE_SMOKE_OK");
-  assert.match(
-    await readFile(path.join(home, "runs", result.runId, "events.jsonl"), "utf8"),
-    /run_completed/,
+  assert.equal(
+    (await readEvents(path.join(home, "runs", result.runId, "events.jsonl"))).some(
+      (event) => event.type === "run_completed",
+    ),
+    true,
   );
 
   const replayed = await continueCueLineRun({

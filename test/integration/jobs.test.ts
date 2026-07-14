@@ -7,7 +7,11 @@ import test from "node:test";
 import { CueLineError } from "../../src/core/errors.js";
 import { JobStatusStore } from "../../src/jobs/status.js";
 import { JobSupervisor } from "../../src/jobs/supervisor.js";
-import type { RunnerSpec } from "../../src/runners/runner-adapter.js";
+import type {
+  RunnerAdapter,
+  RunnerRunHooks,
+  RunnerSpec,
+} from "../../src/runners/runner-adapter.js";
 import { ProcessRunner } from "../../src/runners/process-runner.js";
 import { RunnerRegistry } from "../../src/runners/registry.js";
 
@@ -33,6 +37,56 @@ function spec(jobId: string, script: string, overrides: Partial<RunnerSpec> = {}
     timeoutMs: 1_000,
     ...overrides,
   };
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code !== "ESRCH"
+    );
+  }
+}
+
+async function descendantProcessSpec(
+  jobId: string,
+  overrides: Partial<RunnerSpec>,
+): Promise<{ descendantPidPath: string; runnerSpec: RunnerSpec }> {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-process-tree-"));
+  const descendantPidPath = path.join(directory, "descendant.pid");
+  const script = [
+    'const { spawn } = require("node:child_process");',
+    'const { writeFileSync } = require("node:fs");',
+    `const descendant = spawn(${JSON.stringify(process.execPath)}, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });`,
+    `writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+  return {
+    descendantPidPath,
+    runnerSpec: spec(jobId, script, overrides),
+  };
+}
+
+async function waitForDescendantPid(descendantPidPath: string): Promise<number> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      return Number(await readFile(descendantPidPath, "utf8"));
+    } catch {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw new Error("descendant PID was not persisted before the deadline");
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 100 && processIsAlive(pid); attempt += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 test("runs a registered argv without a shell and captures stdout and stderr", async () => {
@@ -158,6 +212,80 @@ test("cancels an advise process and reports its spawned PID", async () => {
   assert.equal(result.ambiguousSideEffects, false);
 });
 
+test("cancelling an advise process terminates its descendant process tree", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX process groups are not available on Windows");
+    return;
+  }
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+  const controller = new AbortController();
+  const fixture = await descendantProcessSpec("cancel-tree", {
+    signal: controller.signal,
+    timeoutMs: 5_000,
+  });
+  const running = runner.run(fixture.runnerSpec);
+  const descendantPid = await waitForDescendantPid(fixture.descendantPidPath);
+  t.after(() => {
+    if (processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
+  });
+
+  controller.abort();
+  const result = await running;
+  await waitForProcessExit(descendantPid);
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(processIsAlive(descendantPid), false);
+});
+
+test("timing out an advise process terminates its descendant process tree", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX process groups are not available on Windows");
+    return;
+  }
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+  const fixture = await descendantProcessSpec("timeout-tree", { timeoutMs: 200 });
+  const running = runner.run(fixture.runnerSpec);
+  const descendantPid = await waitForDescendantPid(fixture.descendantPidPath);
+  t.after(() => {
+    if (processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
+  });
+
+  const result = await running;
+  await waitForProcessExit(descendantPid);
+
+  assert.equal(result.status, "timed_out");
+  assert.equal(result.timedOut, true);
+  assert.equal(processIsAlive(descendantPid), false);
+});
+
+test("a normally exiting runner cannot leave a detached descendant in its process group", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX process groups are not available on Windows");
+    return;
+  }
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-normal-tree-"));
+  const descendantPidPath = path.join(directory, "descendant.pid");
+  const script = [
+    'const { spawn } = require("node:child_process");',
+    'const { writeFileSync } = require("node:fs");',
+    `const descendant = spawn(${JSON.stringify(process.execPath)}, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });`,
+    "descendant.unref();",
+    `writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
+    "process.exit(0);",
+  ].join("\n");
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+
+  const result = await runner.run(spec("normal-tree", script));
+  const descendantPid = await waitForDescendantPid(descendantPidPath);
+  t.after(() => {
+    if (processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
+  });
+  await waitForProcessExit(descendantPid);
+
+  assert.equal(result.status, "succeeded");
+  assert.equal(processIsAlive(descendantPid), false);
+});
+
 test("cancelling started work reports ambiguous side effects", async () => {
   const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
   const controller = new AbortController();
@@ -238,4 +366,25 @@ test("supervisor persists run metadata and cancels an owned background job", asy
   const terminal = await supervisor.waitForCompletion(job.jobId);
   assert.equal(terminal.status, "cancelled");
   assert.equal(terminal.pid, persisted?.pid);
+});
+
+test("supervisor marks started work ambiguous when post-spawn bookkeeping fails", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-post-spawn-failure-"));
+  const store = new JobStatusStore(directory);
+  const runner: RunnerAdapter = {
+    async run(_spec: RunnerSpec, hooks: RunnerRunHooks = {}) {
+      await hooks.onSpawn?.(424_242);
+      throw new Error("status persistence failed after spawn");
+    },
+  };
+  const supervisor = new JobSupervisor(runner, { statusStore: store });
+
+  const terminal = await supervisor.start(
+    spec("post-spawn-work", "", { mode: "work" }),
+  );
+
+  assert.equal(terminal.status, "ambiguous");
+  assert.equal(terminal.pid, 424_242);
+  assert.match(terminal.error ?? "", /status persistence failed after spawn/);
+  assert.equal((await store.read("post-spawn-work"))?.status, "ambiguous");
 });

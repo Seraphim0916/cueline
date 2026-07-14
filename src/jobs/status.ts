@@ -6,7 +6,7 @@ import { runtimePidTag } from "../core/runtime.js";
 import type { JobMode } from "../protocol/types.js";
 import type { JobExecution, JobResult, JobResultStatus } from "../runners/runner-adapter.js";
 
-export type JobStatusKind = "running" | JobResultStatus;
+export type JobStatusKind = "pending" | "running" | JobResultStatus;
 
 export interface JobStatus {
   jobId: string;
