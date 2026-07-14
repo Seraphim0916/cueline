@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+
+SELF=$0
+while test -L "$SELF"; do
+  SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)
+  LINK_TARGET=$(readlink "$SELF")
+  case $LINK_TARGET in
+    /*) SELF=$LINK_TARGET ;;
+    *) SELF=$SELF_DIR/$LINK_TARGET ;;
+  esac
+done
+ROOT=$(CDPATH= cd -- "$(dirname -- "$SELF")/.." && pwd)
+exec node "$ROOT/dist/src/cli/main.js" "$@"

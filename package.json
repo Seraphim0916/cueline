@@ -1,0 +1,69 @@
+{
+  "name": "cueline",
+  "version": "0.1.0",
+  "description": "A ChatGPT web conversation directs; CueLine validates each command and runs the work on your machine, with a durable record of both.",
+  "keywords": [
+    "chatgpt",
+    "codex",
+    "controller",
+    "orchestration",
+    "agent",
+    "control-loop",
+    "cli",
+    "typescript"
+  ],
+  "homepage": "https://github.com/Seraphim0916/cueline#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Seraphim0916/cueline.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Seraphim0916/cueline/issues"
+  },
+  "author": "CueLine contributors",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "cueline": "bin/cueline"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/api.d.ts",
+      "import": "./dist/src/api.js"
+    }
+  },
+  "files": [
+    ".claude-plugin",
+    ".codex-plugin",
+    "bin",
+    "config",
+    "dist/src",
+    "docs",
+    "!docs/superpowers",
+    "evals",
+    "schemas",
+    "skills",
+    "install.sh",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/unit/*.test.js dist/test/integration/*.test.js dist/test/smoke/*.test.js",
+    "test:unit": "npm run build && node --test dist/test/unit/*.test.js",
+    "test:integration": "npm run build && node --test dist/test/integration/*.test.js",
+    "smoke:fake": "npm run build && node --test dist/test/smoke/fake-smoke.test.js",
+    "validate:plugin": "python3 \"${CODEX_HOME:-$HOME/.codex}/skills/.system/plugin-creator/scripts/validate_plugin.py\" ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^7.0.2"
+  }
+}

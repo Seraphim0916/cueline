@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" role="img" aria-label="CueLine">
+  <title>CueLine</title>
+  <g fill="none" stroke-linecap="butt">
+    <path d="M12 8V40" stroke="#0F1720" stroke-width="3"/>
+    <path d="M26 15H40" stroke="#5B6672" stroke-width="3"/>
+    <path d="M26 24H40" stroke="#0F1720" stroke-width="3"/>
+    <path d="M26 33H40" stroke="#5B6672" stroke-width="3"/>
+  </g>
+  <path d="M14 18.5 23 24l-9 5.5z" fill="#C8553D"/>
+</svg>

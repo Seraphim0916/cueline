@@ -1,0 +1,4 @@
+interface:
+  display_name: "CueLine"
+  short_description: "Let ChatGPT Pro direct durable local agent runs"
+  default_prompt: "Use $cueline to let the open ChatGPT conversation direct this task."

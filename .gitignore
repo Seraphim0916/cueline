@@ -1,0 +1,9 @@
+node_modules/
+dist/
+docs/superpowers/
+*.tgz
+.DS_Store
+.cueline/
+coverage/
+*.log
+*.tmp

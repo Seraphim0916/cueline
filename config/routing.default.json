@@ -1,0 +1,28 @@
+{
+  "$schema": "./routing.schema.json",
+  "version": 1,
+  "lanes": {
+    "default": {
+      "enabled": true,
+      "candidates": [
+        {
+          "id": "codex-default",
+          "argv": [
+            "codex",
+            "exec",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--color",
+            "never",
+            "-C",
+            "{workdir}",
+            "-s",
+            "{sandbox}",
+            "-"
+          ],
+          "task_input": "stdin"
+        }
+      ]
+    }
+  }
+}

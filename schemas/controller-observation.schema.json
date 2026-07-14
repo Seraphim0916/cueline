@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/controller-observation.schema.json",
+  "title": "CueLine controller observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "run_id", "round", "request_id", "user_request", "jobs", "notices"],
+  "properties": {
+    "protocol": { "const": "cueline/0.1" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "round": { "type": "integer", "minimum": 1 },
+    "request_id": { "type": "string", "minLength": 1 },
+    "user_request": { "type": "string", "minLength": 1 },
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["job_id", "job_key", "required", "status"],
+        "properties": {
+          "job_id": { "type": "string" },
+          "job_key": { "type": "string" },
+          "required": { "type": "boolean" },
+          "status": { "enum": ["pending", "running", "succeeded", "failed", "timed_out", "ambiguous"] },
+          "output": { "type": "string" },
+          "error": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "notices": { "type": "array", "items": { "type": "string" } }
+  }
+}

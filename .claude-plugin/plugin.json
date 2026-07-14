@@ -1,0 +1,8 @@
+{
+  "name": "cueline",
+  "version": "0.1.0",
+  "description": "Use a ChatGPT web conversation as the controller for durable local agent work.",
+  "author": {
+    "name": "CueLine contributors"
+  }
+}

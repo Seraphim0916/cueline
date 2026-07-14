@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 320" width="1280" height="320" role="img" aria-label="CueLine — ChatGPT directs. Your machine executes.">
+  <title>CueLine — ChatGPT directs. Your machine executes.</title>
+  <rect width="1280" height="320" fill="#FBFBFC"/>
+
+  <g transform="translate(96 92) scale(1.5)">
+    <g fill="none" stroke-linecap="butt">
+      <path d="M12 8V40" stroke="#0F1720" stroke-width="3"/>
+      <path d="M26 15H40" stroke="#5B6672" stroke-width="3"/>
+      <path d="M26 24H40" stroke="#0F1720" stroke-width="3"/>
+      <path d="M26 33H40" stroke="#5B6672" stroke-width="3"/>
+    </g>
+    <path d="M14 18.5 23 24l-9 5.5z" fill="#C8553D"/>
+  </g>
+
+  <g transform="translate(200 110) scale(0.75)">
+    <g fill="none" stroke="#0F1720" stroke-width="3" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M21.81 14.68A11.5 14.5 0 1 0 21.81 33.32"/>
+      <path d="M37.5 8V24A11.5 14.5 0 0 0 60.5 24V8"/>
+      <path d="M73.5 8V40"/>
+      <path d="M72 9.5H92"/>
+      <path d="M72 24H88"/>
+      <path d="M72 38.5H92"/>
+      <path d="M103.5 8V38.5"/>
+      <path d="M102 38.5H122"/>
+      <path d="M133.5 8V40"/>
+      <path d="M146.5 40V8L169.5 40V8"/>
+      <path d="M182.5 8V40"/>
+      <path d="M181 9.5H201"/>
+      <path d="M181 24H197"/>
+      <path d="M181 38.5H201"/>
+    </g>
+  </g>
+
+  <text x="96" y="214" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="19" fill="#5B6672" textLength="434" lengthAdjust="spacingAndGlyphs">ChatGPT directs. Your machine executes.</text>
+
+  <g stroke="#D5DBE2" stroke-width="1">
+    <path d="M96 252.5H1184"/>
+    <path d="M96 253v6M160 253v6M224 253v6M288 253v6M416 253v6M480 253v6M544 253v6M608 253v6M672 253v6M736 253v6M800 253v6M864 253v6M928 253v6M992 253v6M1056 253v6M1120 253v6M1184 253v6"/>
+  </g>
+  <path d="M352 253v13" stroke="#C8553D" stroke-width="2"/>
+</svg>

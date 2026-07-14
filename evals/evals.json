@@ -1,0 +1,41 @@
+{
+  "skill_name": "cueline",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Use CueLine with the ChatGPT Pro conversation already open in Codex's built-in browser. Ask it to act as controller and dispatch one advise-only architecture review of /tmp/sample-repo, then return the controller's final answer. Do not modify the repository.",
+      "expected_output": "CueLine uses the built-in IAB, keeps the job in advise mode, completes through a validated controller envelope, and returns finalDeliveryText verbatim with persisted run evidence.",
+      "files": [],
+      "expectations": [
+        "Uses CueLine rather than GPT Relay, Chrome automation, or direct web-to-local tools.",
+        "Does not convert the advise-only request into mutating work.",
+        "Reports completion only after a terminal CueLine result and preserves the run ID for recovery.",
+        "Returns the controller finalDeliveryText verbatim without a competing Codex conclusion."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Run CueLine for a local implementation task where one required worker succeeds and a second required work-mode worker exits nonzero after it may have changed files. Let web ChatGPT inspect the evidence and decide whether to complete or block. Do not retry or silently fall back to another worker.",
+      "expected_output": "The unsuccessful work result is treated as potentially ambiguous, no post-spawn retry occurs, and ChatGPT receives the evidence and makes the explicit terminal decision.",
+      "files": [],
+      "expectations": [
+        "Does not retry or choose a fallback after the failed work process has started.",
+        "Presents both successful and failed worker evidence to the web controller.",
+        "Does not claim all local work succeeded merely because the controller can issue complete.",
+        "Returns either the controller's exact completion text or a clearly reported persisted blocked result."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "A CueLine run was interrupted after controller round 2. Continue run ID run-eval-continuation using the same persisted CUELINE_HOME and the same already open ChatGPT conversation. Do not create a new run or resend jobs that are already in state.",
+      "expected_output": "CueLine loads and replays the existing run, reuses the persisted conversation, suppresses duplicate dispatch, and continues from the next round to a real terminal result.",
+      "files": [],
+      "expectations": [
+        "Calls continueCueLineRun with the existing run ID instead of starting a new run.",
+        "Reuses the same CueLine home and ChatGPT conversation without copying credentials.",
+        "Does not respawn a deterministic job already present in run state.",
+        "Distinguishes a real terminal result from a missing IAB session or other continuation blocker."
+      ]
+    }
+  ]
+}
