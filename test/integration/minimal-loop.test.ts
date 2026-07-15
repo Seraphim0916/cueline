@@ -3242,6 +3242,95 @@ test("manual submission confirmation atomically binds the first conversation URL
   assert.equal(replayed.state.pendingControllerTurns[0]?.manualSendConfirmed, true);
 });
 
+test("public continuation preflights deterministic failures before manual confirmation mutates the run", async () => {
+  const scenarios: Array<{
+    suffix: string;
+    code: string;
+    overrides: Partial<Parameters<typeof continueCueLineRun>[0]>;
+  }> = [
+    {
+      suffix: "invalid_limit",
+      code: "MAX_CONCURRENCY_INVALID",
+      overrides: { maxConcurrency: 0 },
+    },
+    {
+      suffix: "nested",
+      code: "NESTED_ROUTING_REJECTED",
+      overrides: { environment: { ...process.env, CUELINE_DEPTH: "1" } },
+    },
+    {
+      suffix: "executor_mismatch",
+      code: "RUN_EXECUTOR_MISMATCH",
+      overrides: { executor: "process", allowProcessExecution: true },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const runId = `run_continue_preflight_${scenario.suffix}`;
+    const requestId = `msg_continue_preflight_${scenario.suffix}`;
+    const conversationUrl = `https://chatgpt.com/c/continue-preflight-${scenario.suffix}`;
+    const stateHome = await home();
+    const store = await RunStore.create({
+      home: stateHome,
+      runId,
+      initialState: initialRunState(runId, ""),
+      reducer: reduceRunState,
+    });
+    await store.append("run_created", { request: "Fail before confirming a manual send" });
+    await store.append("controller_turn_requested", {
+      round: 1,
+      request_id: requestId,
+      prompt: "manually sent controller prompt",
+      prompt_hash: `preflight-${scenario.suffix}`,
+    });
+    await store.append("run_failed", {
+      code: "CONTROLLER_PROMPT_NOT_READY",
+      request_id: requestId,
+      stage: "pre_submit",
+      submission_state: "definitely_not_sent",
+    });
+    await store.snapshot();
+
+    await assert.rejects(
+      continueCueLineRun({
+        runId,
+        home: stateHome,
+        reconcileRequestId: requestId,
+        manualSendConfirmed: true,
+        conversationUrl,
+        browser: new FakeBrowserAdapter([]),
+        routingConfig: {
+          version: 1,
+          lanes: {
+            default: {
+              enabled: true,
+              candidates: [
+                {
+                  id: "node",
+                  argv: [process.execPath, "-e", "process.exit(0)"],
+                  task_input: "stdin",
+                },
+              ],
+            },
+          },
+        },
+        ...scenario.overrides,
+      }),
+      (error: unknown) => error instanceof CueLineError && error.code === scenario.code,
+    );
+
+    const eventTypes = (await readEvents(runPaths(stateHome, runId).events)).map(
+      (event) => event.type,
+    );
+    assert.equal(
+      eventTypes.includes("controller_turn_manual_submission_confirmed"),
+      false,
+      scenario.suffix,
+    );
+    assert.equal(eventTypes.includes("controller_conversation_bound"), false, scenario.suffix);
+  }
+});
+
 test("rejects a wrong manual-recovery envelope without repair or resend", async () => {
   const runId = "run_manual_attachment_wrong_identity";
   const requestId = "msg_manual_attachment_wrong_identity";

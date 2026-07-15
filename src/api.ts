@@ -26,6 +26,7 @@ import {
   continueControllerLoop,
   createControllerRun,
   runControllerLoop,
+  validateControllerRuntimeOptions,
   type CueLineResult,
 } from "./core/controller-loop.js";
 import { CueLineError } from "./core/errors.js";
@@ -210,6 +211,7 @@ export async function startCueLineRun(
 
 export async function runCueLine(options: StartCueLineRunOptions): Promise<CueLineResult> {
   assertNotNested(options.environment ?? runtimeEnvironment());
+  validateControllerRuntimeOptions(options);
   const runtime = await prepareRuntime(options);
   return runControllerLoop({
     request: options.request,
@@ -244,20 +246,11 @@ export async function continueCueLineRun(
 ): Promise<CueLineResult> {
   const environment = options.environment ?? runtimeEnvironment();
   const home = options.home ?? defaultCueLineHome(environment);
-  if (options.manualSendConfirmed === true) {
-    if (options.reconcileRequestId === undefined) {
-      throw new CueLineError(
-        "CONTROLLER_RECONCILIATION_REQUEST_REQUIRED",
-        "manualSendConfirmed requires the exact reconcileRequestId.",
-      );
-    }
-    await confirmManualControllerSubmission(options.runId, {
-      home,
-      requestId: options.reconcileRequestId,
-      ...(options.conversationUrl === undefined
-        ? {}
-        : { conversationUrl: options.conversationUrl }),
-    });
+  if (options.manualSendConfirmed === true && options.reconcileRequestId === undefined) {
+    throw new CueLineError(
+      "CONTROLLER_RECONCILIATION_REQUEST_REQUIRED",
+      "manualSendConfirmed requires the exact reconcileRequestId.",
+    );
   }
   let state = await loadPersistedRunState(home, options.runId);
   if (
@@ -270,6 +263,44 @@ export async function continueCueLineRun(
       "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
       `Run '${options.runId}' is already bound to a different ChatGPT conversation.`,
     );
+  }
+  if (isTerminalRun(state) && options.manualSendConfirmed !== true) {
+    return terminalResult(state);
+  }
+  let preparedRuntime: PreparedRuntime | undefined;
+  if (options.manualSendConfirmed === true) {
+    assertNotNested(environment);
+    validateControllerRuntimeOptions(options);
+    if (options.executor !== undefined && options.executor !== state.executor) {
+      throw new CueLineError(
+        "RUN_EXECUTOR_MISMATCH",
+        `Run '${options.runId}' uses executor '${state.executor}', not '${options.executor}'.`,
+      );
+    }
+    if (
+      state.executor === "process" &&
+      (!state.allowProcessExecution || options.allowProcessExecution !== true)
+    ) {
+      throw new CueLineError(
+        "PROCESS_EXECUTION_NOT_AUTHORIZED",
+        "Continuing a process run requires allowProcessExecution=true in addition to its persisted authorization.",
+      );
+    }
+    if (!isTerminalRun(state)) {
+      preparedRuntime = await prepareRuntime(
+        options,
+        state.conversationUrl ?? undefined,
+        state.executor,
+      );
+    }
+    await confirmManualControllerSubmission(options.runId, {
+      home,
+      requestId: options.reconcileRequestId!,
+      ...(options.conversationUrl === undefined
+        ? {}
+        : { conversationUrl: options.conversationUrl }),
+    });
+    state = await loadPersistedRunState(home, options.runId);
   }
   if (isTerminalRun(state)) {
     return terminalResult(state);
@@ -345,27 +376,29 @@ export async function continueCueLineRun(
   if (!isSafeStaleCallerObservationRecovery(state, runtime, cancellation)) {
     assertRunCanContinue(state, runtime, cancellation);
   }
-  assertNotNested(environment);
-  if (options.executor !== undefined && options.executor !== state.executor) {
-    throw new CueLineError(
-      "RUN_EXECUTOR_MISMATCH",
-      `Run '${options.runId}' uses executor '${state.executor}', not '${options.executor}'.`,
+  if (preparedRuntime === undefined) {
+    assertNotNested(environment);
+    if (options.executor !== undefined && options.executor !== state.executor) {
+      throw new CueLineError(
+        "RUN_EXECUTOR_MISMATCH",
+        `Run '${options.runId}' uses executor '${state.executor}', not '${options.executor}'.`,
+      );
+    }
+    if (
+      state.executor === "process" &&
+      (!state.allowProcessExecution || options.allowProcessExecution !== true)
+    ) {
+      throw new CueLineError(
+        "PROCESS_EXECUTION_NOT_AUTHORIZED",
+        "Continuing a process run requires allowProcessExecution=true in addition to its persisted authorization.",
+      );
+    }
+    preparedRuntime = await prepareRuntime(
+      options,
+      state.conversationUrl ?? undefined,
+      state.executor,
     );
   }
-  if (
-    state.executor === "process" &&
-    (!state.allowProcessExecution || options.allowProcessExecution !== true)
-  ) {
-    throw new CueLineError(
-      "PROCESS_EXECUTION_NOT_AUTHORIZED",
-      "Continuing a process run requires allowProcessExecution=true in addition to its persisted authorization.",
-    );
-  }
-  const preparedRuntime = await prepareRuntime(
-    options,
-    state.conversationUrl ?? undefined,
-    state.executor,
-  );
   return continueControllerLoop({
     runId: options.runId,
     ...preparedRuntime,
