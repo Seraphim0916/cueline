@@ -99,10 +99,42 @@ test("runs a registered argv without a shell and captures stdout and stderr", as
   assert.equal(result.status, "succeeded");
   assert.equal(result.stdout, "OUT");
   assert.equal(result.stderr, "ERR");
+  assert.equal(result.stdoutTruncatedChars, undefined);
+  assert.equal(result.stderrTruncatedChars, undefined);
   assert.match(result.output, /OUT/);
   assert.match(result.output, /ERR/);
   assert.equal(result.emptyOutput, false);
   assert.equal(result.retryable, false);
+});
+
+test("bounds noisy process streams while preserving their head tail and omission count", async () => {
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+  const result = await runner.run(
+    spec(
+      "bounded-output",
+      [
+        'process.stdout.write("STDOUT_HEAD\\n" + "O".repeat(700_000) + "\\nSTDOUT_TAIL");',
+        'process.stderr.write("STDERR_HEAD\\n" + "E".repeat(700_000) + "\\nSTDERR_TAIL");',
+      ].join("\n"),
+      { timeoutMs: 5_000 },
+    ),
+  );
+
+  assert.equal(result.status, "succeeded");
+  assert.match(result.stdout, /^STDOUT_HEAD/);
+  assert.match(result.stdout, /STDOUT_TAIL$/);
+  assert.match(result.stderr, /^STDERR_HEAD/);
+  assert.match(result.stderr, /STDERR_TAIL$/);
+  assert.match(result.stdout, /\[truncated \d+ chars\]/);
+  assert.match(result.stderr, /\[truncated \d+ chars\]/);
+  assert.ok(result.stdout.length < 513_000, `stdout length was ${result.stdout.length}`);
+  assert.ok(result.stderr.length < 513_000, `stderr length was ${result.stderr.length}`);
+  assert.ok((result.stdoutTruncatedChars ?? 0) > 180_000);
+  assert.ok((result.stderrTruncatedChars ?? 0) > 180_000);
+  assert.match(result.output, /STDOUT_HEAD/);
+  assert.match(result.output, /STDOUT_TAIL/);
+  assert.match(result.output, /STDERR_HEAD/);
+  assert.match(result.output, /STDERR_TAIL/);
 });
 
 test("a failing diagnostic progress hook cannot break process supervision", async () => {
