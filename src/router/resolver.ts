@@ -13,7 +13,9 @@ export function validateRouteReference(
   config: RoutingConfig,
   requestedCandidateId?: string,
 ): LaneConfig {
-  const laneConfig = config.lanes[lane];
+  const laneConfig = Object.hasOwn(config.lanes, lane)
+    ? config.lanes[lane]
+    : undefined;
   if (laneConfig === undefined) {
     const runnerLanes = Object.entries(config.lanes)
       .filter(([, candidateLane]) =>
@@ -68,7 +70,7 @@ function isAvailable(availability: RouteAvailability, candidate: RouteCandidate,
   if (isAvailabilityChecker(availability)) {
     return availability.isAvailable(candidate, lane);
   }
-  return availability[candidate.id] === true;
+  return Object.hasOwn(availability, candidate.id) && availability[candidate.id] === true;
 }
 
 /**

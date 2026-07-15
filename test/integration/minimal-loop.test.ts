@@ -33,6 +33,7 @@ import { observationFor } from "../../src/core/controller-turn.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
 import { CUELINE_PROTOCOL, type ControllerJobSpec } from "../../src/protocol/types.js";
 import { JobStatusStore, type JobStatus } from "../../src/jobs/status.js";
+import type { RoutingConfig } from "../../src/router/types.js";
 import type { RunnerSpec } from "../../src/runners/runner-adapter.js";
 import { createEventLog, readEvents } from "../../src/state/event-log.js";
 import {
@@ -846,6 +847,38 @@ test("public caller prompt lists enabled lanes without process availability", as
 
   assert.equal(result.status, "awaiting_caller");
   assert.equal(result.pendingJobs?.[0]?.jobKey, "caller_offline_lane");
+});
+
+test("public API validates an in-memory routing config before touching the browser", async () => {
+  let browserCalls = 0;
+  const browser: BrowserAdapter = {
+    async sendTurn(): Promise<ControllerTurn> {
+      browserCalls += 1;
+      throw new Error("BROWSER_MUST_NOT_BE_TOUCHED");
+    },
+  };
+  const routingConfig = {
+    version: 1,
+    lanes: {
+      default: {
+        enabled: true,
+        candidates: [{ id: "must-be-disabled", argv: ["unused"], enable: false }],
+      },
+    },
+  } as unknown as RoutingConfig;
+
+  await assert.rejects(
+    runCueLine({
+      request: "Reject a mistyped in-memory route",
+      runId: "run_invalid_in_memory_route",
+      home: await home(),
+      browser,
+      routingConfig,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "ROUTING_CONFIG_INVALID",
+  );
+  assert.equal(browserCalls, 0);
 });
 
 test("caller work dispatch creates a durable unstarted job awaiting an explicit claim", async () => {
