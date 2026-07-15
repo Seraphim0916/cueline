@@ -81,6 +81,8 @@ export interface CueLineCallerWorkClaimResult extends CueLineCallerWorkClaimProo
   task: string;
   taskHash: string;
   workdir: string;
+  /** Canonical directory pinned by the durable claim; execute work only here. */
+  resolvedWorkdir: string;
   claimedAt: string;
   heartbeatAt: string;
   expiresAt: string;

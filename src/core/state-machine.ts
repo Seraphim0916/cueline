@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import type {
   ControllerCommand,
   ControllerJobSpec,
@@ -61,12 +63,19 @@ export interface CallerWorkClaim {
   callerId: string;
   taskHash: string;
   workdir: string;
+  workdirIdentity?: CallerWorkdirIdentity;
   fencingToken: number;
   claimedAt: string;
   heartbeatAt: string;
   expiresAt: string;
   ttlMs: number;
   startedAt: string | null;
+}
+
+export interface CallerWorkdirIdentity {
+  resolvedPath: string;
+  device: string;
+  inode: string;
 }
 
 export interface CallerWorkState {
@@ -132,6 +141,28 @@ function validCallerId(value: unknown): value is string {
 
 function validIsoTimestamp(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function validWorkdirIdentity(value: unknown): value is CallerWorkdirIdentity {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.resolvedPath === "string" &&
+    path.isAbsolute(record.resolvedPath) &&
+    typeof record.device === "string" &&
+    /^\d+$/.test(record.device) &&
+    typeof record.inode === "string" &&
+    /^\d+$/.test(record.inode)
+  );
+}
+
+function sameWorkdirIdentity(value: unknown, expected: CallerWorkdirIdentity): boolean {
+  return (
+    validWorkdirIdentity(value) &&
+    value.resolvedPath === expected.resolvedPath &&
+    value.device === expected.device &&
+    value.inode === expected.inode
+  );
 }
 
 function validClaimWindow(
@@ -516,6 +547,8 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       record.taskHash !== jobSpecHash(existing.spec) ||
       typeof record.workdir !== "string" ||
       record.workdir !== existing.spec.workdir ||
+      (record.workdirIdentity !== undefined &&
+        !validWorkdirIdentity(record.workdirIdentity)) ||
       !Number.isSafeInteger(record.fencingToken) ||
       record.fencingToken !== (existing.callerWork?.nextFencingToken ?? 0) + 1 ||
       !validIsoTimestamp(record.claimedAt) ||
@@ -558,7 +591,10 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       claim.fencingToken !== payload.fencing_token ||
       payload.caller_id !== claim.callerId ||
       (event.type === "caller_work_started" &&
-        (payload.task_hash !== claim.taskHash || payload.workdir !== claim.workdir))
+        (payload.task_hash !== claim.taskHash ||
+          payload.workdir !== claim.workdir ||
+          (claim.workdirIdentity !== undefined &&
+            !sameWorkdirIdentity(payload.workdir_identity, claim.workdirIdentity))))
     ) {
       return state;
     }
