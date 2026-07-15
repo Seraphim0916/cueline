@@ -617,6 +617,49 @@ test("caller results reject invalid or reversed timestamps before durable mutati
   assert.equal(state.jobs[job.jobId]?.status, "running");
 });
 
+test("caller result default timestamps are validated before durable submission intent", async () => {
+  const runId = "run_caller_result_default_timestamp_preflight";
+  const { home, job } = await fixture(runId);
+  const current = new Date("2026-07-15T00:00:00.000Z");
+  const now = () => current;
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-default-timestamp-owner",
+    now,
+  });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+  const before = await readEvents(runPaths(home, runId).events);
+
+  for (const timestamps of [
+    { startedAt: "2026-07-15T00:00:01.000Z" },
+    { finishedAt: "2026-07-14T23:59:59.999Z" },
+  ]) {
+    await assert.rejects(
+      submitCueLineCallerJobResult(
+        runId,
+        job.jobId,
+        {
+          status: "succeeded",
+          stdout: "must not create a half-written submission",
+          ...timestamps,
+        },
+        { home, claim: proof(claim), now },
+      ),
+      (error: unknown) =>
+        error instanceof CueLineError && error.code === "CALLER_JOB_RESULT_INVALID",
+    );
+  }
+
+  const after = await readEvents(runPaths(home, runId).events);
+  assert.deepEqual(after, before);
+  assert.equal(
+    after.some((entry) => entry.type === "caller_work_result_submission_started"),
+    false,
+  );
+  assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.status, "running");
+  assert.equal((await new JobStatusStore(home).read(job.jobId))?.status, "running");
+});
+
 test("a non-success result after caller work starts is terminally ambiguous", async () => {
   const runId = "run_caller_failed_work_is_ambiguous";
   const { home, job } = await fixture(runId);

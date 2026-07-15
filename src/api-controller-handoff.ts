@@ -236,6 +236,31 @@ function assertCallerJobResultInput(
   }
 }
 
+function resolveCallerJobResultTimestamps(
+  input: CueLineCallerJobResultInput,
+  observedAt: Date,
+): { startedAt: string; finishedAt: string } {
+  let observedTimestamp: string;
+  try {
+    observedTimestamp = observedAt.toISOString();
+  } catch (error) {
+    throw new CueLineError(
+      "CALLER_JOB_RESULT_INVALID",
+      "Caller job result observation time must be a valid timestamp.",
+      { cause: error },
+    );
+  }
+  const startedAt = input.startedAt ?? observedTimestamp;
+  const finishedAt = input.finishedAt ?? observedTimestamp;
+  if (Date.parse(finishedAt) < Date.parse(startedAt)) {
+    throw new CueLineError(
+      "CALLER_JOB_RESULT_INVALID",
+      "Caller job result finishedAt cannot precede startedAt.",
+    );
+  }
+  return { startedAt, finishedAt };
+}
+
 function workResultIntentStatus(
   events: Awaited<ReturnType<typeof readAuthoritativeRunEvents>>,
   jobId: string,
@@ -318,6 +343,7 @@ export async function submitCueLineCallerJobResult(
       }
     }
     const events = await readAuthoritativeRunEvents(home, runId);
+    let resultObservedAt: Date | undefined;
     if (job.spec.mode === "work") {
       if (options.claim === undefined) {
         throw new CueLineError(
@@ -337,12 +363,13 @@ export async function submitCueLineCallerJobResult(
           `Caller work result intent for '${jobId}' is already bound to status '${intentStatus}'.`,
         );
       }
+      resultObservedAt = now();
       const validation = await validateCallerWorkResultClaim(
         store,
         job,
         options.claim,
         home,
-        now(),
+        resultObservedAt,
         { durableTerminalIntent },
       );
       if (validation.alreadyTerminal) {
@@ -356,6 +383,10 @@ export async function submitCueLineCallerJobResult(
     } else if (job.status !== "pending" && job.status !== "running") {
       return { runId, jobId, outcome: "already_terminal" };
     }
+    const resultTimestamps =
+      terminal === undefined
+        ? resolveCallerJobResultTimestamps(input, resultObservedAt ?? now())
+        : undefined;
     if (job.spec.mode === "work" && options.claim !== undefined) {
       const intentStatus = workResultIntentStatus(events, jobId, options.claim);
       if (intentStatus === undefined) {
@@ -378,14 +409,7 @@ export async function submitCueLineCallerJobResult(
           : stderr === ""
             ? stdout
             : `${stdout}${stdout.endsWith("\n") ? "" : "\n"}${stderr}`);
-      const startedAt = input.startedAt ?? now().toISOString();
-      const finishedAt = input.finishedAt ?? now().toISOString();
-      if (Date.parse(finishedAt) < Date.parse(startedAt)) {
-        throw new CueLineError(
-          "CALLER_JOB_RESULT_INVALID",
-          "Caller job result finishedAt cannot precede startedAt.",
-        );
-      }
+      const { startedAt, finishedAt } = resultTimestamps!;
       const result = {
         status: effectiveStatus,
         exitCode: input.exitCode ?? (input.status === "succeeded" ? 0 : null),
