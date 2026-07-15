@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, rename, unlink } from "node:fs/promises";
+import { open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { canonicalJson } from "../core/ids.js";
 import { runtimePidTag, runtimePlatform } from "../core/runtime.js";
+import { ensurePrivateDirectory } from "./private-directory.js";
 
 async function syncDirectory(directory: string): Promise<void> {
   if (runtimePlatform() === "win32") return;
@@ -17,7 +18,7 @@ async function syncDirectory(directory: string): Promise<void> {
 
 export async function atomicWriteJson(target: string, value: unknown): Promise<void> {
   const directory = path.dirname(target);
-  const created = await mkdir(directory, { recursive: true });
+  const created = await ensurePrivateDirectory(directory);
   if (created !== undefined) {
     await syncDirectory(path.dirname(created));
   }

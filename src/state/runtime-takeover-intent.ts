@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
 
 import { atomicWriteJson } from "./atomic-write.js";
+import { ensurePrivateDirectory } from "./private-directory.js";
 import { runPaths } from "./paths.js";
 
 const TAKEOVER_INTENT_PROTOCOL = "cueline/runtime-takeover-intent/0.1";
@@ -23,7 +23,7 @@ export async function persistRuntimeTakeoverIntent(
   requestedAt: string,
 ): Promise<void> {
   const directory = `${runPaths(home, runId).runtimeLease}.takeover-intents`;
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(directory);
   await atomicWriteJson(
     `${directory}/${requestedAt.replace(/[^0-9A-Za-z]/g, "-")}-${randomUUID()}.json`,
     {

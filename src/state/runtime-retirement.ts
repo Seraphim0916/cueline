@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 
 import { CueLineError } from "../core/errors.js";
 import { atomicWriteJson } from "./atomic-write.js";
+import { ensurePrivateDirectory } from "./private-directory.js";
 import { runPaths } from "./paths.js";
 
 const RETIREMENT_PROTOCOL = "cueline/runtime-owner-retirement/0.1";
@@ -129,7 +130,7 @@ async function persistRetirement(
     );
   }
   const directory = retirementDirectory(home, runId);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(directory);
   const ownerHash = createHash("sha256")
     .update(retirement.owner_id)
     .digest("hex")

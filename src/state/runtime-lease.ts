@@ -16,6 +16,7 @@ import { CueLineError } from "../core/errors.js";
 import { canonicalJson } from "../core/ids.js";
 import { runtimePidTag, runtimePlatform } from "../core/runtime.js";
 import { atomicWriteJson } from "./atomic-write.js";
+import { ensurePrivateDirectory } from "./private-directory.js";
 import {
   captureEventLegacyFence,
   readEvents,
@@ -127,7 +128,7 @@ async function syncDirectory(directory: string): Promise<void> {
 
 async function createExclusiveJson(target: string, value: unknown): Promise<void> {
   const directory = path.dirname(target);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(directory);
   const temporary = path.join(directory, `.${path.basename(target)}.${randomUUID()}.tmp`);
   let handle;
   try {
@@ -557,7 +558,7 @@ async function prepareMutationFence(
       ? runPaths(home, runId).runtimeLease
       : runtimeLeaseEpochPath(home, runId, generation);
   if (sourceKind === "epoch") {
-    await mkdir(runtimeLeaseEpochDirectory(home, runId), { recursive: true, mode: 0o700 });
+    await ensurePrivateDirectory(runtimeLeaseEpochDirectory(home, runId));
     if (currentRecord !== undefined) await atomicWriteJson(target, currentRecord);
   }
   const replacementFence = {
@@ -597,7 +598,7 @@ async function commitLegacyLeaseReplacement(
   }
   const generation = context.generation ?? randomUUID();
   const target = runtimeLeaseEpochPath(home, runId, generation);
-  await mkdir(runtimeLeaseEpochDirectory(home, runId), { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(runtimeLeaseEpochDirectory(home, runId));
   await atomicWriteJson(target, record);
   const fence: RuntimeFenceRecord = {
     protocol: FENCE_PROTOCOL,
