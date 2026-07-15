@@ -54,6 +54,12 @@ Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, `cancel
 
 Text outside the envelope is not executed. CueLine does not request or consume private chain-of-thought; concise user-facing rationale may stay outside the envelope.
 
+One control envelope is limited to 131,072 characters before JSON parsing. A
+single `dispatch` may contain at most 64 jobs, and `wait` or `inspect` may name
+at most 256 job IDs. Omit `job_ids` to select all current jobs instead of
+building an oversized reference list. Exceeding a bound requests a repaired
+command with the same pending identity; no job is registered or started.
+
 ## Actions
 
 ### `dispatch`
