@@ -413,6 +413,10 @@ export {
   reconcileCueLineRuntime,
   takeoverCueLineRuntime,
 } from "./api-runtime-lifecycle.js";
+export {
+  diagnoseCueLineRun,
+  diagnoseCueLineRunStatus,
+} from "./diagnostics/run-doctor.js";
 export { createCodexIabAdapter };
 export { CUELINE_VERSION } from "./version.js";
 export type {
@@ -433,6 +437,12 @@ export type {
   ManualControllerSubmissionConfirmation,
   StartCueLineRunOptions,
 } from "./api-contracts.js";
+export type {
+  CueLineDiagnosticSeverity,
+  CueLineRunDiagnosis,
+  CueLineRunDiagnosticFinding,
+  CueLineRunDiagnosticOutcome,
+} from "./diagnostics/run-doctor.js";
 export type {
   BrowserAdapter,
   CueLineResult,
