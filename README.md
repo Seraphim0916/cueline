@@ -199,6 +199,9 @@ $ cueline run doctor run_... --json
 $ cueline run watch run_... --after 42 --timeout-ms 5000 --json
 {"outcome":"changed","previousSequence":42,"currentSequence":43,...}
 
+$ cueline run handoff run_... --json
+{"schema":"cueline-handoff/0.1","run":{"runId":"run_...","safeNextAction":"execute_caller_jobs"},...}
+
 $ cueline run takeover stale_run_... --json
 {"runId":"stale_run_...","outcome":"taken_over","next":"continue",...}
 
@@ -228,6 +231,10 @@ using the durable event sequence as its cursor. See
 The experimental `protocol lint` command validates a Pro envelope offline and
 reports all known contract corrections in one pass. See
 [`docs/experiments/protocol-lint.md`](docs/experiments/protocol-lint.md).
+
+The experimental `run handoff` command produces a safe restart packet with
+exact identities and absolute paths. See
+[`docs/experiments/run-handoff.md`](docs/experiments/run-handoff.md).
 
 Use `run takeover` only when `run status` reports an exact stale owner. It refuses a fresh active heartbeat and returns `next: continue` or `next: reconcile_runtime`; follow that value instead of guessing.
 

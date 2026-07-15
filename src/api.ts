@@ -420,6 +420,11 @@ export {
 export { createCodexIabAdapter };
 export { waitForCueLineRunChange } from "./observation/run-watch.js";
 export { lintControllerCommandText } from "./protocol/lint-command.js";
+export {
+  buildCueLineRunHandoff,
+  createCueLineRunHandoff,
+  renderCueLineRunHandoffMarkdown,
+} from "./observation/run-handoff.js";
 export { CUELINE_VERSION } from "./version.js";
 export type {
   ContinueCueLineRunOptions,
@@ -456,6 +461,12 @@ export type {
   CueLineProtocolLintRouting,
   CueLineProtocolLintSeverity,
 } from "./protocol/lint-command.js";
+export type {
+  CueLineRunHandoffBuildOptions,
+  CueLineRunHandoffContent,
+  CueLineRunHandoffOptions,
+  CueLineRunHandoffPacket,
+} from "./observation/run-handoff.js";
 export type {
   BrowserAdapter,
   CueLineResult,
