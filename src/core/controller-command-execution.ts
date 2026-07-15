@@ -4,11 +4,15 @@ import { JobStatusStore, type JobStatus } from "../jobs/status.js";
 import type { ControllerCommand, ControllerJobSpec } from "../protocol/types.js";
 import { RunStore } from "../state/store.js";
 import { throwIfCancelled } from "./controller-abort.js";
-import { controllerResultOutput } from "./controller-turn.js";
+import {
+  controllerEvidenceContentHash,
+  controllerResultOutput,
+  preferredControllerEvidence,
+} from "./controller-turn.js";
 import type { ControllerRuntimeOptions, JobSupervisorLike } from "./controller-types.js";
 import { asCueLineError, CueLineError } from "./errors.js";
 import { jobId } from "./ids.js";
-import type { CueLineRunState, StoredJob } from "./state-machine.js";
+import { jobObservations, type CueLineRunState, type StoredJob } from "./state-machine.js";
 
 export function statusPayload(status: JobStatus): Record<string, unknown> {
   const output = controllerResultOutput(status);
@@ -33,6 +37,30 @@ export function validateCommandBeforeAcceptance(
   command: ControllerCommand,
   options: ControllerRuntimeOptions,
 ): void {
+  if (command.action === "inspect" && command.evidence_offset !== undefined) {
+    const selectedId = command.job_ids?.[0];
+    const selected = jobObservations(store.state).find((job) => job.job_id === selectedId);
+    if (selected === undefined) {
+      throw new CueLineError(
+        "CONTROL_INSPECT_JOB_UNKNOWN",
+        "Paginated inspect selected a job that is not present in this run.",
+      );
+    }
+    const evidence = preferredControllerEvidence(selected);
+    if (evidence === undefined) {
+      throw new CueLineError(
+        "CONTROL_INSPECT_EVIDENCE_UNAVAILABLE",
+        "Paginated inspect selected a job with no persisted output or error evidence.",
+      );
+    }
+    if (command.evidence_hash !== controllerEvidenceContentHash(evidence)) {
+      throw new CueLineError(
+        "CONTROL_INSPECT_EVIDENCE_HASH_MISMATCH",
+        "Paginated inspect evidence changed or the cursor hash was not copied exactly. Inspect the current window from offset 0.",
+      );
+    }
+    return;
+  }
   if (command.action !== "dispatch") return;
   for (const spec of command.jobs) {
     options.validateJobSpec?.(spec);

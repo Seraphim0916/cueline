@@ -78,6 +78,19 @@ function optionalPositiveInteger(
   return value as number;
 }
 
+function optionalNonNegativeInteger(
+  record: Record<string, unknown>,
+  key: string,
+  maximum: number,
+): number | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > maximum) {
+    return fail(`'${key}' must be an integer from 0 to ${maximum}.`, { key });
+  }
+  return value as number;
+}
+
 function optionalStringArray(record: Record<string, unknown>, key: string): string[] | undefined {
   const value = record[key];
   if (value === undefined) {
@@ -180,6 +193,15 @@ export function validateControllerCommand(
   validateIdentity(value, expected);
 
   const action = requiredString(value, "action");
+  if (
+    action !== "inspect" &&
+    (value.evidence_offset !== undefined || value.evidence_hash !== undefined)
+  ) {
+    return fail("'evidence_offset' and 'evidence_hash' are valid only for an inspect command.", {
+      action,
+      field: value.evidence_offset !== undefined ? "evidence_offset" : "evidence_hash",
+    });
+  }
   const base = {
     protocol: CUELINE_PROTOCOL,
     run_id: expected.runId,
@@ -218,7 +240,26 @@ export function validateControllerCommand(
   if (action === "inspect") {
     const command: InspectCommand = { ...base, action };
     const jobIds = optionalStringArray(value, "job_ids");
+    const evidenceOffset = optionalNonNegativeInteger(value, "evidence_offset", 1_000_000_000);
+    const evidenceHash = optionalString(value, "evidence_hash");
+    if ((evidenceOffset === undefined) !== (evidenceHash === undefined)) {
+      return fail("'evidence_offset' and 'evidence_hash' must be provided together.", {
+        field: "evidence_offset",
+      });
+    }
+    if (evidenceOffset !== undefined && jobIds?.length !== 1) {
+      return fail("Paginated evidence requires exactly one explicit 'job_ids' entry.", {
+        field: "job_ids",
+      });
+    }
+    if (evidenceHash !== undefined && !/^[0-9a-f]{64}$/.test(evidenceHash)) {
+      return fail("'evidence_hash' must be the exact lowercase SHA-256 from evidence_window.", {
+        field: "evidence_hash",
+      });
+    }
     if (jobIds !== undefined) command.job_ids = jobIds;
+    if (evidenceOffset !== undefined) command.evidence_offset = evidenceOffset;
+    if (evidenceHash !== undefined) command.evidence_hash = evidenceHash;
     return command;
   }
 

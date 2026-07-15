@@ -132,3 +132,71 @@ test("parses a complete command with final delivery text", () => {
     final_delivery_text: "CUELINE_OK",
   });
 });
+
+test("parses a single-job inspect evidence offset", () => {
+  const evidenceHash = "a".repeat(64);
+  const parsed = parseControllerCommand(
+    envelope({
+      ...base("inspect"),
+      job_ids: ["job_abc"],
+      evidence_offset: 12_345,
+      evidence_hash: evidenceHash,
+    }),
+    expected,
+  );
+  assert.deepEqual(parsed, {
+    ...base("inspect"),
+    job_ids: ["job_abc"],
+    evidence_offset: 12_345,
+    evidence_hash: evidenceHash,
+  });
+});
+
+test("rejects unsafe or ambiguous inspect evidence offsets", () => {
+  for (const command of [
+    { ...base("inspect"), evidence_offset: 1, evidence_hash: "a".repeat(64) },
+    {
+      ...base("inspect"),
+      job_ids: ["job_a", "job_b"],
+      evidence_offset: 1,
+      evidence_hash: "a".repeat(64),
+    },
+    {
+      ...base("inspect"),
+      job_ids: ["job_a"],
+      evidence_offset: -1,
+      evidence_hash: "a".repeat(64),
+    },
+    {
+      ...base("inspect"),
+      job_ids: ["job_a"],
+      evidence_offset: 1.5,
+      evidence_hash: "a".repeat(64),
+    },
+    {
+      ...base("inspect"),
+      job_ids: ["job_a"],
+      evidence_offset: 1_000_000_001,
+      evidence_hash: "a".repeat(64),
+    },
+    { ...base("inspect"), job_ids: ["job_a"], evidence_offset: 1 },
+    { ...base("inspect"), job_ids: ["job_a"], evidence_hash: "a".repeat(64) },
+    {
+      ...base("inspect"),
+      job_ids: ["job_a"],
+      evidence_offset: 1,
+      evidence_hash: "not-a-sha256",
+    },
+    {
+      ...base("wait"),
+      job_ids: ["job_a"],
+      evidence_offset: 1,
+      evidence_hash: "a".repeat(64),
+    },
+  ]) {
+    assert.throws(
+      () => parseControllerCommand(envelope(command), expected),
+      hasCode("CONTROL_COMMAND_INVALID"),
+    );
+  }
+});
