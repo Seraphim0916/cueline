@@ -97,6 +97,99 @@ test("rejects runner_id with an explicit runner field correction", () => {
   );
 });
 
+test("rejects prompt in a dispatch job with an explicit task field correction", () => {
+  const command = {
+    ...base("dispatch"),
+    jobs: [
+      {
+        job_key: "review",
+        lane: "triage",
+        mode: "advise",
+        prompt: "one",
+      },
+    ],
+  };
+  assert.throws(
+    () => parseControllerCommand(envelope(command), expected),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROL_JOB_FIELD_UNKNOWN" &&
+      /prompt.*task/.test(error.message),
+  );
+});
+
+test("rejects unknown top-level command fields instead of silently dropping them", () => {
+  assert.throws(
+    () =>
+      parseControllerCommand(
+        envelope({ ...base("wait"), operator_hint: "silently ignored before" }),
+        expected,
+      ),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROL_COMMAND_FIELD_UNKNOWN" &&
+      /operator_hint/.test(error.message),
+  );
+});
+
+test("rejects known fields that do not belong to the selected action", () => {
+  const cases = [
+    { value: { ...base("dispatch"), jobs: [], wait_ms: 1 }, field: "wait_ms" },
+    { value: { ...base("wait"), jobs: [] }, field: "jobs" },
+    { value: { ...base("inspect"), wait_ms: 1 }, field: "wait_ms" },
+    {
+      value: { ...base("complete"), final_delivery_text: "done", reason: "extra" },
+      field: "reason",
+    },
+    { value: { ...base("blocked"), reason: "blocked", job_ids: ["job_1"] }, field: "job_ids" },
+  ];
+
+  for (const { value, field } of cases) {
+    assert.throws(
+      () => parseControllerCommand(envelope(value), expected),
+      (error: unknown) =>
+        error instanceof CueLineError &&
+        error.code === "CONTROL_COMMAND_FIELD_INVALID_FOR_ACTION" &&
+        error.message.includes(field) &&
+        error.message.includes(String((value as Record<string, unknown>).action)),
+    );
+  }
+});
+
+test("keeps the exact allowed optional fields for wait, inspect, and blocked", () => {
+  assert.deepEqual(
+    parseControllerCommand(
+      envelope({ ...base("wait"), job_ids: ["job_1"], wait_ms: 5_000 }),
+      expected,
+    ),
+    { ...base("wait"), job_ids: ["job_1"], wait_ms: 5_000 },
+  );
+  assert.deepEqual(
+    parseControllerCommand(envelope({ ...base("inspect"), job_ids: ["job_1"] }), expected),
+    { ...base("inspect"), job_ids: ["job_1"] },
+  );
+  assert.deepEqual(
+    parseControllerCommand(
+      envelope({ ...base("blocked"), reason: "why", final_delivery_text: "stop" }),
+      expected,
+    ),
+    { ...base("blocked"), reason: "why", final_delivery_text: "stop" },
+  );
+});
+
+test("rejects empty, duplicate, or malformed job_ids instead of accepting a no-op inspect", () => {
+  for (const jobIds of [[], ["job_1", "job_1"], ["   "], ["../job_1"]]) {
+    assert.throws(
+      () =>
+        parseControllerCommand(
+          envelope({ ...base("inspect"), job_ids: jobIds }),
+          expected,
+        ),
+      hasCode("CONTROL_COMMAND_INVALID"),
+    );
+  }
+});
+
 test("parses only the last complete valid dispatch envelope", () => {
   const stale = envelope({ ...base("wait"), round: 1 });
   const valid = envelope({
