@@ -33,6 +33,32 @@ export function validateCommandBeforeAcceptance(
   command: ControllerCommand,
   options: ControllerRuntimeOptions,
 ): void {
+  if (
+    (command.action === "wait" || command.action === "inspect") &&
+    command.job_ids !== undefined
+  ) {
+    const known = new Set(Object.keys(store.state.jobs));
+    const unknown = [...new Set(command.job_ids.filter((id) => !known.has(id)))];
+    if (unknown.length > 0) {
+      const preview = unknown
+        .slice(0, 3)
+        .map((id) => JSON.stringify(id.slice(0, 128)))
+        .join(", ");
+      const remainder = unknown.length > 3 ? ` (+${unknown.length - 3} more)` : "";
+      throw new CueLineError(
+        "CONTROL_JOB_TARGET_UNKNOWN",
+        `Controller ${command.action} references unknown job ID${unknown.length === 1 ? "" : "s"}: ${preview}${remainder}. Use exact job_id values from the current observation.`,
+        {
+          details: {
+            action: command.action,
+            unknown_job_ids: unknown.slice(0, 20),
+            unknown_job_count: unknown.length,
+          },
+        },
+      );
+    }
+    return;
+  }
   if (command.action !== "dispatch") return;
   for (const spec of command.jobs) {
     options.validateJobSpec?.(spec);
