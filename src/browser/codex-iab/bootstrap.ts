@@ -19,6 +19,20 @@ export interface PageComposerState {
   sendButtonEnabled: boolean;
 }
 
+export interface PageProbeState {
+  pageUrl: string;
+  isAnswering: boolean;
+  assistantMessageCount: number;
+  lastMessageRole: "assistant" | "user" | null;
+  assistantModelSlug: string | null;
+  selectedModelLabel: string | null;
+  modelLabelCount: number;
+  composerState: "missing" | "empty" | "inline_present" | "attachment_ready";
+  inlineTextLength: number;
+  attachmentCount: number;
+  sendButtonState: "missing" | "disabled" | "enabled" | "ambiguous";
+}
+
 export interface IabLocator {
   count(): Promise<number>;
   fill(value: string, options?: Record<string, unknown>): Promise<void>;
@@ -277,5 +291,177 @@ export async function readPageComposerState(
       expectedPrompt,
       sendButtonNames: [...sendButtonNames],
     },
+  );
+}
+
+/**
+ * Read a redacted diagnostic snapshot. This evaluator intentionally returns no
+ * prompt text, message text, attachment names, cookies, or storage values.
+ */
+export async function readPageProbeState(tab: IabTab): Promise<PageProbeState> {
+  return tab.playwright.evaluate(
+    ({ diagnosticProbe: _diagnosticProbe }) => {
+      const normalize = (value: unknown): string =>
+        String(value ?? "")
+          .replace(/\u00a0/g, " ")
+          .replace(/\r\n?/g, "\n")
+          .replace(/[ \t]*\n[ \t]*/g, "\n")
+          .replace(/\n{2,}/g, "\n")
+          .trim();
+      const isVisible = (element: Element): boolean => {
+        const htmlElement = element as HTMLElement & {
+          checkVisibility?: (options?: {
+            checkOpacity?: boolean;
+            checkVisibilityCSS?: boolean;
+          }) => boolean;
+        };
+        if (
+          htmlElement.hidden ||
+          element.getAttribute("aria-hidden") === "true" ||
+          element.closest('[hidden], [aria-hidden="true"], [inert]') !== null
+        ) {
+          return false;
+        }
+        if (typeof htmlElement.checkVisibility === "function") {
+          try {
+            if (
+              !htmlElement.checkVisibility({
+                checkOpacity: true,
+                checkVisibilityCSS: true,
+              })
+            ) {
+              return false;
+            }
+          } catch {
+            // Fall through to explicit style and geometry checks.
+          }
+        }
+        const style = getComputedStyle(element);
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          style.visibility === "collapse" ||
+          style.pointerEvents === "none" ||
+          Number(style.opacity) === 0
+        ) {
+          return false;
+        }
+        const bounds = element.getBoundingClientRect();
+        return bounds.width > 0 && bounds.height > 0 && element.getClientRects().length > 0;
+      };
+      const buttons = Array.from(document.querySelectorAll("button"));
+      const isAnswering = buttons.some((element) => {
+        const button = element as HTMLButtonElement;
+        const label = normalize(
+          [button.getAttribute("aria-label"), button.textContent].filter(Boolean).join(" "),
+        );
+        return (
+          /(stop|停止|中止|중지|정지)/i.test(label) &&
+          /(answer|generat|respond|stream|thinking|回答|回覆|生成|產生|思考|생성|답변|응답)/i.test(label) &&
+          !button.disabled &&
+          button.getAttribute("aria-disabled") !== "true" &&
+          isVisible(button)
+        );
+      });
+
+      const messages = Array.from(document.querySelectorAll("[data-message-author-role]"));
+      const assistantMessages = messages.filter(
+        (message) => message.getAttribute("data-message-author-role") === "assistant",
+      );
+      const lastRole = messages.at(-1)?.getAttribute("data-message-author-role");
+      const lastMessageRole =
+        lastRole === "assistant" || lastRole === "user" ? lastRole : null;
+      const assistantModelSlug =
+        assistantMessages.at(-1)?.getAttribute("data-message-model-slug") ?? null;
+
+      const knownModel = /^(?:Instant(?:\s+\d+(?:\.\d+)*)?|Medium|High|Extra High|Thinking|Auto|Pro(?:\s+(?:Standard|Extended))?)$/i;
+      const modelLabels = Array.from(document.querySelectorAll("button.__composer-pill"))
+        .filter(isVisible)
+        .map((element) =>
+          normalize(
+            element.getAttribute("aria-label") ??
+              (element as HTMLElement).innerText ??
+              element.textContent,
+          ),
+        )
+        .filter((label) => knownModel.test(label));
+      const selectedModelLabel = modelLabels.length === 1 ? modelLabels[0]! : null;
+
+      const composer = document.querySelector('#prompt-textarea[contenteditable="true"]');
+      const inlineText = normalize(
+        composer && "innerText" in composer
+          ? (composer as HTMLElement).innerText
+          : composer?.textContent,
+      );
+      const root = composer?.closest("form") ?? composer?.parentElement?.parentElement ?? document;
+      const attachmentElements = new Set<Element>();
+      for (const element of Array.from(
+        root.querySelectorAll(
+          '[data-testid="file-upload-preview"], [data-testid*="attachment"][data-testid*="preview"], [data-testid*="file"][data-testid*="preview"], [class*="attachment"][class*="pill"], [class*="file"][class*="pill"], button[aria-label]',
+        ),
+      )) {
+        const label = normalize(element.getAttribute("aria-label"));
+        const testId = normalize(element.getAttribute("data-testid"));
+        const classes = normalize(element.getAttribute("class"));
+        if (
+          /(?:remove|delete).*(?:file|attachment)|(?:file|attachment).*(?:remove|delete)|移除.*(?:檔案|附件)|刪除.*(?:檔案|附件)/i.test(
+            label,
+          ) ||
+          /(?:file-upload-preview|attachment.*preview|file.*preview)/i.test(testId) ||
+          /(?:attachment|file).*(?:pill|chip)|(?:pill|chip).*(?:attachment|file)/i.test(classes)
+        ) {
+          attachmentElements.add(element);
+        }
+      }
+      const attachmentCount = attachmentElements.size;
+      const composerState: PageProbeState["composerState"] =
+        composer === null
+          ? "missing"
+          : attachmentCount > 0
+            ? "attachment_ready"
+            : inlineText.length > 0
+              ? "inline_present"
+              : "empty";
+
+      const sendButtonNames = new Set([
+        "Send prompt",
+        "Send message",
+        "傳送提示",
+        "傳送訊息",
+        "送出提示",
+        "送出訊息",
+      ]);
+      const sendButtons = Array.from(root.querySelectorAll("button")).filter((element) => {
+        const label = normalize(
+          element.getAttribute("aria-label") ??
+            (element as HTMLElement).innerText ??
+            element.textContent,
+        );
+        return sendButtonNames.has(label) && isVisible(element);
+      }) as HTMLButtonElement[];
+      const sendButtonState: PageProbeState["sendButtonState"] =
+        sendButtons.length === 0
+          ? "missing"
+          : sendButtons.length > 1
+            ? "ambiguous"
+            : sendButtons[0]!.disabled || sendButtons[0]!.getAttribute("aria-disabled") === "true"
+              ? "disabled"
+              : "enabled";
+
+      return {
+        pageUrl: window.location.href,
+        isAnswering,
+        assistantMessageCount: assistantMessages.length,
+        lastMessageRole,
+        assistantModelSlug,
+        selectedModelLabel,
+        modelLabelCount: modelLabels.length,
+        composerState,
+        inlineTextLength: inlineText.length,
+        attachmentCount,
+        sendButtonState,
+      };
+    },
+    { diagnosticProbe: true },
   );
 }

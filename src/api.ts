@@ -21,6 +21,7 @@ import {
 } from "./api-runtime-lifecycle.js";
 import type { BrowserAdapter } from "./browser/browser-adapter.js";
 import { createCodexIabAdapter } from "./browser/codex-iab/chatgpt-client.js";
+import { probeCodexIab } from "./browser/codex-iab/probe.js";
 import {
   continueControllerLoop,
   createControllerRun,
@@ -420,7 +421,7 @@ export {
   diagnoseCueLineRunStatus,
 } from "./diagnostics/run-doctor.js";
 export { verifyCueLineRun };
-export { createCodexIabAdapter };
+export { createCodexIabAdapter, probeCodexIab };
 export { waitForCueLineRunChange } from "./observation/run-watch.js";
 export { lintControllerCommandText } from "./protocol/lint-command.js";
 export {
@@ -484,6 +485,14 @@ export type {
   CueLineRunTimelineOptions,
   CueLineTimelineCategory,
 } from "./observation/run-timeline.js";
+export type {
+  CodexIabBrowserSource,
+  CodexIabPageProbe,
+  CodexIabProbeOptions,
+  CodexIabProbeResult,
+  CodexIabProbeStatus,
+  CodexIabTabSource,
+} from "./browser/codex-iab/probe.js";
 export type {
   BrowserAdapter,
   CueLineResult,
