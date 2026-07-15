@@ -126,12 +126,16 @@ export async function readPageChatState(tab: IabTab): Promise<PageChatState> {
   return tab.playwright.evaluate(() => {
     const buttons = Array.from(document.querySelectorAll("button"));
     const isAnswering = buttons.some((button) => {
-      const label = [button.getAttribute("aria-label"), button.textContent]
-        .filter(Boolean)
-        .join(" ")
+      const ariaLabel = button.getAttribute("aria-label")?.trim();
+      const label = (ariaLabel || button.textContent || "")
         .replace(/\s+/g, " ")
         .trim();
-      if (!/stop/i.test(label) || !/(answer|generat|respond|stream|thinking)/i.test(label)) {
+      if (
+        !/(stop|停止|中止|중지|정지)/i.test(label) ||
+        !/(answer|generat|respond|response|stream|thinking|回答|回覆|作答|生成|產生|思考|応答|생성|답변|응답)/i.test(
+          label,
+        )
+      ) {
         return false;
       }
       if (
