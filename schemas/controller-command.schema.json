@@ -36,6 +36,15 @@
       "uniqueItems": true,
       "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$" }
     },
+    "evidence_offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000000
+    },
+    "evidence_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "wait_ms": { "type": "integer", "minimum": 1, "maximum": 300000 },
     "final_delivery_text": { "type": "string", "minLength": 1 },
     "reason": { "type": "string", "minLength": 1 }
@@ -78,6 +87,21 @@
             { "required": ["reason"] }
           ]
         }
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          { "required": ["evidence_offset"] },
+          { "required": ["evidence_hash"] }
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": { "const": "inspect" },
+          "job_ids": { "minItems": 1, "maxItems": 1 }
+        },
+        "required": ["job_ids", "evidence_offset", "evidence_hash"]
       }
     },
     {

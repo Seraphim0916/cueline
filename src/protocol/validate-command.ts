@@ -19,7 +19,10 @@ const COMMON_COMMAND_FIELDS = ["protocol", "run_id", "round", "request_id", "act
 const ACTION_COMMAND_FIELDS = new Map<ControllerAction, ReadonlySet<string>>([
   ["dispatch", new Set([...COMMON_COMMAND_FIELDS, "jobs"])],
   ["wait", new Set([...COMMON_COMMAND_FIELDS, "job_ids", "wait_ms"])],
-  ["inspect", new Set([...COMMON_COMMAND_FIELDS, "job_ids"])],
+  [
+    "inspect",
+    new Set([...COMMON_COMMAND_FIELDS, "job_ids", "evidence_offset", "evidence_hash"]),
+  ],
   ["complete", new Set([...COMMON_COMMAND_FIELDS, "final_delivery_text"])],
   ["blocked", new Set([...COMMON_COMMAND_FIELDS, "reason", "final_delivery_text"])],
 ]);
@@ -111,6 +114,19 @@ function optionalPositiveInteger(
   }
   if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > maximum) {
     return fail(`'${key}' must be an integer from 1 to ${maximum}.`, { key });
+  }
+  return value as number;
+}
+
+function optionalNonNegativeInteger(
+  record: Record<string, unknown>,
+  key: string,
+  maximum: number,
+): number | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > maximum) {
+    return fail(`'${key}' must be an integer from 0 to ${maximum}.`, { key });
   }
   return value as number;
 }
@@ -266,7 +282,26 @@ export function validateControllerCommand(
   if (action === "inspect") {
     const command: InspectCommand = { ...base, action };
     const jobIds = optionalStringArray(value, "job_ids");
+    const evidenceOffset = optionalNonNegativeInteger(value, "evidence_offset", 1_000_000_000);
+    const evidenceHash = optionalString(value, "evidence_hash");
+    if ((evidenceOffset === undefined) !== (evidenceHash === undefined)) {
+      return fail("'evidence_offset' and 'evidence_hash' must be provided together.", {
+        field: "evidence_offset",
+      });
+    }
+    if (evidenceOffset !== undefined && jobIds?.length !== 1) {
+      return fail("Paginated evidence requires exactly one explicit 'job_ids' entry.", {
+        field: "job_ids",
+      });
+    }
+    if (evidenceHash !== undefined && !/^[0-9a-f]{64}$/.test(evidenceHash)) {
+      return fail("'evidence_hash' must be the exact lowercase SHA-256 from evidence_window.", {
+        field: "evidence_hash",
+      });
+    }
     if (jobIds !== undefined) command.job_ids = jobIds;
+    if (evidenceOffset !== undefined) command.evidence_offset = evidenceOffset;
+    if (evidenceHash !== undefined) command.evidence_hash = evidenceHash;
     return command;
   }
 

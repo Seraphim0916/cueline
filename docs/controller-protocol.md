@@ -28,14 +28,22 @@ A stale or mismatched value is rejected. CueLine parses only the **last complete
       "job_key": "review",
       "required": true,
       "status": "succeeded",
-      "output": "Review evidence"
+      "output": "Review evidence",
+      "evidence_window": {
+        "field": "output",
+        "offset": 0,
+        "end": 15,
+        "total_chars": 15,
+        "next_offset": null,
+        "content_hash": "61f2be400c13cff37284a92d51a9e4c3445bf8bbf67b8b8e92e5e1e4e1b337de"
+      }
     }
   ],
   "notices": []
 }
 ```
 
-Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, or `ambiguous`. Successful jobs with non-empty stdout use stdout as controller evidence instead of a combined stdout/stderr stream. Failed and timed-out jobs retain bounded diagnostic error evidence. All job evidence in one controller observation shares a global 12,000-character budget; omitted content is reported once with the exact omitted count. After an accepted `inspect(job_ids)`, the named jobs receive that budget before unrelated jobs. Full stdout/stderr remain in local job status, and only the most recent 20 notices are sent. The local event log remains the recovery record.
+Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, or `ambiguous`. Successful jobs with non-empty stdout use stdout as controller evidence instead of a combined stdout/stderr stream. Failed and timed-out jobs retain bounded diagnostic error evidence. All job evidence in one controller observation shares a global 12,000-character budget; omitted content is reported once with the exact omitted count. `evidence_window` identifies the preferred field and its raw-character `offset`, exclusive `end`, `total_chars`, deterministic `next_offset`, and SHA-256 `content_hash`. Full stdout/stderr remain in local job status, and only the most recent 20 notices are sent. The local event log remains the recovery record.
 
 ## Command envelope
 
@@ -95,7 +103,22 @@ Waits for selected running jobs (`job_ids`) or all current running jobs when omi
 
 ### `inspect`
 
-Asks CueLine to present the currently persisted job state on the next round. Named `job_ids` must form a non-empty, unique list and receive the bounded evidence budget before unrelated jobs, so a completed result is not reduced to status merely because earlier jobs consumed the prompt budget. It does not grant the web controller a new local inspection tool.
+Asks CueLine to present the currently persisted job state on the next round. Named `job_ids` must form a non-empty, unique list and receive the bounded evidence budget before unrelated jobs, so a completed result is not reduced to status merely because earlier jobs consumed the prompt budget. To read a truncated tail, select exactly one job and copy its non-null `evidence_window.next_offset` verbatim:
+
+```json
+{
+  "protocol": "cueline/0.1",
+  "run_id": "run-example",
+  "round": 3,
+  "request_id": "msg-example-3",
+  "action": "inspect",
+  "job_ids": ["job-example"],
+  "evidence_offset": 11842,
+  "evidence_hash": "61f2be400c13cff37284a92d51a9e4c3445bf8bbf67b8b8e92e5e1e4e1b337de"
+}
+```
+
+`evidence_offset` is a raw-character cursor from 0 through 1,000,000,000. It is valid only with one explicit job ID and the exact lowercase SHA-256 `evidence_hash` copied from that window's `content_hash`. CueLine validates and persists the pair, returns the next bounded window, and never reruns the job. If evidence changes before validation, the command is rejected for repair; if a process refresh changes it after validation, the next observation resets to offset 0 with a notice. An offset beyond unchanged evidence is clamped to the end and reported. This action does not grant the web controller a new local inspection tool.
 
 ### `complete`
 

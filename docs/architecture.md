@@ -78,7 +78,7 @@ These gates reduce accidental execution ambiguity; they do not make an allowed w
 ## Data flow
 
 1. The original user request becomes part of every controller observation.
-2. Full job stdout and stderr remain in local status. Successful non-empty stdout is preferred for controller evidence, and all controller job evidence shares one 12,000-character budget with an explicit truncation notice. An accepted `inspect(job_ids)` allocates that budget to the named jobs before unrelated output.
+2. Full job stdout and stderr remain in local status. Successful non-empty stdout is preferred for controller evidence, and all controller job evidence shares one 12,000-character budget with an explicit truncation notice. Each preferred evidence field carries a raw-character window, deterministic next offset, and content hash. An accepted single-job `inspect(job_ids, evidence_offset, evidence_hash)` allocates that budget to the named job and reads the next window without rerunning it. A changed evidence body invalidates the cursor before pages can be mixed.
 3. ChatGPT returns a command; only the control envelope is machine-executed.
 4. On `complete`, CueLine returns `final_delivery_text` to Codex.
 5. On `blocked`, CueLine preserves the controller's reason and optional delivery text.

@@ -85,6 +85,35 @@ function reply(
   });
 }
 
+interface EvidenceWindowView {
+  field: "output" | "error";
+  offset: number;
+  end: number;
+  total_chars: number;
+  next_offset: number | null;
+  content_hash: string;
+}
+
+function observationFromPrompt(prompt: string): {
+  jobs: Array<{
+    job_id: string;
+    output?: string;
+    error?: string;
+    evidence_window?: EvidenceWindowView;
+  }>;
+} {
+  const match = /<CueLineObservation>\n([\s\S]*?)\n<\/CueLineObservation>/.exec(prompt);
+  assert.ok(match?.[1], "controller prompt did not contain an observation");
+  return JSON.parse(match[1]) as {
+    jobs: Array<{
+      job_id: string;
+      output?: string;
+      error?: string;
+      evidence_window?: EvidenceWindowView;
+    }>;
+  };
+}
+
 function terminalStatus(id: string, output = "WORKER_OK"): JobStatus {
   const timestamp = "2026-07-14T00:00:00.000Z";
   return {
@@ -4186,6 +4215,255 @@ test("caller inspect prioritizes every requested job before unrelated successful
   const target = observation.jobs.find((job) => job.job_id === targetId);
   assert.match(target?.output ?? "", /TARGET_INSPECT_EVIDENCE/);
   assert.ok((target?.output?.length ?? 0) > 7_500, "inspect output should receive priority");
+});
+
+test("controller evidence exposes a deterministic next offset for the omitted tail", () => {
+  const runId = "run_evidence_window";
+  const state = initialRunState(runId, "Page one exact large result", "caller");
+  const spec = {
+    job_key: "large_result",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Return a large report",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const fullOutput = `PAGE_HEAD\n${"A".repeat(14_000)}\nTAIL_PAGE_SENTINEL`;
+  state.jobs[id] = {
+    jobId: id,
+    jobKey: spec.job_key,
+    required: true,
+    spec,
+    status: "succeeded",
+    output: fullOutput,
+    error: null,
+  };
+
+  const first = observationFor(state, 2, "msg_window_first");
+  const firstJob = first.jobs[0] as (typeof first.jobs)[number] & {
+    evidence_window?: EvidenceWindowView;
+  };
+  assert.match(firstJob.output ?? "", /PAGE_HEAD/);
+  assert.doesNotMatch(firstJob.output ?? "", /TAIL_PAGE_SENTINEL/);
+  assert.equal(firstJob.evidence_window?.offset, 0);
+  assert.equal(firstJob.evidence_window?.total_chars, fullOutput.length);
+  const nextOffset = firstJob.evidence_window?.next_offset;
+  assert.equal(typeof nextOffset, "number");
+  assert.ok((nextOffset ?? 0) > 0);
+
+  state.inspectionJobIds = [id];
+  state.inspectionEvidenceOffset = nextOffset!;
+  (state as typeof state & { inspectionEvidenceHash: string | null }).inspectionEvidenceHash =
+    firstJob.evidence_window!.content_hash;
+  const second = observationFor(state, 3, "msg_window_second");
+  const secondJob = second.jobs[0] as (typeof second.jobs)[number] & {
+    evidence_window?: EvidenceWindowView;
+  };
+  assert.ok(secondJob.output?.startsWith(fullOutput.slice(nextOffset!, nextOffset! + 40)));
+  assert.match(secondJob.output ?? "", /TAIL_PAGE_SENTINEL/);
+  assert.equal(secondJob.evidence_window?.offset, nextOffset);
+  assert.equal(secondJob.evidence_window?.end, fullOutput.length);
+  assert.equal(secondJob.evidence_window?.next_offset, null);
+});
+
+test("evidence offsets advance in raw characters after JSON safety escaping", () => {
+  const runId = "run_encoded_evidence_window";
+  const state = initialRunState(runId, "Page encoded evidence", "caller");
+  const spec = {
+    job_key: "encoded_result",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Return markup-heavy output",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const fullOutput = `${"<".repeat(5_000)}ENCODED_TAIL_SENTINEL`;
+  state.jobs[id] = {
+    jobId: id,
+    jobKey: spec.job_key,
+    required: true,
+    spec,
+    status: "succeeded",
+    output: fullOutput,
+    error: null,
+  };
+  state.inspectionJobIds = [id];
+
+  let offset = 0;
+  let evidenceHash: string | null = null;
+  let foundTail = false;
+  for (let page = 0; page < 5; page += 1) {
+    state.inspectionEvidenceOffset = offset;
+    state.inspectionEvidenceHash = evidenceHash;
+    const observation = observationFor(state, page + 2, `msg_encoded_${page}`);
+    const job = observation.jobs[0] as (typeof observation.jobs)[number] & {
+      evidence_window?: EvidenceWindowView;
+    };
+    assert.equal(job.evidence_window?.offset, offset);
+    if (job.output?.includes("ENCODED_TAIL_SENTINEL")) {
+      foundTail = true;
+      assert.equal(job.evidence_window?.next_offset, null);
+      break;
+    }
+    const next = job.evidence_window?.next_offset;
+    assert.equal(typeof next, "number");
+    assert.ok((next ?? 0) > offset, "encoded evidence cursor did not advance");
+    evidenceHash = job.evidence_window!.content_hash;
+    offset = next!;
+  }
+  assert.equal(foundTail, true);
+});
+
+test("failed-job error evidence pages safely and an oversized offset clamps to the end", () => {
+  const runId = "run_failed_evidence_window";
+  const state = initialRunState(runId, "Page a failed job's diagnostics", "caller");
+  const spec = {
+    job_key: "failed_result",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Return bounded failure diagnostics",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const fullError = `ERROR_HEAD\n${"E".repeat(14_000)}\nERROR_TAIL_SENTINEL`;
+  state.jobs[id] = {
+    jobId: id,
+    jobKey: spec.job_key,
+    required: true,
+    spec,
+    status: "failed",
+    output: "partial output",
+    error: fullError,
+  };
+  state.inspectionJobIds = [id];
+
+  const first = observationFor(state, 2, "msg_failed_first");
+  const firstJob = first.jobs[0] as (typeof first.jobs)[number] & {
+    evidence_window?: EvidenceWindowView;
+  };
+  assert.equal(firstJob.evidence_window?.field, "error");
+  assert.doesNotMatch(firstJob.error ?? "", /ERROR_TAIL_SENTINEL/);
+  const next = firstJob.evidence_window?.next_offset;
+  assert.equal(typeof next, "number");
+
+  state.inspectionEvidenceOffset = next!;
+  (state as typeof state & { inspectionEvidenceHash: string | null }).inspectionEvidenceHash =
+    firstJob.evidence_window!.content_hash;
+  const second = observationFor(state, 3, "msg_failed_second");
+  const secondJob = second.jobs[0] as (typeof second.jobs)[number] & {
+    evidence_window?: EvidenceWindowView;
+  };
+  assert.match(secondJob.error ?? "", /ERROR_TAIL_SENTINEL/);
+  assert.equal(secondJob.evidence_window?.next_offset, null);
+
+  state.inspectionEvidenceOffset = fullError.length + 99;
+  const beyond = observationFor(state, 4, "msg_failed_beyond");
+  const beyondJob = beyond.jobs[0] as (typeof beyond.jobs)[number] & {
+    evidence_window?: EvidenceWindowView;
+  };
+  assert.equal(beyondJob.evidence_window?.offset, fullError.length);
+  assert.equal(beyondJob.evidence_window?.end, fullError.length);
+  assert.equal(beyondJob.evidence_window?.next_offset, null);
+  assert.ok(beyond.notices.some((notice) => /exceeded.*clamped to the end/.test(notice)));
+});
+
+test("a changed evidence body invalidates the old offset instead of mixing pages", () => {
+  const runId = "run_changed_evidence_window";
+  const state = initialRunState(runId, "Do not mix evidence versions", "caller");
+  const spec = {
+    job_key: "changing_result",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Return versioned evidence",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const oldOutput = `OLD_HEAD\n${"O".repeat(14_000)}\nOLD_TAIL`;
+  state.jobs[id] = {
+    jobId: id,
+    jobKey: spec.job_key,
+    required: true,
+    spec,
+    status: "succeeded",
+    output: oldOutput,
+    error: null,
+  };
+  const first = observationFor(state, 2, "msg_changed_first");
+  const firstWindow = first.jobs[0]!.evidence_window!;
+  state.inspectionJobIds = [id];
+  state.inspectionEvidenceOffset = firstWindow.next_offset!;
+  state.inspectionEvidenceHash = firstWindow.content_hash;
+
+  state.jobs[id]!.output = `NEW_HEAD\n${"N".repeat(14_000)}\nNEW_TAIL`;
+  const changed = observationFor(state, 3, "msg_changed_second");
+  const changedJob = changed.jobs[0]!;
+  assert.equal(changedJob.evidence_window?.offset, 0);
+  assert.match(changedJob.output ?? "", /^NEW_HEAD/);
+  assert.notEqual(changedJob.evidence_window?.content_hash, firstWindow.content_hash);
+  assert.ok(
+    changed.notices.some((notice) => /evidence changed.*offset reset to 0/.test(notice)),
+  );
+});
+
+test("a paginated inspect reveals the tail without starting the job twice", async () => {
+  const runId = "run_paginated_inspect_loop";
+  const spec = {
+    job_key: "paged_report",
+    lane: "default",
+    mode: "advise",
+    task: "Return a report larger than one controller evidence window",
+  } as const;
+  const id = jobId(runId, spec.job_key, spec);
+  const status = terminalStatus(
+    id,
+    `REPORT_HEAD\n${"R".repeat(15_000)}\nPAGINATED_TAIL_SENTINEL`,
+  );
+  let requestedOffset: number | undefined;
+  let requestedHash: string | undefined;
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [spec] })),
+    reply((input) => {
+      const job = observationFromPrompt(input.prompt).jobs[0]!;
+      assert.doesNotMatch(job.output ?? "", /PAGINATED_TAIL_SENTINEL/);
+      requestedOffset = job.evidence_window?.next_offset ?? undefined;
+      requestedHash = job.evidence_window?.content_hash;
+      assert.equal(typeof requestedOffset, "number");
+      return {
+        action: "inspect",
+        job_ids: [id],
+        evidence_offset: requestedOffset,
+        evidence_hash: "0".repeat(64),
+      };
+    }),
+    reply((input) => {
+      assert.equal(input.repairAttempt, 1);
+      assert.match(input.prompt, /CONTROL_INSPECT_EVIDENCE_HASH_MISMATCH/);
+      return {
+        action: "inspect",
+        job_ids: [id],
+        evidence_offset: requestedOffset,
+        evidence_hash: requestedHash,
+      };
+    }),
+    reply((input) => {
+      const job = observationFromPrompt(input.prompt).jobs[0]!;
+      assert.equal(job.evidence_window?.offset, requestedOffset);
+      assert.match(job.output ?? "", /PAGINATED_TAIL_SENTINEL/);
+      assert.equal(job.evidence_window?.next_offset, null);
+      return { action: "complete", final_delivery_text: "PAGINATED_INSPECT_OK" };
+    }),
+  ]);
+  const supervisor = new FakeJobSupervisor([status], [status]);
+
+  const result = await runControllerLoop({
+    request: "Review every page without rerunning work",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "PAGINATED_INSPECT_OK");
+  assert.equal(supervisor.starts.length, 1);
+  assert.deepEqual(supervisor.inspections, [id]);
 });
 
 test("controller evidence budget applies after JSON safety escaping", async () => {

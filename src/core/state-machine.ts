@@ -113,6 +113,10 @@ export interface CueLineRunState {
   jobs: Record<string, StoredJob>;
   /** Job IDs explicitly requested by the most recently accepted inspect command. */
   inspectionJobIds: string[];
+  /** Raw-character evidence offset for an inspect command targeting exactly one job. */
+  inspectionEvidenceOffset?: number;
+  /** Content identity that fences a paginated inspect against output replacement. */
+  inspectionEvidenceHash?: string | null;
   notices: string[];
   commandHashes: string[];
   pendingCommandExecution: PendingCommandExecution | null;
@@ -202,6 +206,8 @@ export function initialRunState(
     lastFailure: null,
     jobs: {},
     inspectionJobIds: [],
+    inspectionEvidenceOffset: 0,
+    inspectionEvidenceHash: null,
     notices: [],
     commandHashes: [],
     pendingCommandExecution: null,
@@ -449,9 +455,23 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           ? command.job_ids.filter((value): value is string => typeof value === "string")
           : Object.keys(state.jobs)
         : [];
+    const inspectionEvidenceOffset =
+      command.action === "inspect" &&
+      Number.isSafeInteger(command.evidence_offset) &&
+      (command.evidence_offset as number) >= 0
+        ? (command.evidence_offset as number)
+        : 0;
+    const inspectionEvidenceHash =
+      command.action === "inspect" &&
+      typeof command.evidence_hash === "string" &&
+      /^[0-9a-f]{64}$/.test(command.evidence_hash)
+        ? command.evidence_hash
+        : null;
     return {
       ...state,
       inspectionJobIds,
+      inspectionEvidenceOffset,
+      inspectionEvidenceHash,
       commandHashes: [...state.commandHashes, payload.command_hash],
       pendingCommandExecution:
         typeof payload.command === "object" &&
