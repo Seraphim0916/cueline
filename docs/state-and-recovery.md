@@ -23,6 +23,14 @@ ${CUELINE_HOME:-$HOME/.cueline}/
 
 `CUELINE_HOME` accepts an absolute or relative path. `~` and `~/...` are expanded against `HOME`. Run and job IDs are validated before they are used in filesystem paths.
 
+On POSIX hosts, CueLine-owned run, event-segment, runtime, cancellation, and
+job-status directories are created or tightened to mode `0700`; durable JSON
+evidence is written with mode `0600`. A pre-existing permissive CueLine
+directory is tightened on its next state write. State-directory symlinks are
+rejected rather than followed, so permission repair cannot be redirected to an
+unrelated path. Windows does not expose equivalent POSIX mode semantics and is
+unchanged.
+
 ## Event log
 
 The logical event log is append-only and authoritative. A legacy or atomically created first event may live in `events.jsonl`; subsequent events use one immutable file per sequence under `events.jsonl.segments/`. Each event contains a monotonically increasing sequence number, timestamp, type, payload, and an optional runtime owner ID. The writer fully writes and syncs a temporary segment, hard-links it to the sequence name with create-if-absent semantics, then syncs the containing directory before reporting success. A `legacy-fence.json` freezes the accepted byte prefix of an older JSONL writer, so a still-loaded pre-segment process may append a diagnostic suffix without creating duplicate logical sequence numbers. Concurrent or recovered writers that lose a sequence race reread and retry; no global event lock or partial segment becomes authoritative.

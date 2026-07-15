@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, readdir, stat, unlink } from "node:fs/promises";
+import { link, open, readFile, readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { CueLineError } from "../core/errors.js";
 import { canonicalJson } from "../core/ids.js";
+import { ensurePrivateDirectory } from "./private-directory.js";
 
 const EVENT_SEGMENT_WIDTH = 16;
 const EVENT_SEGMENT_PATTERN = new RegExp(`^\\d{${EVENT_SEGMENT_WIDTH}}\\.json$`);
@@ -62,12 +63,12 @@ async function syncDirectory(directory: string): Promise<void> {
 async function ensureSegmentDirectory(file: string): Promise<string> {
   const directory = eventSegmentDirectory(file);
   const parent = path.dirname(directory);
-  const createdParent = await mkdir(parent, { recursive: true });
+  const createdParent = await ensurePrivateDirectory(parent);
   if (createdParent !== undefined) {
     await syncDirectory(path.dirname(createdParent));
   }
   try {
-    await mkdir(directory, { mode: 0o700 });
+    await ensurePrivateDirectory(directory);
   } catch (error) {
     if (!isAlreadyExists(error)) throw error;
     if (!(await stat(directory)).isDirectory()) throw error;
@@ -371,7 +372,7 @@ export async function appendEvent(file: string, event: RunEvent): Promise<void> 
 export async function createEventLog(file: string, event: RunEvent): Promise<void> {
   validateEvent(event, event.sequence);
   const directory = path.dirname(file);
-  const created = await mkdir(directory, { recursive: true });
+  const created = await ensurePrivateDirectory(directory);
   if (created !== undefined) {
     await syncDirectory(path.dirname(created));
   }
