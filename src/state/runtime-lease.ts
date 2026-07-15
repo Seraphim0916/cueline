@@ -23,6 +23,7 @@ import {
 } from "./event-log.js";
 import { runPaths } from "./paths.js";
 import {
+  isRuntimeOwnerRetirementEvidence,
   persistRuntimeOwnerRetirements,
   readStableRuntimeOwnerRetirementCutoffs,
   runtimeFenceAuthorityIdentity,
@@ -332,28 +333,10 @@ function parseRetiredOwners(value: unknown): RuntimeOwnerRetirementEvidence[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("RUNTIME_LEASE_INVALID");
   return value.map((candidate) => {
-    if (
-      typeof candidate !== "object" ||
-      candidate === null ||
-      Array.isArray(candidate)
-    ) {
+    if (!isRuntimeOwnerRetirementEvidence(candidate)) {
       throw new Error("RUNTIME_LEASE_INVALID");
     }
-    const record = candidate as Record<string, unknown>;
-    if (
-      typeof record.owner_id !== "string" ||
-      record.owner_id === "" ||
-      !Number.isSafeInteger(record.events_after_sequence) ||
-      (record.events_after_sequence as number) < 0 ||
-      typeof record.retired_at !== "string"
-    ) {
-      throw new Error("RUNTIME_LEASE_INVALID");
-    }
-    return {
-      owner_id: record.owner_id,
-      events_after_sequence: record.events_after_sequence as number,
-      retired_at: record.retired_at,
-    };
+    return { ...candidate };
   });
 }
 
