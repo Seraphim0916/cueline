@@ -67,7 +67,7 @@ function help(): string {
     "  cueline install",
     "  cueline uninstall",
     "  cueline doctor",
-    "  cueline routing",
+    "  cueline routing [--json]",
     "  cueline jobs [--json]",
     "  cueline run status <run-id> [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
@@ -110,24 +110,110 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function routingCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promise<number> {
-  const config = await loadRoutingConfig(routingConfigPath(environment));
+interface RoutingLaneReport {
+  name: string;
+  enabled: boolean;
+  status: "available" | "unavailable" | "disabled";
+  selectedRunnerId: string | null;
+  errorCode?: string;
+}
+
+interface RoutingReport {
+  version: string;
+  config:
+    | { path: string; valid: true }
+    | { path: string; valid: false; errorCode: "ROUTING_CONFIG_INVALID" };
+  availableLanes: number;
+  lanes: RoutingLaneReport[];
+  findings: Array<{ code: string; message: string }>;
+}
+
+function routingErrorCode(error: unknown): string {
+  return error instanceof CueLineError ? error.code : "ROUTE_UNAVAILABLE";
+}
+
+async function collectRoutingReport(environment: NodeJS.ProcessEnv): Promise<RoutingReport> {
+  const configPath = routingConfigPath(environment);
+  let config: Awaited<ReturnType<typeof loadRoutingConfig>>;
+  try {
+    config = await loadRoutingConfig(configPath);
+  } catch {
+    return {
+      version: CUELINE_VERSION,
+      config: {
+        path: configPath,
+        valid: false,
+        errorCode: "ROUTING_CONFIG_INVALID",
+      },
+      availableLanes: 0,
+      lanes: [],
+      findings: [
+        {
+          code: "ROUTING_CONFIG_INVALID",
+          message: "Routing configuration could not be loaded.",
+        },
+      ],
+    };
+  }
   const availability = executableAvailability(environment);
-  let available = 0;
+  const lanes: RoutingLaneReport[] = [];
   for (const [lane, laneConfig] of Object.entries(config.lanes)) {
     if (!laneConfig.enabled) {
-      io.stdout(`${lane}\t-\tdisabled`);
+      lanes.push({
+        name: lane,
+        enabled: false,
+        status: "disabled",
+        selectedRunnerId: null,
+      });
       continue;
     }
     try {
       const route = resolveRoute(lane, config, availability);
-      available += 1;
-      io.stdout(`${lane}\t${route.candidate.id}\tavailable`);
+      lanes.push({
+        name: lane,
+        enabled: true,
+        status: "available",
+        selectedRunnerId: route.candidate.id,
+      });
     } catch (error) {
-      io.stdout(`${lane}\t-\tunavailable (${errorMessage(error)})`);
+      lanes.push({
+        name: lane,
+        enabled: true,
+        status: "unavailable",
+        selectedRunnerId: null,
+        errorCode: routingErrorCode(error),
+      });
     }
   }
-  return available > 0 ? 0 : 1;
+  return {
+    version: CUELINE_VERSION,
+    config: { path: configPath, valid: true },
+    availableLanes: lanes.filter((lane) => lane.status === "available").length,
+    lanes,
+    findings: [],
+  };
+}
+
+async function routingCommand(
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const report = await collectRoutingReport(environment);
+  if (json) {
+    io.stdout(JSON.stringify(report, null, 2));
+  } else if (!report.config.valid) {
+    io.stdout(`config\t${report.config.path}\tinvalid\t${report.config.errorCode}`);
+  } else {
+    for (const lane of report.lanes) {
+      io.stdout(
+        `${lane.name}\t${lane.selectedRunnerId ?? "-"}\t${lane.status}${
+          lane.errorCode === undefined ? "" : ` (${lane.errorCode})`
+        }`,
+      );
+    }
+  }
+  return report.availableLanes > 0 ? 0 : 1;
 }
 
 type ObservedJobStatus = JobStatus["status"] | "orphaned" | "unverified" | "conflict";
@@ -431,8 +517,11 @@ export async function main(
       io.stdout(await uninstallSkill(environment));
       return 0;
     }
-    if (args[0] === "routing" && args.length === 1) {
-      return routingCommand(environment, io);
+    if (
+      args[0] === "routing" &&
+      (args.length === 1 || (args.length === 2 && args[1] === "--json"))
+    ) {
+      return routingCommand(args[1] === "--json", environment, io);
     }
     if (
       args[0] === "jobs" &&
