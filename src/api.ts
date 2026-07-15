@@ -20,6 +20,7 @@ import {
 } from "./api-runtime-lifecycle.js";
 import type { BrowserAdapter } from "./browser/browser-adapter.js";
 import { createCodexIabAdapter } from "./browser/codex-iab/chatgpt-client.js";
+import { probeCodexIab } from "./browser/codex-iab/probe.js";
 import {
   continueControllerLoop,
   createControllerRun,
@@ -413,7 +414,7 @@ export {
   reconcileCueLineRuntime,
   takeoverCueLineRuntime,
 } from "./api-runtime-lifecycle.js";
-export { createCodexIabAdapter };
+export { createCodexIabAdapter, probeCodexIab };
 export { CUELINE_VERSION } from "./version.js";
 export type {
   ContinueCueLineRunOptions,
@@ -433,6 +434,14 @@ export type {
   ManualControllerSubmissionConfirmation,
   StartCueLineRunOptions,
 } from "./api-contracts.js";
+export type {
+  CodexIabBrowserSource,
+  CodexIabPageProbe,
+  CodexIabProbeOptions,
+  CodexIabProbeResult,
+  CodexIabProbeStatus,
+  CodexIabTabSource,
+} from "./browser/codex-iab/probe.js";
 export type {
   BrowserAdapter,
   CueLineResult,
