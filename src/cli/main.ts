@@ -13,6 +13,7 @@ import {
   diagnoseCueLineRun,
   loadCueLineRunStatus,
   lintControllerCommandText,
+  loadCueLineRunTimeline,
   reconcileCueLineRuntime,
   routingConfigPath,
   takeoverCueLineRuntime,
@@ -41,7 +42,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|jobs|protocol lint|run status|run doctor|run watch|run handoff|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|jobs|protocol lint|run status|run doctor|run watch|run handoff|run timeline|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -61,6 +62,7 @@ function help(): string {
     "  run doctor     explain why a run is waiting or blocked and name the safe next action",
     "  run watch      wait briefly for a newer durable event without owning the run",
     "  run handoff    emit a restart packet with exact paths and safe next action",
+    "  run timeline   show a sanitized, cursor-paginated audit timeline",
     "  run reconcile  confirm one manually sent controller turn; never resends it",
     "  run takeover   explicitly retire one exact stale runtime owner",
     "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
@@ -83,6 +85,7 @@ function help(): string {
     "  cueline run doctor <run-id> [--json]",
     "  cueline run watch <run-id> --after <sequence> [--timeout-ms <0..30000>] [--json]",
     "  cueline run handoff <run-id> [--include-content] [--max-content-chars <16..10000>] [--json]",
+    "  cueline run timeline <run-id> [--after <sequence>] [--limit <1..1000>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
     "  cueline run takeover <run-id> [--json]",
     "  cueline run reconcile-runtime <run-id> [--json]",
@@ -108,7 +111,7 @@ function help(): string {
     "  2  the arguments were not understood",
     "",
     "state effects:",
-    "  Read-only: doctor, routing, jobs, protocol lint, run status, run doctor, run watch, run handoff, api path, config path, help, version.",
+    "  Read-only: doctor, routing, jobs, protocol lint, run status, run doctor, run watch, run handoff, run timeline, api path, config path, help, version.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
@@ -483,6 +486,36 @@ async function runHandoffCommand(
   return 0;
 }
 
+async function runTimelineCommand(
+  runId: string,
+  afterSequence: number,
+  limit: number,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const timeline = await loadCueLineRunTimeline(runId, {
+    environment,
+    afterSequence,
+    limit,
+  });
+  if (json) {
+    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...timeline }, null, 2));
+  } else {
+    io.stdout(`run\t${timeline.runId}`);
+    io.stdout(`version\t${CUELINE_VERSION}`);
+    io.stdout(
+      `events\treturned=${timeline.returnedEvents}\ttotal=${timeline.totalEvents}\tlatest=${timeline.latestSequence}\thas_more=${timeline.hasMore ? "yes" : "no"}\tnext_after=${timeline.nextAfterSequence}`,
+    );
+    for (const entry of timeline.entries) {
+      io.stdout(
+        `event\t${entry.sequence}\t${entry.timestamp ?? "invalid_timestamp"}\t${entry.category}\t${entry.type}\t${entry.summary}\tattributes=${JSON.stringify(entry.attributes)}\tpayload_sha256=${entry.payloadHash}\towner=${entry.ownerFingerprint ?? "-"}`,
+      );
+    }
+  }
+  return 0;
+}
+
 async function doctorCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promise<number> {
   const configPath = routingConfigPath(environment);
   const home = defaultCueLineHome(environment);
@@ -802,6 +835,63 @@ export async function main(
         args[2],
         includeContent,
         maxContentChars,
+        json,
+        environment,
+        io,
+      );
+    }
+    if (
+      args[0] === "run" &&
+      args[1] === "timeline" &&
+      typeof args[2] === "string"
+    ) {
+      let afterSequence = 0;
+      let limit = 100;
+      let afterProvided = false;
+      let limitProvided = false;
+      let json = false;
+      let valid = true;
+      for (let index = 3; index < args.length; index += 1) {
+        const argument = args[index];
+        if (
+          argument === "--after" &&
+          !afterProvided &&
+          typeof args[index + 1] === "string"
+        ) {
+          afterSequence = Number(args[index + 1]);
+          afterProvided = true;
+          index += 1;
+        } else if (
+          argument === "--limit" &&
+          !limitProvided &&
+          typeof args[index + 1] === "string"
+        ) {
+          limit = Number(args[index + 1]);
+          limitProvided = true;
+          index += 1;
+        } else if (argument === "--json" && !json) {
+          json = true;
+        } else {
+          valid = false;
+        }
+      }
+      if (
+        !valid ||
+        !Number.isSafeInteger(afterSequence) ||
+        afterSequence < 0 ||
+        !Number.isSafeInteger(limit) ||
+        limit < 1 ||
+        limit > 1_000
+      ) {
+        throw new CueLineError(
+          "CLI_ARGUMENTS_INVALID",
+          "usage: cueline run timeline <run-id> [--after <sequence>] [--limit <1..1000>] [--json]",
+        );
+      }
+      return runTimelineCommand(
+        args[2],
+        afterSequence,
+        limit,
         json,
         environment,
         io,

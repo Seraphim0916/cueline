@@ -202,6 +202,9 @@ $ cueline run watch run_... --after 42 --timeout-ms 5000 --json
 $ cueline run handoff run_... --json
 {"schema":"cueline-handoff/0.1","run":{"runId":"run_...","safeNextAction":"execute_caller_jobs"},...}
 
+$ cueline run timeline run_... --after 40 --limit 20 --json
+{"schema":"cueline-timeline/0.1","entries":[{"sequence":41,"type":"job_status",...}],...}
+
 $ cueline run takeover stale_run_... --json
 {"runId":"stale_run_...","outcome":"taken_over","next":"continue",...}
 
@@ -235,6 +238,10 @@ reports all known contract corrections in one pass. See
 The experimental `run handoff` command produces a safe restart packet with
 exact identities and absolute paths. See
 [`docs/experiments/run-handoff.md`](docs/experiments/run-handoff.md).
+
+The experimental `run timeline` command exposes a sanitized, cursor-paginated
+audit view without raw event payloads. See
+[`docs/experiments/run-timeline.md`](docs/experiments/run-timeline.md).
 
 Use `run takeover` only when `run status` reports an exact stale owner. It refuses a fresh active heartbeat and returns `next: continue` or `next: reconcile_runtime`; follow that value instead of guessing.
 

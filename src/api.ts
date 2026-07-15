@@ -425,6 +425,10 @@ export {
   createCueLineRunHandoff,
   renderCueLineRunHandoffMarkdown,
 } from "./observation/run-handoff.js";
+export {
+  buildCueLineRunTimeline,
+  loadCueLineRunTimeline,
+} from "./observation/run-timeline.js";
 export { CUELINE_VERSION } from "./version.js";
 export type {
   ContinueCueLineRunOptions,
@@ -467,6 +471,12 @@ export type {
   CueLineRunHandoffOptions,
   CueLineRunHandoffPacket,
 } from "./observation/run-handoff.js";
+export type {
+  CueLineRunTimeline,
+  CueLineRunTimelineEntry,
+  CueLineRunTimelineOptions,
+  CueLineTimelineCategory,
+} from "./observation/run-timeline.js";
 export type {
   BrowserAdapter,
   CueLineResult,
