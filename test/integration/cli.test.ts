@@ -303,6 +303,47 @@ test("run status refuses to call a legacy running run active without ownership e
   assert.match(humanResult.stdout, /next\s+inspect_runtime/);
 });
 
+test("run watch returns immediately on a newer event and never mutates the run", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  const before = await readEvents(runPaths(context.home, runId).events);
+
+  const result = invoke(
+    ["run", "watch", runId, "--after", "11", "--timeout-ms", "0", "--json"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const observation = JSON.parse(result.stdout) as {
+    version: string;
+    outcome: string;
+    previousSequence: number;
+    currentSequence: number;
+    elapsedMs: number;
+    status: { runId: string };
+  };
+  assert.equal(observation.version, await packageVersion());
+  assert.equal(observation.outcome, "changed");
+  assert.equal(observation.previousSequence, 11);
+  assert.equal(observation.currentSequence, 12);
+  assert.equal(observation.status.runId, runId);
+  const after = await readEvents(runPaths(context.home, runId).events);
+  assert.deepEqual(after, before);
+});
+
+test("run watch rejects an out-of-contract timeout as a CLI usage error", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+
+  const result = invoke(
+    ["run", "watch", runId, "--after", "12", "--timeout-ms", "30001"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /CLI_ARGUMENTS_INVALID/);
+});
+
 test("run reconcile records operator-confirmed manual submission without resending", async () => {
   const context = await fixture();
   const runId = "run_cli_manual_reconcile";

@@ -414,6 +414,7 @@ export {
   takeoverCueLineRuntime,
 } from "./api-runtime-lifecycle.js";
 export { createCodexIabAdapter };
+export { waitForCueLineRunChange } from "./observation/run-watch.js";
 export { CUELINE_VERSION } from "./version.js";
 export type {
   ContinueCueLineRunOptions,
@@ -433,6 +434,10 @@ export type {
   ManualControllerSubmissionConfirmation,
   StartCueLineRunOptions,
 } from "./api-contracts.js";
+export type {
+  CueLineRunWatchOptions,
+  CueLineRunWatchResult,
+} from "./observation/run-watch.js";
 export type {
   BrowserAdapter,
   CueLineResult,

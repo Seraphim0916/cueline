@@ -190,6 +190,9 @@ No jobs.
 $ cueline run status run_... --json
 {"status":"running","executor":"caller","phase":"caller_jobs_pending","runtime":{"ownership":"missing"},...}
 
+$ cueline run watch run_... --after 42 --timeout-ms 5000 --json
+{"outcome":"changed","previousSequence":42,"currentSequence":43,...}
+
 $ cueline run takeover stale_run_... --json
 {"runId":"stale_run_...","outcome":"taken_over","next":"continue",...}
 
@@ -207,6 +210,10 @@ CueLine skill removed: /Users/you/.codex/skills/cueline
 ```
 
 `cueline doctor` exits non-zero when Node is too old or no enabled caller lane exists. `process_available_lanes` may be zero without degrading caller mode; use `cueline routing` to inspect process availability before explicitly selecting that executor. `cueline api path` is what the skill imports, so a packaged install needs no repository checkout. `cueline help` lists every command's exact syntax, including `--json` and the manual-reconcile confirmation flags.
+
+The experimental `run watch` command performs a bounded, lease-free observation
+using the durable event sequence as its cursor. See
+[`docs/experiments/run-watch.md`](docs/experiments/run-watch.md).
 
 Use `run takeover` only when `run status` reports an exact stale owner. It refuses a fresh active heartbeat and returns `next: continue` or `next: reconcile_runtime`; follow that value instead of guessing.
 

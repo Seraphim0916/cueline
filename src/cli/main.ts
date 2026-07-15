@@ -13,6 +13,7 @@ import {
   reconcileCueLineRuntime,
   routingConfigPath,
   takeoverCueLineRuntime,
+  waitForCueLineRunChange,
 } from "../api.js";
 import { CueLineError } from "../core/errors.js";
 import type { JobStatus } from "../jobs/status.js";
@@ -36,7 +37,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run watch|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -52,6 +53,7 @@ function help(): string {
     "  routing        list every lane and the candidate that would be selected",
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
     "  run status     summarize one persisted run for safe cross-session handoff",
+    "  run watch      wait briefly for a newer durable event without owning the run",
     "  run reconcile  confirm one manually sent controller turn; never resends it",
     "  run takeover   explicitly retire one exact stale runtime owner",
     "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
@@ -70,6 +72,7 @@ function help(): string {
     "  cueline routing",
     "  cueline jobs [--json]",
     "  cueline run status <run-id> [--json]",
+    "  cueline run watch <run-id> --after <sequence> [--timeout-ms <0..30000>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
     "  cueline run takeover <run-id> [--json]",
     "  cueline run reconcile-runtime <run-id> [--json]",
@@ -95,7 +98,7 @@ function help(): string {
     "  2  the arguments were not understood",
     "",
     "state effects:",
-    "  Read-only: doctor, routing, jobs, run status, api path, config path, help, version.",
+    "  Read-only: doctor, routing, jobs, run status, run watch, api path, config path, help, version.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
@@ -359,6 +362,33 @@ async function runStatusCommand(
   return 0;
 }
 
+async function runWatchCommand(
+  runId: string,
+  afterSequence: number,
+  timeoutMs: number | undefined,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const observation = await waitForCueLineRunChange(runId, {
+    environment,
+    afterSequence,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
+  if (json) {
+    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...observation }, null, 2));
+  } else {
+    io.stdout(`run\t${observation.status.runId}`);
+    io.stdout(`version\t${CUELINE_VERSION}`);
+    io.stdout(`outcome\t${observation.outcome}`);
+    io.stdout(`sequence\t${observation.previousSequence}->${observation.currentSequence}`);
+    io.stdout(`elapsed_ms\t${observation.elapsedMs}`);
+    io.stdout(`phase\t${observation.status.phase}`);
+    io.stdout(`next\t${observation.status.safeNextAction}`);
+  }
+  return 0;
+}
+
 async function doctorCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promise<number> {
   const configPath = routingConfigPath(environment);
   const home = defaultCueLineHome(environment);
@@ -517,6 +547,59 @@ export async function main(
       if (json) io.stdout(JSON.stringify(result, null, 2));
       else io.stdout(`${result.runId}\t${result.requestId}\t${result.outcome}\tno_resend`);
       return 0;
+    }
+    if (
+      args[0] === "run" &&
+      args[1] === "watch" &&
+      typeof args[2] === "string"
+    ) {
+      let afterSequence: number | undefined;
+      let timeoutMs: number | undefined;
+      let json = false;
+      let valid = true;
+      for (let index = 3; index < args.length; index += 1) {
+        const argument = args[index];
+        if (
+          argument === "--after" &&
+          afterSequence === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          afterSequence = Number(args[index + 1]);
+          index += 1;
+        } else if (
+          argument === "--timeout-ms" &&
+          timeoutMs === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          timeoutMs = Number(args[index + 1]);
+          index += 1;
+        } else if (argument === "--json" && !json) {
+          json = true;
+        } else {
+          valid = false;
+        }
+      }
+      if (
+        !valid ||
+        afterSequence === undefined ||
+        !Number.isSafeInteger(afterSequence) ||
+        afterSequence < 0 ||
+        (timeoutMs !== undefined &&
+          (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 30_000))
+      ) {
+        throw new CueLineError(
+          "CLI_ARGUMENTS_INVALID",
+          "usage: cueline run watch <run-id> --after <sequence> [--timeout-ms <0..30000>] [--json]",
+        );
+      }
+      return runWatchCommand(
+        args[2],
+        afterSequence,
+        timeoutMs,
+        json,
+        environment,
+        io,
+      );
     }
     if (
       args[0] === "run" &&
