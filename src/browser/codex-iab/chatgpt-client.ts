@@ -112,14 +112,43 @@ async function findVisibleSendButtonCoordinates(
         const label = normalize(
           button.getAttribute("aria-label") ?? button.innerText ?? button.textContent,
         );
+        const checkVisibility = (
+          button as HTMLButtonElement & {
+            checkVisibility?: (options?: {
+              checkOpacity?: boolean;
+              checkVisibilityCSS?: boolean;
+            }) => boolean;
+          }
+        ).checkVisibility;
+        if (typeof checkVisibility === "function") {
+          try {
+            if (
+              !checkVisibility.call(button, {
+                checkOpacity: true,
+                checkVisibilityCSS: true,
+              })
+            ) {
+              return false;
+            }
+          } catch {
+            // Explicit style and geometry checks below remain the fallback.
+          }
+        }
         return (
           sendButtonNames.some((name) => name === label) &&
           !button.disabled &&
+          !button.hidden &&
           button.getAttribute("aria-disabled") !== "true" &&
+          button.getAttribute("aria-hidden") !== "true" &&
+          button.closest('[hidden], [aria-hidden="true"], [inert]') === null &&
           style.display !== "none" &&
           style.visibility !== "hidden" &&
+          style.visibility !== "collapse" &&
+          style.pointerEvents !== "none" &&
+          Number(style.opacity) !== 0 &&
           rect.width > 0 &&
           rect.height > 0 &&
+          button.getClientRects().length > 0 &&
           rect.right > 0 &&
           rect.bottom > 0 &&
           rect.left < window.innerWidth &&

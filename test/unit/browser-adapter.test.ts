@@ -326,6 +326,122 @@ test("treats contenteditable block newlines as the same inline prompt", async ()
   }
 });
 
+test("composer readiness ignores every non-actionable residual Send button", async () => {
+  type VisibilityCase =
+    | "hidden"
+    | "aria_hidden"
+    | "ancestor_hidden"
+    | "check_visibility"
+    | "display"
+    | "visibility"
+    | "opacity"
+    | "pointer_events"
+    | "geometry"
+    | "client_rects"
+    | "visible";
+  let visibilityCase: VisibilityCase = "visible";
+  const sendButton = {
+    disabled: false,
+    get hidden() {
+      return visibilityCase === "hidden";
+    },
+    innerText: "Send prompt",
+    textContent: "Send prompt",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Send prompt";
+      if (name === "aria-disabled") return "false";
+      if (name === "aria-hidden") return visibilityCase === "aria_hidden" ? "true" : null;
+      return null;
+    },
+    closest() {
+      return visibilityCase === "ancestor_hidden" ? this : null;
+    },
+    checkVisibility() {
+      return visibilityCase !== "check_visibility";
+    },
+    getBoundingClientRect() {
+      return visibilityCase === "geometry"
+        ? { width: 0, height: 0 }
+        : { width: 40, height: 40 };
+    },
+    getClientRects() {
+      return visibilityCase === "client_rects" ? [] : [{}];
+    },
+  };
+  const form = {
+    querySelectorAll(selector: string) {
+      return selector === "button" ? [sendButton] : [];
+    },
+  };
+  const composer = {
+    innerText: "controller prompt",
+    textContent: "controller prompt",
+    parentElement: null,
+    closest() {
+      return form;
+    },
+  };
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const styleDescriptor = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { querySelector: () => composer },
+  });
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => ({
+      display: visibilityCase === "display" ? "none" : "block",
+      visibility: visibilityCase === "visibility" ? "hidden" : "visible",
+      opacity: visibilityCase === "opacity" ? "0" : "1",
+      pointerEvents: visibilityCase === "pointer_events" ? "none" : "auto",
+    }),
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result, Argument>(
+        pageFunction: (argument: Argument) => Result | Promise<Result>,
+        argument: Argument,
+      ): Promise<Result> {
+        return pageFunction(argument);
+      },
+    },
+  } as unknown as IabTab;
+
+  try {
+    for (const candidate of [
+      "hidden",
+      "aria_hidden",
+      "ancestor_hidden",
+      "check_visibility",
+      "display",
+      "visibility",
+      "opacity",
+      "pointer_events",
+      "geometry",
+      "client_rects",
+    ] as const) {
+      visibilityCase = candidate;
+      const state = await readPageComposerState(tab, "controller prompt", ["Send prompt"]);
+      assert.equal(state.state, "inline_ready");
+      assert.equal(state.sendButtonEnabled, false, candidate);
+    }
+    visibilityCase = "visible";
+    assert.equal(
+      (await readPageComposerState(tab, "controller prompt", ["Send prompt"]))
+        .sendButtonEnabled,
+      true,
+    );
+  } finally {
+    for (const [name, descriptor] of [
+      ["document", documentDescriptor],
+      ["getComputedStyle", styleDescriptor],
+    ] as const) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globalThis as Record<string, unknown>)[name];
+    }
+  }
+});
+
 test("ignores a hidden residual Stop answering button after the Pro response completed", async () => {
   const stopButton = {
     disabled: false,

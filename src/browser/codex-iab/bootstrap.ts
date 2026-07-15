@@ -252,11 +252,58 @@ export async function readPageComposerState(
         const label = normalize(
           button.getAttribute("aria-label") ?? button.innerText ?? button.textContent,
         );
-        return (
-          sendButtonNames.includes(label) &&
-          !button.disabled &&
-          button.getAttribute("aria-disabled") !== "true"
-        );
+        const hiddenAncestor =
+          typeof button.closest === "function" &&
+          button.closest('[hidden], [aria-hidden="true"], [inert]') !== null;
+        if (
+          !sendButtonNames.includes(label) ||
+          button.disabled ||
+          button.hidden ||
+          button.getAttribute("aria-disabled") === "true" ||
+          button.getAttribute("aria-hidden") === "true" ||
+          hiddenAncestor
+        ) {
+          return false;
+        }
+        const checkVisibility = (
+          button as HTMLButtonElement & {
+            checkVisibility?: (options?: {
+              checkOpacity?: boolean;
+              checkVisibilityCSS?: boolean;
+            }) => boolean;
+          }
+        ).checkVisibility;
+        if (typeof checkVisibility === "function") {
+          try {
+            if (
+              !checkVisibility.call(button, {
+                checkOpacity: true,
+                checkVisibilityCSS: true,
+              })
+            ) {
+              return false;
+            }
+          } catch {
+            // Explicit style and geometry checks below remain the fallback.
+          }
+        }
+        if (typeof getComputedStyle === "function") {
+          const style = getComputedStyle(button);
+          if (
+            style.display === "none" ||
+            style.visibility === "hidden" ||
+            style.visibility === "collapse" ||
+            style.pointerEvents === "none" ||
+            Number(style.opacity) === 0
+          ) {
+            return false;
+          }
+        }
+        if (typeof button.getBoundingClientRect === "function") {
+          const bounds = button.getBoundingClientRect();
+          if (bounds.width <= 0 || bounds.height <= 0) return false;
+        }
+        return typeof button.getClientRects !== "function" || button.getClientRects().length > 0;
       });
       const attachmentCount = attachmentElements.size;
       const state: PageComposerState["state"] =
