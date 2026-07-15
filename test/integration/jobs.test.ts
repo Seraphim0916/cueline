@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -454,6 +454,208 @@ test("durable job status writes preserve JSON omission of optional undefined fie
   const persisted = await store.read("optional-undefined");
   assert.equal(persisted?.status, "running");
   assert.equal(Object.hasOwn(persisted ?? {}, "phase"), false);
+});
+
+test("a terminal job status cannot regress to a late running update", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-fence-"));
+  const store = new JobStatusStore(directory);
+  const terminal: JobStatus = {
+    jobId: "terminal-fence",
+    runId: "run_terminal_fence",
+    jobKey: "terminal_fence",
+    execution: "foreground",
+    status: "succeeded",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    result: {
+      status: "succeeded",
+      stdout: "TERMINAL_PROOF",
+      stderr: "",
+      output: "TERMINAL_PROOF",
+      exitCode: 0,
+      timedOut: false,
+      cancelled: false,
+      ambiguousSideEffects: false,
+      emptyOutput: false,
+      retryable: false,
+      startedAt: "2026-07-15T00:00:00.000Z",
+      finishedAt: "2026-07-15T00:01:00.000Z",
+    },
+  };
+
+  await store.write(terminal);
+  await assert.rejects(
+    store.write({
+      jobId: terminal.jobId,
+      runId: "run_terminal_fence",
+      jobKey: "terminal_fence",
+      execution: "foreground",
+      status: "running",
+      phase: "late_progress",
+      startedAt: terminal.startedAt,
+    }),
+    hasCode("JOB_STATUS_ALREADY_TERMINAL"),
+  );
+
+  assert.deepEqual(await store.read(terminal.jobId), terminal);
+  assert.deepEqual(
+    JSON.parse(await readFile(store.pathFor(terminal.jobId), "utf8")),
+    terminal,
+  );
+});
+
+test("concurrent running updates cannot outlive the first durable terminal status", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-race-"));
+  const store = new JobStatusStore(directory);
+  const terminal: JobStatus = {
+    jobId: "terminal-race",
+    execution: "foreground",
+    status: "failed",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    error: "FIRST_TERMINAL_WINS",
+  };
+
+  const writes = await Promise.allSettled([
+    ...Array.from({ length: 64 }, (_, index) =>
+      store.write({
+        jobId: terminal.jobId,
+        execution: "foreground",
+        status: "running",
+        phase: `late_${index}`,
+        startedAt: terminal.startedAt,
+      }),
+    ),
+    store.write(terminal),
+  ]);
+
+  for (const write of writes) {
+    if (write.status === "rejected") {
+      assert.equal(hasCode("JOB_STATUS_ALREADY_TERMINAL")(write.reason), true);
+    }
+  }
+  assert.deepEqual(await store.read(terminal.jobId), terminal);
+  assert.deepEqual(
+    (await readdir(path.dirname(store.pathFor(terminal.jobId)))).sort(),
+    ["terminal-race.json", "terminal-race.terminal"],
+  );
+});
+
+test("terminal retries are idempotent but conflicting terminal evidence is rejected", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-conflict-"));
+  const store = new JobStatusStore(directory);
+  const terminal: JobStatus = {
+    jobId: "terminal-conflict",
+    execution: "foreground",
+    status: "failed",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    error: "ORIGINAL_FAILURE",
+  };
+
+  await store.write(terminal);
+  await store.write({ ...terminal });
+  await assert.rejects(
+    store.write({
+      jobId: terminal.jobId,
+      execution: terminal.execution,
+      status: "succeeded",
+      startedAt: terminal.startedAt,
+      finishedAt: "2026-07-15T00:01:00.000Z",
+    }),
+    hasCode("JOB_STATUS_TERMINAL_CONFLICT"),
+  );
+
+  assert.deepEqual(await store.read(terminal.jobId), terminal);
+});
+
+test("concurrent conflicting terminal writers commit exactly one immutable winner", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-winner-"));
+  const store = new JobStatusStore(directory);
+  const failed: JobStatus = {
+    jobId: "terminal-winner",
+    execution: "foreground",
+    status: "failed",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    error: "FAILED_WINNER",
+  };
+  const succeeded: JobStatus = {
+    jobId: "terminal-winner",
+    execution: "foreground",
+    status: "succeeded",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+  };
+
+  const attempts = await Promise.allSettled([
+    store.write(failed),
+    store.write(succeeded),
+  ]);
+  assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
+  const rejected = attempts.find((attempt) => attempt.status === "rejected");
+  assert.equal(
+    rejected?.status === "rejected" &&
+      hasCode("JOB_STATUS_TERMINAL_CONFLICT")(rejected.reason),
+    true,
+  );
+  const committed = await store.read("terminal-winner");
+  assert.deepEqual(committed, committed?.status === "failed" ? failed : succeeded);
+});
+
+test("legacy terminal files are fenced before a newer writer can regress them", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-legacy-"));
+  const store = new JobStatusStore(directory);
+  const terminal: JobStatus = {
+    jobId: "legacy-terminal",
+    execution: "foreground",
+    status: "ambiguous",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    error: "LEGACY_TERMINAL_PROOF",
+  };
+  await mkdir(path.dirname(store.pathFor(terminal.jobId)), { recursive: true });
+  await writeFile(store.pathFor(terminal.jobId), `${JSON.stringify(terminal)}\n`, "utf8");
+
+  await assert.rejects(
+    store.write({
+      jobId: terminal.jobId,
+      execution: "foreground",
+      status: "running",
+      startedAt: terminal.startedAt,
+    }),
+    hasCode("JOB_STATUS_ALREADY_TERMINAL"),
+  );
+  await unlink(store.pathFor(terminal.jobId));
+
+  assert.deepEqual(await store.read(terminal.jobId), terminal);
+});
+
+test("a supervisor cannot spawn a job whose durable status is already terminal", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-respawn-"));
+  const store = new JobStatusStore(directory);
+  let runnerCalls = 0;
+  const runner: RunnerAdapter = {
+    async run() {
+      runnerCalls += 1;
+      throw new Error("runner must not be reached");
+    },
+  };
+  const supervisor = new JobSupervisor(runner, { statusStore: store });
+  await store.write({
+    jobId: "terminal-respawn",
+    execution: "foreground",
+    status: "failed",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    error: "ALREADY_FINISHED",
+  });
+
+  await assert.rejects(
+    supervisor.start(spec("terminal-respawn", "process.exit(0);")),
+    hasCode("JOB_STATUS_ALREADY_TERMINAL"),
+  );
+  assert.equal(runnerCalls, 0);
 });
 
 test("supervisor persists run metadata and cancels an owned background job", async () => {
