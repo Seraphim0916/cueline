@@ -12,6 +12,7 @@ import {
   type PageComposerState,
   type PageChatState,
 } from "../../src/browser/codex-iab/bootstrap.js";
+import { acquireChatGptTab } from "../../src/browser/codex-iab/tab-discovery.js";
 /*
  * Keep these browser-runtime tests at the public adapter boundary. The actual
  * page evaluator runs against a tiny DOM double so newline handling cannot be
@@ -1791,6 +1792,124 @@ test("waits for the Pro composer label to hydrate before sending", async () => {
   assert.equal(turn.text, "complete");
   assert.equal(fixture.sendSubmissions(), 1);
   assert.deepEqual(fixture.composer.fills, ["Wait for the actual Pro composer before sending"]);
+});
+
+test("tab discovery refuses multiple matching session tabs instead of choosing the first", async () => {
+  const fixture = fakeBrowser({
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  let getCalls = 0;
+  let newCalls = 0;
+  const browser: IabBrowser = {
+    tabs: {
+      async selected() {
+        return undefined;
+      },
+      async list() {
+        return [
+          { id: "chat-one", url: "https://chatgpt.com/c/chat-one" },
+          { id: "chat-two", url: "https://chatgpt.com/c/chat-two" },
+        ];
+      },
+      async get() {
+        getCalls += 1;
+        return fixture.tab;
+      },
+      async new() {
+        newCalls += 1;
+        return fixture.tab;
+      },
+    },
+  };
+
+  await assert.rejects(
+    acquireChatGptTab(browser),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "IAB_CHATGPT_TAB_AMBIGUOUS",
+  );
+  assert.equal(getCalls, 0);
+  assert.equal(newCalls, 0);
+});
+
+test("tab discovery refuses multiple claimable copies of one exact conversation", async () => {
+  const conversationUrl = "https://chatgpt.com/c/exact-duplicate";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  let claimCalls = 0;
+  let newCalls = 0;
+  const browser: IabBrowser = {
+    tabs: {
+      async selected() {
+        return undefined;
+      },
+      async list() {
+        return [];
+      },
+      async new() {
+        newCalls += 1;
+        return fixture.tab;
+      },
+    },
+    user: {
+      async openTabs() {
+        return [
+          { id: "copy-one", url: conversationUrl },
+          { id: "copy-two", url: conversationUrl },
+        ];
+      },
+      async claimTab() {
+        claimCalls += 1;
+        return fixture.tab;
+      },
+    },
+  };
+
+  await assert.rejects(
+    acquireChatGptTab(browser, conversationUrl),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "IAB_CHATGPT_TAB_AMBIGUOUS",
+  );
+  assert.equal(claimCalls, 0);
+  assert.equal(newCalls, 0);
+});
+
+test("tab discovery deduplicates repeated listings of one physical tab", async () => {
+  const conversationUrl = "https://chatgpt.com/c/repeated-listing";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  let getCalls = 0;
+  const browser: IabBrowser = {
+    tabs: {
+      async selected() {
+        return undefined;
+      },
+      async list() {
+        return [
+          { id: "same-tab", url: conversationUrl },
+          { id: "same-tab", url: conversationUrl },
+        ];
+      },
+      async get() {
+        getCalls += 1;
+        return fixture.tab;
+      },
+      async new() {
+        throw new Error("UNEXPECTED_NEW_TAB");
+      },
+    },
+  };
+
+  const tab = await acquireChatGptTab(browser, conversationUrl);
+  assert.equal(tab, fixture.tab);
+  assert.equal(getCalls, 1);
 });
 
 test("reacquires the exact conversation once when the cached tab is gone", async () => {
