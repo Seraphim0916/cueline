@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { commandHash, jobId } from "../../src/core/ids.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
-import { JobStatusStore } from "../../src/jobs/status.js";
+import { JobStatusStore, type JobStatus } from "../../src/jobs/status.js";
 import { readEvents } from "../../src/state/event-log.js";
 import { runPaths } from "../../src/state/paths.js";
 import { RunStore } from "../../src/state/store.js";
@@ -1204,6 +1204,108 @@ test("jobs reports run, job key, lane, mode, and PID metadata", async () => {
   );
 });
 
+test("jobs never exposes task, error, stdout, stderr, or combined worker output", async () => {
+  const context = await fixture();
+  const stdoutSentinel = "PRIVATE_STDOUT_SENTINEL";
+  const stderrSentinel = "PRIVATE_STDERR_SENTINEL";
+  const outputSentinel = "PRIVATE_COMBINED_OUTPUT_SENTINEL";
+  const errorSentinel = "PRIVATE_ERROR_SENTINEL";
+  await new JobStatusStore(context.home).write({
+    jobId: "job_redacted",
+    runId: "run_redacted",
+    jobKey: "private_audit",
+    lane: "default",
+    mode: "advise",
+    runnerId: "codex-default",
+    model: "gpt-5.6-sol",
+    provider: "openai",
+    pid: 43211,
+    phase: "finished",
+    lastProgressAt: "2026-07-15T00:01:00.000Z",
+    execution: "foreground",
+    status: "failed",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    result: {
+      status: "failed",
+      stdout: stdoutSentinel,
+      stderr: stderrSentinel,
+      output: outputSentinel,
+      exitCode: 1,
+      timedOut: false,
+      cancelled: false,
+      ambiguousSideEffects: false,
+      emptyOutput: false,
+      retryable: false,
+      startedAt: "2026-07-15T00:00:00.000Z",
+      finishedAt: "2026-07-15T00:01:00.000Z",
+    },
+    error: errorSentinel,
+    privateDiagnostic: "PRIVATE_UNKNOWN_FIELD_SENTINEL",
+  } as JobStatus & { privateDiagnostic: string });
+
+  const json = invoke(["jobs", "--json"], context.environment);
+  assert.equal(json.status, 0, json.stderr);
+  assert.deepEqual(JSON.parse(json.stdout), [
+    {
+      jobId: "job_redacted",
+      runId: "run_redacted",
+      jobKey: "private_audit",
+      lane: "default",
+      mode: "advise",
+      runnerId: "codex-default",
+      model: "gpt-5.6-sol",
+      provider: "openai",
+      pid: 43211,
+      phase: "finished",
+      lastProgressAt: "2026-07-15T00:01:00.000Z",
+      execution: "foreground",
+      status: "failed",
+      startedAt: "2026-07-15T00:00:00.000Z",
+      finishedAt: "2026-07-15T00:01:00.000Z",
+      observedStatus: "failed",
+    },
+  ]);
+  const human = invoke(["jobs"], context.environment);
+  assert.equal(human.status, 0, human.stderr);
+  for (const sentinel of [
+    stdoutSentinel,
+    stderrSentinel,
+    outputSentinel,
+    errorSentinel,
+    "PRIVATE_UNKNOWN_FIELD_SENTINEL",
+  ]) {
+    assert.doesNotMatch(json.stdout, new RegExp(sentinel));
+    assert.doesNotMatch(human.stdout, new RegExp(sentinel));
+  }
+});
+
+test("jobs keeps immutable run metadata from the authoritative event log", async () => {
+  const context = await fixture();
+  const runId = "run_authoritative_job_identity";
+  const id = await seedOneRunningJob(context.home, runId);
+  await new JobStatusStore(context.home).write({
+    jobId: id,
+    runId: "run_forged_identity",
+    jobKey: "forged_key",
+    lane: "forged_lane",
+    mode: "work",
+    execution: "foreground",
+    status: "running",
+    startedAt: "2026-07-15T00:00:00.000Z",
+  });
+
+  const result = invoke(["jobs", "--json"], context.environment);
+  assert.equal(result.status, 0, result.stderr);
+  const jobs = JSON.parse(result.stdout) as Array<Record<string, unknown>>;
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.runId, runId);
+  assert.equal(jobs[0]?.jobKey, "legacy_job");
+  assert.equal(jobs[0]?.lane, "default");
+  assert.equal(jobs[0]?.mode, "advise");
+  assert.doesNotMatch(result.stdout, /forged/);
+});
+
 test("jobs reconstructs legacy run metadata from the authoritative event log", async () => {
   const context = await fixture();
   const runId = "run_legacy_observable";
@@ -1224,7 +1326,6 @@ test("jobs reconstructs legacy run metadata from the authoritative event log", a
       jobKey: "legacy_job",
       lane: "default",
       mode: "advise",
-      task: "Inspect",
       jobId: id,
       execution: "foreground",
       status: "running",
@@ -1275,12 +1376,12 @@ test("jobs exposes caller-pending work even before any result status file exists
     jobKey: "caller_audit",
     lane: "default",
     mode: "advise",
-    task: "Inspect the exact caller task",
     execution: "foreground",
     status: "pending",
     startedAt: jobs[0]?.startedAt,
     observedStatus: "pending",
   });
+  assert.doesNotMatch(result.stdout, /Inspect the exact caller task/);
 });
 
 test("jobs keeps authoritative terminal run evidence when a retired owner writes late status", async () => {

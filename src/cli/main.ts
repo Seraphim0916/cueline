@@ -122,13 +122,35 @@ function errorMessage(error: unknown): string {
 }
 
 type ObservedJobStatus = JobStatus["status"] | "orphaned" | "unverified" | "conflict";
-type ListedJobStatus = JobStatus & {
+type JobStatusMetadata = Omit<JobStatus, "result" | "error">;
+type ListedJobStatus = JobStatusMetadata & {
   observedStatus: ObservedJobStatus;
-  task?: string;
   persistedStatus?: JobStatus["status"];
 };
 
-type RunJobMetadata = JobStatus & { task?: string };
+type RunJobMetadata = JobStatusMetadata;
+
+function jobStatusMetadata(status: JobStatus): JobStatusMetadata {
+  return {
+    jobId: status.jobId,
+    ...(status.runId === undefined ? {} : { runId: status.runId }),
+    ...(status.jobKey === undefined ? {} : { jobKey: status.jobKey }),
+    ...(status.lane === undefined ? {} : { lane: status.lane }),
+    ...(status.mode === undefined ? {} : { mode: status.mode }),
+    ...(status.runnerId === undefined ? {} : { runnerId: status.runnerId }),
+    ...(status.model === undefined ? {} : { model: status.model }),
+    ...(status.provider === undefined ? {} : { provider: status.provider }),
+    ...(status.pid === undefined ? {} : { pid: status.pid }),
+    ...(status.phase === undefined ? {} : { phase: status.phase }),
+    ...(status.lastProgressAt === undefined
+      ? {}
+      : { lastProgressAt: status.lastProgressAt }),
+    execution: status.execution,
+    status: status.status,
+    startedAt: status.startedAt,
+    ...(status.finishedAt === undefined ? {} : { finishedAt: status.finishedAt }),
+  };
+}
 
 async function readRunJobMetadata(home: string): Promise<Map<string, RunJobMetadata>> {
   const metadata = new Map<string, RunJobMetadata>();
@@ -170,7 +192,6 @@ async function readRunJobMetadata(home: string): Promise<Map<string, RunJobMetad
           jobKey: record.jobKey,
           lane: spec.lane,
           mode: spec.mode,
-          task: spec.task,
           execution: "foreground",
           status: "pending",
           startedAt: event.timestamp,
@@ -240,20 +261,23 @@ async function readJobs(home: string): Promise<ListedJobStatus[]> {
   for (const persisted of statuses) {
     const authoritative = runMetadata.get(persisted.jobId);
     const conflict = authoritative !== undefined && authoritative.status !== persisted.status;
+    const persistedMetadata = jobStatusMetadata(persisted);
+    const { finishedAt: _persistedFinishedAt, ...activePersistedMetadata } =
+      persistedMetadata;
     const status: RunJobMetadata = conflict
       ? {
-          ...Object.fromEntries(
-            Object.entries(persisted).filter(
-              ([key]) => key !== "result" && key !== "error" && key !== "finishedAt",
-            ),
-          ),
+          ...activePersistedMetadata,
           ...authoritative,
           execution: persisted.execution,
           startedAt: persisted.startedAt,
         } as RunJobMetadata
       : {
+          ...(authoritative?.status === "pending" || authoritative?.status === "running"
+            ? activePersistedMetadata
+            : persistedMetadata),
           ...authoritative,
-          ...persisted,
+          execution: persisted.execution,
+          startedAt: persisted.startedAt,
           status: authoritative?.status ?? persisted.status,
         };
     let observedStatus: ObservedJobStatus = conflict ? "conflict" : status.status;
@@ -270,7 +294,7 @@ async function readJobs(home: string): Promise<ListedJobStatus[]> {
       }
     }
     listed.push({
-      ...status,
+      ...jobStatusMetadata(status),
       ...(conflict ? { persistedStatus: persisted.status } : {}),
       observedStatus,
     });
@@ -294,7 +318,7 @@ async function jobsCommand(
   }
   for (const job of jobs) {
     io.stdout(
-      `${job.jobId}\t${job.runId ?? "-"}\t${job.jobKey ?? "-"}\t${job.lane ?? "-"}\t${job.mode ?? "-"}\t${job.pid ?? "-"}\t${job.execution}\t${job.observedStatus}\t${job.startedAt}\trunner=${job.runnerId ?? "-"}\tmodel=${job.model ?? "-"}\tprovider=${job.provider ?? "-"}\tphase=${job.phase ?? "-"}\tprogress=${job.lastProgressAt ?? "-"}\ttask=${JSON.stringify(job.task ?? "")}`,
+      `${job.jobId}\t${job.runId ?? "-"}\t${job.jobKey ?? "-"}\t${job.lane ?? "-"}\t${job.mode ?? "-"}\t${job.pid ?? "-"}\t${job.execution}\t${job.observedStatus}\t${job.startedAt}\trunner=${job.runnerId ?? "-"}\tmodel=${job.model ?? "-"}\tprovider=${job.provider ?? "-"}\tphase=${job.phase ?? "-"}\tprogress=${job.lastProgressAt ?? "-"}`,
     );
   }
   return 0;
