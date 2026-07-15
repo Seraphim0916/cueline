@@ -1,3 +1,4 @@
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -140,7 +141,7 @@ function routingInstruction(
         .map((candidate) => candidate.id);
       return `${name} [${candidates.length > 0 ? candidates.join(", ") : "unavailable"}]`;
     });
-  return `Available routing lanes: ${lanes.join("; ")}. Use only a listed lane. Select an optional candidate with the field runner; never use runner_id or place a runner ID in lane.`;
+  return `Available routing lanes: ${lanes.join("; ")}. Use only a listed lane. Select an optional candidate with the field runner; never use runner_id or place a runner ID in lane. If you provide workdir, it must be an absolute path; omit it to use the workspace bound by the local runtime.`;
 }
 
 async function prepareRuntime(
@@ -150,7 +151,8 @@ async function prepareRuntime(
 ): Promise<PreparedRuntime> {
   const environment = options.environment ?? runtimeEnvironment();
   const home = options.home ?? defaultCueLineHome(environment);
-  const cwd = options.cwd ?? runtimeCwd();
+  const cwd = path.resolve(options.cwd ?? runtimeCwd());
+  const executor = persistedExecutor ?? options.executor ?? "caller";
   const config = await resolvedRoutingConfig(options, environment);
   const availability = executableAvailability(environment, cwd);
   const registry = registryFor(config);
@@ -171,6 +173,15 @@ async function prepareRuntime(
     jobSupervisor,
     validateJobSpec(job) {
       validateRouteReference(job.lane, config, job.runner);
+      if (executor === "process") {
+        if (job.workdir !== undefined && !path.isAbsolute(job.workdir)) {
+          throw new CueLineError(
+            "PROCESS_WORKDIR_ABSOLUTE_REQUIRED",
+            "Process jobs must use an absolute workdir; omit workdir to bind the run's current workspace.",
+          );
+        }
+        job.workdir = path.resolve(job.workdir ?? cwd);
+      }
     },
     resolveRunnerSpec(jobId, job) {
       const route = resolveRoute(job.lane, config, availability, job.runner);
@@ -182,7 +193,7 @@ async function prepareRuntime(
       });
     },
     controllerInstructions: [
-      routingInstruction(config, availability, persistedExecutor ?? options.executor ?? "caller"),
+      routingInstruction(config, availability, executor),
     ],
     ...(conversationUrl === undefined ? {} : { conversationUrl }),
     home,

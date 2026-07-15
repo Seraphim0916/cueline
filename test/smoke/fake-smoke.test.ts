@@ -78,6 +78,7 @@ test("process execution requires the executor selection and a second explicit au
 
 test("public API drives browser, routing, process execution, persistence, and final delivery", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "cueline-smoke-"));
+  const workspace = await mkdtemp(path.join(tmpdir(), "cueline-smoke-workspace-"));
   const environment = { ...process.env };
   delete environment.CUELINE_DEPTH;
   const routingConfig: RoutingConfig = {
@@ -127,6 +128,7 @@ test("public API drives browser, routing, process execution, persistence, and fi
     request: "Run the standalone smoke",
     runId: "run_public_smoke",
     home,
+    cwd: workspace,
     browser,
     routingConfig,
     environment,
@@ -135,17 +137,18 @@ test("public API drives browser, routing, process execution, persistence, and fi
   assert.equal(result.status, "complete");
   assert.equal(result.finalDeliveryText, "CUELINE_SMOKE_OK");
   const completedJob = Object.values(result.state.jobs)[0];
+  assert.equal(completedJob?.spec.workdir, workspace);
   assert.equal(completedJob?.runtime?.runnerId, "node-smoke");
   assert.equal(completedJob?.runtime?.model, "smoke-model");
   assert.equal(completedJob?.runtime?.provider, "local-test");
   assert.equal(completedJob?.runtime?.phase, "completed");
   assert.equal(typeof completedJob?.runtime?.pid, "number");
-  assert.equal(
-    (await readEvents(path.join(home, "runs", result.runId, "events.jsonl"))).some(
-      (event) => event.type === "run_completed",
-    ),
-    true,
-  );
+  const events = await readEvents(path.join(home, "runs", result.runId, "events.jsonl"));
+  assert.equal(events.some((event) => event.type === "run_completed"), true);
+  const accepted = events.find((event) => event.type === "controller_command_accepted");
+  const command = (accepted?.payload as { command?: { jobs?: Array<{ workdir?: string }> } })
+    .command;
+  assert.equal(command?.jobs?.[0]?.workdir, workspace);
 
   const replayed = await continueCueLineRun({
     runId: result.runId,
@@ -154,6 +157,67 @@ test("public API drives browser, routing, process execution, persistence, and fi
   });
   assert.equal(replayed.status, "complete");
   assert.equal(replayed.finalDeliveryText, "CUELINE_SMOKE_OK");
+});
+
+test("public process execution rejects a relative controller workdir before registration", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-relative-workdir-"));
+  const workspace = await mkdtemp(path.join(tmpdir(), "cueline-relative-workspace-"));
+  const environment = { ...process.env };
+  delete environment.CUELINE_DEPTH;
+  let repairPrompt = "";
+  const browser = new FakeBrowserAdapter([
+    reply((input) => {
+      assert.match(input.prompt, /workdir.*absolute path/i);
+      return {
+        action: "dispatch",
+        jobs: [
+          {
+            job_key: "relative",
+            lane: "smoke",
+            mode: "advise",
+            task: "Never run from an ambiguous relative directory",
+            workdir: ".",
+          },
+        ],
+      };
+    }),
+    reply((input) => {
+      repairPrompt = input.prompt;
+      return { action: "complete", final_delivery_text: "RELATIVE_REPAIRED" };
+    }),
+  ]);
+
+  const result = await runCueLine({
+    executor: "process",
+    allowProcessExecution: true,
+    request: "Reject ambiguous process workdirs",
+    runId: "run_relative_process_workdir",
+    home,
+    cwd: workspace,
+    browser,
+    environment,
+    routingConfig: {
+      version: 1,
+      lanes: {
+        smoke: {
+          enabled: true,
+          candidates: [
+            {
+              id: "node-smoke",
+              argv: [process.execPath, "-e", "process.stdin.resume()"],
+              task_input: "stdin",
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "RELATIVE_REPAIRED");
+  assert.match(repairPrompt, /PROCESS_WORKDIR_ABSOLUTE_REQUIRED/);
+  assert.equal(Object.keys(result.state.jobs).length, 0);
+  assert.equal(browser.calls[1]?.repairAttempt, 1);
 });
 
 test("public API rejects a nested CueLine run before contacting the controller", async () => {
