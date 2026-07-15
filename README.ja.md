@@ -169,6 +169,9 @@ caller_ready	yes
 caller_lanes	1
 process_available_lanes	1
 
+$ cueline doctor --json
+{"version":"0.1.6","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
+
 $ cueline api path
 /usr/local/lib/node_modules/cueline/dist/src/api.js
 
