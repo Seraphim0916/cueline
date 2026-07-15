@@ -406,13 +406,17 @@ test("ignores a hidden residual Stop answering button after the Pro response com
   }
 });
 
-test("recognizes a visible actionable Stop answering button while Pro is still responding", async () => {
+test("recognizes localized visible stop-answering controls without matching unrelated stops", async () => {
+  let ariaLabel = "Stop answering";
+  let buttonText = "Stop answering";
   const stopButton = {
     disabled: false,
     hidden: false,
-    textContent: "Stop answering",
+    get textContent() {
+      return buttonText;
+    },
     getAttribute(name: string) {
-      if (name === "aria-label") return "Stop answering";
+      if (name === "aria-label") return ariaLabel;
       return null;
     },
     closest() {
@@ -459,8 +463,37 @@ test("recognizes a visible actionable Stop answering button while Pro is still r
   } as unknown as IabTab;
 
   try {
-    const state = await readPageChatState(tab);
-    assert.equal(state.isAnswering, true);
+    for (const label of [
+      "Stop answering",
+      "Stop generating",
+      "Stop response",
+      "停止產生",
+      "停止回答",
+      "停止回覆",
+      "停止作答",
+      "停止生成",
+      "回答の生成を停止",
+      "生成を停止する",
+      "応答を停止",
+      "생성 중지",
+      "답변 중지",
+      "응답 중지",
+    ]) {
+      ariaLabel = label;
+      buttonText = label;
+      assert.equal((await readPageChatState(tab)).isAnswering, true, label);
+    }
+    for (const label of ["Stop sharing", "停止錄音", "共有を停止", "녹음 중지"]) {
+      ariaLabel = label;
+      buttonText = label;
+      assert.equal((await readPageChatState(tab)).isAnswering, false, label);
+    }
+    ariaLabel = "Stop sharing";
+    buttonText = "Generating preview";
+    assert.equal((await readPageChatState(tab)).isAnswering, false, "cross-field tokens");
+    ariaLabel = "   ";
+    buttonText = "Stop answering";
+    assert.equal((await readPageChatState(tab)).isAnswering, true, "visible-text fallback");
   } finally {
     for (const [name, descriptor] of [
       ["document", documentDescriptor],
