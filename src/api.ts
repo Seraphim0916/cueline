@@ -35,6 +35,7 @@ import {
   loadPersistedRunStore,
 } from "./core/persisted-run.js";
 import { runtimeCwd, runtimeEnvironment } from "./core/runtime.js";
+import { validatedTimerDelay } from "./core/timing.js";
 import {
   assertRunCanContinue,
   isSafeStaleCallerObservationRecovery,
@@ -192,6 +193,14 @@ async function prepareRuntime(
   };
 }
 
+function validateDefaultProcessTimeout(options: CueLineRuntimeOptions): void {
+  if (options.defaultTimeoutMs === undefined) return;
+  validatedTimerDelay(options.defaultTimeoutMs, {
+    code: "PROCESS_TIMEOUT_INVALID",
+    name: "defaultTimeoutMs",
+  });
+}
+
 export async function startCueLineRun(
   options: StartCueLineRunOptions,
 ): Promise<CueLineResult> {
@@ -212,6 +221,7 @@ export async function startCueLineRun(
 export async function runCueLine(options: StartCueLineRunOptions): Promise<CueLineResult> {
   assertNotNested(options.environment ?? runtimeEnvironment());
   validateControllerRuntimeOptions(options);
+  validateDefaultProcessTimeout(options);
   const runtime = await prepareRuntime(options);
   return runControllerLoop({
     request: options.request,
@@ -271,6 +281,7 @@ export async function continueCueLineRun(
   if (options.manualSendConfirmed === true) {
     assertNotNested(environment);
     validateControllerRuntimeOptions(options);
+    validateDefaultProcessTimeout(options);
     if (options.executor !== undefined && options.executor !== state.executor) {
       throw new CueLineError(
         "RUN_EXECUTOR_MISMATCH",
@@ -393,6 +404,8 @@ export async function continueCueLineRun(
         "Continuing a process run requires allowProcessExecution=true in addition to its persisted authorization.",
       );
     }
+    validateControllerRuntimeOptions(options);
+    validateDefaultProcessTimeout(options);
     preparedRuntime = await prepareRuntime(
       options,
       state.conversationUrl ?? undefined,

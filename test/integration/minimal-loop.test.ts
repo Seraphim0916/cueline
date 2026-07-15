@@ -28,6 +28,7 @@ import { jobId } from "../../src/core/ids.js";
 import {
   continueControllerLoop as continueControllerLoopRaw,
   runControllerLoop as runControllerLoopRaw,
+  validateControllerRuntimeOptions,
 } from "../../src/core/controller-loop.js";
 import { observationFor } from "../../src/core/controller-turn.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
@@ -1910,6 +1911,38 @@ test("job cancellation remains pending until a supervisor accepts it", async () 
   assert.equal(attempts, 2);
 });
 
+test("cancellation polling rejects timer values that would spin or overflow", () => {
+  for (const intervalMs of [0, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+    assert.throws(
+      () =>
+        new CancellationWatcher({
+          home: "/tmp/cueline-invalid-cancellation-timer",
+          runId: "run_invalid_cancellation_timer",
+          intervalMs,
+          onRun() {},
+          onJob() {},
+          onError() {},
+        }),
+      (error: unknown) =>
+        error instanceof CueLineError &&
+        error.code === "CANCELLATION_POLL_INTERVAL_INVALID",
+      String(intervalMs),
+    );
+  }
+});
+
+test("controller runtime rejects an invalid heartbeat interval before ownership", () => {
+  assert.throws(
+    () =>
+      validateControllerRuntimeOptions({
+        runtimeHeartbeatIntervalMs: 0,
+      }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "RUNTIME_HEARTBEAT_INTERVAL_INVALID",
+  );
+});
+
 test("a failed run with a live owner cannot be continued by another session", async () => {
   const runId = "run_failed_but_owned";
   const stateHome = await home();
@@ -3252,6 +3285,21 @@ test("public continuation preflights deterministic failures before manual confir
       suffix: "invalid_limit",
       code: "MAX_CONCURRENCY_INVALID",
       overrides: { maxConcurrency: 0 },
+    },
+    {
+      suffix: "invalid_cancellation_poll",
+      code: "CANCELLATION_POLL_INTERVAL_INVALID",
+      overrides: { cancellationPollIntervalMs: 0 },
+    },
+    {
+      suffix: "overflowing_run_timeout",
+      code: "RUN_TIMEOUT_INVALID",
+      overrides: { runTimeoutMs: 2_147_483_648 },
+    },
+    {
+      suffix: "invalid_process_timeout",
+      code: "PROCESS_TIMEOUT_INVALID",
+      overrides: { defaultTimeoutMs: 0 },
     },
     {
       suffix: "nested",

@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { CueLineError } from "../core/errors.js";
+import { validatedTimerDelay } from "../core/timing.js";
 import { atomicWriteJson } from "./atomic-write.js";
 import { runPaths } from "./paths.js";
 
@@ -208,8 +209,14 @@ export class CancellationWatcher {
   #sawRun = false;
   #timer: NodeJS.Timeout | undefined;
   #pollChain: Promise<void> = Promise.resolve();
+  readonly #intervalMs: number;
 
-  constructor(private readonly options: CancellationWatcherOptions) {}
+  constructor(private readonly options: CancellationWatcherOptions) {
+    this.#intervalMs = validatedTimerDelay(options.intervalMs ?? 250, {
+      code: "CANCELLATION_POLL_INTERVAL_INVALID",
+      name: "cancellation poll interval",
+    });
+  }
 
   start(): void {
     if (this.#timer !== undefined) return;
@@ -219,7 +226,7 @@ export class CancellationWatcher {
       });
     };
     schedule();
-    this.#timer = setInterval(schedule, this.options.intervalMs ?? 250);
+    this.#timer = setInterval(schedule, this.#intervalMs);
     this.#timer.unref();
   }
 

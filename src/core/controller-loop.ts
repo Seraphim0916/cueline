@@ -30,6 +30,7 @@ import type {
 } from "./controller-types.js";
 import { asCueLineError, CueLineError } from "./errors.js";
 import { commandHash, messageId, runId as createRunId } from "./ids.js";
+import { validatedTimerDelay } from "./timing.js";
 import {
   assertRunCanContinue,
   isSafeStaleCallerObservationRecovery,
@@ -312,6 +313,8 @@ type ControllerRuntimeLimitOptions = Pick<
   | "maxRounds"
   | "maxRepairAttempts"
   | "runTimeoutMs"
+  | "cancellationPollIntervalMs"
+  | "runtimeHeartbeatIntervalMs"
   | "maxConcurrency"
   | "laneConcurrency"
 >;
@@ -328,11 +331,23 @@ export function validateControllerRuntimeOptions(options: ControllerRuntimeLimit
       "maxRepairAttempts must be a non-negative integer.",
     );
   }
-  if (
-    options.runTimeoutMs !== undefined &&
-    (!Number.isSafeInteger(options.runTimeoutMs) || options.runTimeoutMs < 1)
-  ) {
-    throw new CueLineError("RUN_TIMEOUT_INVALID", "runTimeoutMs must be a positive integer.");
+  if (options.runTimeoutMs !== undefined) {
+    validatedTimerDelay(options.runTimeoutMs, {
+      code: "RUN_TIMEOUT_INVALID",
+      name: "runTimeoutMs",
+    });
+  }
+  if (options.cancellationPollIntervalMs !== undefined) {
+    validatedTimerDelay(options.cancellationPollIntervalMs, {
+      code: "CANCELLATION_POLL_INTERVAL_INVALID",
+      name: "cancellationPollIntervalMs",
+    });
+  }
+  if (options.runtimeHeartbeatIntervalMs !== undefined) {
+    validatedTimerDelay(options.runtimeHeartbeatIntervalMs, {
+      code: "RUNTIME_HEARTBEAT_INTERVAL_INVALID",
+      name: "runtimeHeartbeatIntervalMs",
+    });
   }
   const maxConcurrency = options.maxConcurrency ?? 2;
   if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {

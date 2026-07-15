@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 import { CueLineError } from "../core/errors.js";
 import { runtimeEnvironment, runtimePlatform } from "../core/runtime.js";
+import { validatedTimerDelay } from "../core/timing.js";
 import type {
   JobResult,
   RunnerAdapter,
@@ -154,11 +155,10 @@ export class ProcessRunner implements RunnerAdapter {
     if (this.#environment.CUELINE_DEPTH !== undefined || spec.env?.CUELINE_DEPTH !== undefined) {
       throw new CueLineError("NESTED_ROUTING_REJECTED", "nested CueLine routing is not allowed");
     }
-    if (!Number.isFinite(spec.timeoutMs) || spec.timeoutMs <= 0) {
-      throw new CueLineError("PROCESS_TIMEOUT_INVALID", "process timeout must be a positive finite number", {
-        details: { timeoutMs: spec.timeoutMs },
-      });
-    }
+    validatedTimerDelay(spec.timeoutMs, {
+      code: "PROCESS_TIMEOUT_INVALID",
+      name: "process timeout",
+    });
 
     const registered = this.registry.requireArgv(spec.argv);
     const executable = spec.argv[0];
