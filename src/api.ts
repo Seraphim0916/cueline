@@ -414,6 +414,7 @@ export {
   takeoverCueLineRuntime,
 } from "./api-runtime-lifecycle.js";
 export { createCodexIabAdapter };
+export { lintControllerCommandText } from "./protocol/lint-command.js";
 export { CUELINE_VERSION } from "./version.js";
 export type {
   ContinueCueLineRunOptions,
@@ -433,6 +434,13 @@ export type {
   ManualControllerSubmissionConfirmation,
   StartCueLineRunOptions,
 } from "./api-contracts.js";
+export type {
+  CueLineProtocolLintIssue,
+  CueLineProtocolLintOptions,
+  CueLineProtocolLintResult,
+  CueLineProtocolLintRouting,
+  CueLineProtocolLintSeverity,
+} from "./protocol/lint-command.js";
 export type {
   BrowserAdapter,
   CueLineResult,

@@ -196,6 +196,57 @@ test("routing reports the pre-spawn resolved candidate", async () => {
   assert.match(result.stdout, /^default\s+node\s+available$/m);
 });
 
+test("protocol lint catches legacy Pro fields without touching run state", async () => {
+  const context = await fixture();
+  const response = path.join(path.dirname(context.config), "controller-response.txt");
+  await writeFile(
+    response,
+    `<CueLineControl>${JSON.stringify({
+      protocol: "cueline/0.1",
+      run_id: "run_cli_lint",
+      round: 1,
+      request_id: "msg_cli_lint",
+      action: "dispatch",
+      jobs: [
+        {
+          job_key: "audit",
+          lane: "node",
+          mode: "advise",
+          prompt: "Inspect",
+          runner_id: "node",
+        },
+      ],
+    })}</CueLineControl>`,
+    "utf8",
+  );
+
+  const result = invoke(
+    [
+      "protocol",
+      "lint",
+      response,
+      "--run-id",
+      "run_cli_lint",
+      "--round",
+      "1",
+      "--request-id",
+      "msg_cli_lint",
+      "--json",
+    ],
+    context.environment,
+  );
+
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout) as {
+    valid: boolean;
+    issues: Array<{ code: string }>;
+  };
+  assert.equal(report.valid, false);
+  assert.ok(report.issues.some((issue) => issue.code === "LEGACY_PROMPT_FIELD"));
+  assert.ok(report.issues.some((issue) => issue.code === "LEGACY_RUNNER_ID_FIELD"));
+  assert.ok(report.issues.some((issue) => issue.code === "RUNNER_USED_AS_LANE"));
+});
+
 test("doctor reports caller and process readiness separately", async () => {
   const context = await fixture();
   const result = invoke(["doctor"], context.environment);
