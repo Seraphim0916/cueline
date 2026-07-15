@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, readlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -836,6 +836,31 @@ test("jobs keeps authoritative terminal run evidence when a retired owner writes
   assert.equal(jobs[0]?.persistedStatus, "succeeded");
   assert.equal(jobs[0]?.result, undefined);
   assert.doesNotMatch(result.stdout, /LATE_OLD_OWNER/);
+});
+
+test("jobs discovers an immutable terminal anchor when the replaceable status file is missing", async () => {
+  const context = await fixture();
+  const statusStore = new JobStatusStore(context.home);
+  await statusStore.write({
+    jobId: "job_terminal_anchor_only",
+    runId: "run_terminal_anchor_only",
+    jobKey: "terminal_anchor_only",
+    execution: "foreground",
+    status: "failed",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    error: "DURABLE_TERMINAL_ANCHOR",
+  });
+  await unlink(statusStore.pathFor("job_terminal_anchor_only"));
+
+  const result = invoke(["jobs", "--json"], context.environment);
+  assert.equal(result.status, 0, result.stderr);
+  const jobs = JSON.parse(result.stdout) as Array<Record<string, unknown>>;
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.jobId, "job_terminal_anchor_only");
+  assert.equal(jobs[0]?.status, "failed");
+  assert.equal(jobs[0]?.observedStatus, "failed");
+  assert.equal(jobs[0]?.error, "DURABLE_TERMINAL_ANCHOR");
 });
 
 test("install and uninstall manage the Codex skill link idempotently", async () => {

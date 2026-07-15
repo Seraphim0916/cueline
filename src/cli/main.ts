@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readdir, readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -15,7 +15,7 @@ import {
   takeoverCueLineRuntime,
 } from "../api.js";
 import { CueLineError } from "../core/errors.js";
-import type { JobStatus } from "../jobs/status.js";
+import { JobStatusStore, type JobStatus } from "../jobs/status.js";
 import { executableAvailability } from "../router/availability.js";
 import { loadRoutingConfig } from "../router/config-loader.js";
 import { resolveRoute } from "../router/resolver.js";
@@ -229,12 +229,19 @@ async function readJobs(home: string): Promise<ListedJobStatus[]> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") names = [];
     else throw error;
   }
+  const statusStore = new JobStatusStore(home);
   const statuses: JobStatus[] = [];
-  for (const name of names.filter((candidate) => candidate.endsWith(".json")).sort()) {
+  const jobIds = new Set<string>();
+  for (const name of names) {
+    if (name.endsWith(".json")) jobIds.add(name.slice(0, -".json".length));
+    if (name.endsWith(".terminal")) jobIds.add(name.slice(0, -".terminal".length));
+  }
+  for (const jobId of [...jobIds].sort()) {
     try {
-      statuses.push(JSON.parse(await readFile(path.join(directory, name), "utf8")) as JobStatus);
+      const status = await statusStore.read(jobId);
+      if (status !== undefined) statuses.push(status);
     } catch (error) {
-      throw new CueLineError("JOB_STATUS_INVALID", `unable to parse job status: ${name}`, {
+      throw new CueLineError("JOB_STATUS_INVALID", `unable to parse job status: ${jobId}`, {
         cause: error,
       });
     }
