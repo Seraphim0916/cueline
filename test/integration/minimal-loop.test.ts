@@ -29,7 +29,10 @@ import {
   continueControllerLoop as continueControllerLoopRaw,
   runControllerLoop as runControllerLoopRaw,
 } from "../../src/core/controller-loop.js";
-import { observationFor } from "../../src/core/controller-turn.js";
+import {
+  observationFor,
+  requestControllerCommand,
+} from "../../src/core/controller-turn.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
 import { CUELINE_PROTOCOL, type ControllerJobSpec } from "../../src/protocol/types.js";
 import { JobStatusStore, type JobStatus } from "../../src/jobs/status.js";
@@ -4105,6 +4108,58 @@ test("controller evidence budget is global across multiple large jobs", async ()
   });
 
   assert.equal(result.finalDeliveryText, "GLOBAL_BUDGET_OK");
+});
+
+test("controller prompt bounds accumulated notices and keeps the newest evidence", async () => {
+  const runId = "run_bounded_controller_notices";
+  const requestId = "msg_bounded_controller_notices";
+  const spec = {
+    job_key: "large_result",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Return a large local report",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const state = initialRunState(runId, "Review bounded notices");
+  state.jobs[id] = {
+    jobId: id,
+    jobKey: spec.job_key,
+    required: true,
+    spec,
+    status: "succeeded",
+    output: `LARGE_RESULT\n${"R".repeat(30_000)}`,
+    error: null,
+  };
+  state.notices = Array.from(
+    { length: 20 },
+    (_, index) => `NOTICE_${String(index + 1).padStart(2, "0")}_${"N".repeat(600)}`,
+  );
+  const store = await RunStore.create({
+    home: await home(),
+    runId,
+    initialState: state,
+    reducer: reduceRunState,
+  });
+  const browser = new FakeBrowserAdapter([
+    reply((input) => {
+      assert.ok(input.prompt.length < 20_000, `prompt was ${input.prompt.length} chars`);
+      assert.match(input.prompt, /NOTICE_20_/);
+      assert.doesNotMatch(input.prompt, /NOTICE_01_/);
+      assert.match(input.prompt, /controller notices truncated or omitted/);
+      return { action: "complete", final_delivery_text: "NOTICE_BUDGET_OK" };
+    }),
+  ]);
+
+  const command = await requestControllerCommand(
+    store,
+    browser,
+    observationFor(state, 1, requestId),
+    { runId, round: 1, requestId },
+    0,
+    [],
+  );
+
+  assert.equal(command?.action, "complete");
 });
 
 test("caller inspect prioritizes every requested job before unrelated successful output", () => {

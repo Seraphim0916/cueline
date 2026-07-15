@@ -22,6 +22,7 @@ import {
 } from "./state-machine.js";
 
 const MAX_CONTROLLER_EVIDENCE_CHARS = 12_000;
+const MAX_CONTROLLER_NOTICE_CHARS = 2_000;
 
 export function truncate(value: string, maximum = MAX_CONTROLLER_EVIDENCE_CHARS): string {
   if (value.length <= maximum) return value;
@@ -220,7 +221,20 @@ export function observationFor(
     });
   }
   const jobs = sourceJobs.map((job) => boundedJobs.get(job.job_id)!);
-  const notices = state.notices.slice(-20).map((notice) => truncate(notice, 500));
+  const noticeBudget = {
+    value: MAX_CONTROLLER_NOTICE_CHARS,
+    omittedChars: 0,
+  };
+  const notices: string[] = [];
+  for (const notice of state.notices.slice(-20).reverse()) {
+    const bounded = takeBoundedEvidence(truncate(notice, 500), noticeBudget);
+    if (bounded !== undefined) notices.unshift(bounded);
+  }
+  if (noticeBudget.omittedChars > 0) {
+    notices.push(
+      `[controller notices truncated or omitted: ${noticeBudget.omittedChars} chars exceeded the ${MAX_CONTROLLER_NOTICE_CHARS}-char notice budget]`,
+    );
+  }
   if (remaining.omittedChars > 0) {
     notices.push(
       `[controller evidence truncated or omitted: ${remaining.omittedChars} chars exceeded the global ${MAX_CONTROLLER_EVIDENCE_CHARS}-char budget]`,
