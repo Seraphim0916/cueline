@@ -9,11 +9,13 @@ import {
   cancelCueLineJob,
   cancelCueLineRun,
   confirmManualControllerSubmission,
+  createCueLineRunHandoff,
   loadCueLineRunStatus,
   reconcileCueLineRuntime,
   routingConfigPath,
   takeoverCueLineRuntime,
 } from "../api.js";
+import { renderCueLineRunHandoffMarkdown } from "../observation/run-handoff.js";
 import { CueLineError } from "../core/errors.js";
 import type { JobStatus } from "../jobs/status.js";
 import { executableAvailability } from "../router/availability.js";
@@ -36,7 +38,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run handoff|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -52,6 +54,7 @@ function help(): string {
     "  routing        list every lane and the candidate that would be selected",
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
     "  run status     summarize one persisted run for safe cross-session handoff",
+    "  run handoff    emit a restart packet with exact paths and safe next action",
     "  run reconcile  confirm one manually sent controller turn; never resends it",
     "  run takeover   explicitly retire one exact stale runtime owner",
     "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
@@ -70,6 +73,7 @@ function help(): string {
     "  cueline routing",
     "  cueline jobs [--json]",
     "  cueline run status <run-id> [--json]",
+    "  cueline run handoff <run-id> [--include-content] [--max-content-chars <16..10000>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
     "  cueline run takeover <run-id> [--json]",
     "  cueline run reconcile-runtime <run-id> [--json]",
@@ -95,7 +99,7 @@ function help(): string {
     "  2  the arguments were not understood",
     "",
     "state effects:",
-    "  Read-only: doctor, routing, jobs, run status, api path, config path, help, version.",
+    "  Read-only: doctor, routing, jobs, run status, run handoff, api path, config path, help, version.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
@@ -359,6 +363,23 @@ async function runStatusCommand(
   return 0;
 }
 
+async function runHandoffCommand(
+  runId: string,
+  includeContent: boolean,
+  maxContentChars: number | undefined,
+  jsonOutput: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const packet = await createCueLineRunHandoff(runId, {
+    environment,
+    ...(includeContent ? { includeContent: true } : {}),
+    ...(maxContentChars === undefined ? {} : { maxContentChars }),
+  });
+  io.stdout(jsonOutput ? JSON.stringify(packet, null, 2) : renderCueLineRunHandoffMarkdown(packet));
+  return 0;
+}
+
 async function doctorCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promise<number> {
   const configPath = routingConfigPath(environment);
   const home = defaultCueLineHome(environment);
@@ -517,6 +538,54 @@ export async function main(
       if (json) io.stdout(JSON.stringify(result, null, 2));
       else io.stdout(`${result.runId}\t${result.requestId}\t${result.outcome}\tno_resend`);
       return 0;
+    }
+    if (
+      args[0] === "run" &&
+      args[1] === "handoff" &&
+      typeof args[2] === "string"
+    ) {
+      let includeContent = false;
+      let maxContentChars: number | undefined;
+      let json = false;
+      let valid = true;
+      for (let index = 3; index < args.length; index += 1) {
+        const argument = args[index];
+        if (argument === "--include-content" && !includeContent) {
+          includeContent = true;
+        } else if (
+          argument === "--max-content-chars" &&
+          maxContentChars === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          maxContentChars = Number(args[index + 1]);
+          index += 1;
+        } else if (argument === "--json" && !json) {
+          json = true;
+        } else {
+          valid = false;
+        }
+      }
+      if (
+        !valid ||
+        (maxContentChars !== undefined && !includeContent) ||
+        (maxContentChars !== undefined &&
+          (!Number.isSafeInteger(maxContentChars) ||
+            maxContentChars < 16 ||
+            maxContentChars > 10_000))
+      ) {
+        throw new CueLineError(
+          "CLI_ARGUMENTS_INVALID",
+          "usage: cueline run handoff <run-id> [--include-content] [--max-content-chars <16..10000>] [--json]",
+        );
+      }
+      return runHandoffCommand(
+        args[2],
+        includeContent,
+        maxContentChars,
+        json,
+        environment,
+        io,
+      );
     }
     if (
       args[0] === "run" &&

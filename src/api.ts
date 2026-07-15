@@ -414,6 +414,11 @@ export {
   takeoverCueLineRuntime,
 } from "./api-runtime-lifecycle.js";
 export { createCodexIabAdapter };
+export {
+  buildCueLineRunHandoff,
+  createCueLineRunHandoff,
+  renderCueLineRunHandoffMarkdown,
+} from "./observation/run-handoff.js";
 export { CUELINE_VERSION } from "./version.js";
 export type {
   ContinueCueLineRunOptions,
@@ -433,6 +438,12 @@ export type {
   ManualControllerSubmissionConfirmation,
   StartCueLineRunOptions,
 } from "./api-contracts.js";
+export type {
+  CueLineRunHandoffBuildOptions,
+  CueLineRunHandoffContent,
+  CueLineRunHandoffOptions,
+  CueLineRunHandoffPacket,
+} from "./observation/run-handoff.js";
 export type {
   BrowserAdapter,
   CueLineResult,

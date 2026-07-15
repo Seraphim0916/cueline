@@ -303,6 +303,43 @@ test("run status refuses to call a legacy running run active without ownership e
   assert.match(humanResult.stdout, /next\s+inspect_runtime/);
 });
 
+test("run handoff emits exact paths without changing durable state", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  const before = await readEvents(runPaths(context.home, runId).events);
+
+  const result = invoke(["run", "handoff", runId, "--json"], context.environment);
+
+  assert.equal(result.status, 0, result.stderr);
+  const packet = JSON.parse(result.stdout) as {
+    schema: string;
+    run: { runId: string; eventSequence: number };
+    paths: { runDir: string; events: string };
+    content?: unknown;
+  };
+  assert.equal(packet.schema, "cueline-handoff/0.1");
+  assert.equal(packet.run.runId, runId);
+  assert.equal(packet.run.eventSequence, 12);
+  assert.equal(packet.paths.runDir, runPaths(context.home, runId).runDir);
+  assert.equal(packet.paths.events, runPaths(context.home, runId).events);
+  assert.equal(packet.content, undefined);
+  const after = await readEvents(runPaths(context.home, runId).events);
+  assert.deepEqual(after, before);
+});
+
+test("run handoff rejects a content limit when content is not enabled", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+
+  const result = invoke(
+    ["run", "handoff", runId, "--max-content-chars", "100"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /CLI_ARGUMENTS_INVALID/);
+});
+
 test("run reconcile records operator-confirmed manual submission without resending", async () => {
   const context = await fixture();
   const runId = "run_cli_manual_reconcile";
