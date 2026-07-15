@@ -131,7 +131,7 @@ while (["awaiting_controller", "awaiting_caller", "awaiting_caller_work"].includ
       const claim = await claimCueLineCallerJob(result.runId, job.jobId, { callerId: "stable-codex-task-identity" });
       const proof = { claimId: claim.claimId, callerId: claim.callerId, fencingToken: claim.fencingToken };
       await startCueLineCallerJob(result.runId, job.jobId, proof);
-      const stdout = await executeExactLocalWork(job.spec.task, claim.workdir, {
+      const stdout = await executeExactLocalWork(job.spec.task, claim.resolvedWorkdir, {
         heartbeat: () => heartbeatCueLineCallerJob(result.runId, job.jobId, proof),
       });
       await submitCueLineCallerJobResult(result.runId, job.jobId, { status: "succeeded", stdout }, { claim: proof });

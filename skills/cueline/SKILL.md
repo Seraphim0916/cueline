@@ -76,7 +76,7 @@ When the result is `awaiting_controller`, CueLine has submitted the exact reques
 
 When the result is `awaiting_caller`, execute every pending `advise` task exactly as written using the current Codex's local tools. Advice has no execution claim: coordinate one session, because two sessions could perform the same inspection and only the first submitted terminal evidence wins.
 
-When the result is `awaiting_caller_work`, do not modify anything yet. Read each exact task and absolute `workdir`, then acquire a durable claim with a stable caller identity. A repeated call by that same caller returns the same active claim, which safely recovers an API response lost to a restart. Call `startCueLineCallerJob` immediately before the first local mutation, heartbeat long-running work before expiry, and submit the terminal result with the exact claim proof. A claim may be released only before start. Once started, a lost or expired claim becomes `ambiguous` and must never be automatically retried. Any submitted non-success result after start is also normalized to `ambiguous`; CueLine writes a result-submission intent before the terminal status so a crash between those writes can be recovered without misclassifying completed work.
+When the result is `awaiting_caller_work`, do not modify anything yet. Read each exact task and absolute `workdir`, then acquire a durable claim with a stable caller identity. Execute only in the returned `resolvedWorkdir`: CueLine pins that canonical directory identity and rechecks it at start, so a replaced directory or retargeted symlink cannot redirect authorized work. A repeated call by that same caller returns the same active claim, which safely recovers an API response lost to a restart. Call `startCueLineCallerJob` immediately before the first local mutation, heartbeat long-running work before expiry, and submit the terminal result with the exact claim proof. A claim may be released only before start. Once started, a lost or expired claim becomes `ambiguous` and must never be automatically retried. Any submitted non-success result after start is also normalized to `ambiguous`; CueLine writes a result-submission intent before the terminal status so a crash between those writes can be recovered without misclassifying completed work.
 
 Every result sent back to Pro must name the exact absolute local paths inspected or changed, include the relevant code excerpt or exact error/code identifiers, and distinguish verified facts from unknowns. End the evidence by asking whether Pro needs any additional local code, paths, or runtime evidence; Pro cannot discover them itself. Submit terminal evidence, then continue the same run:
 
@@ -111,7 +111,7 @@ const claimProof = {
 
 // No local mutation is allowed before this durable start succeeds.
 await startCueLineCallerJob(result.runId, job.jobId, claimProof);
-const evidence = await EXECUTE_EXACT_LOCAL_WORK(job.spec.task, claim.workdir, {
+const evidence = await EXECUTE_EXACT_LOCAL_WORK(job.spec.task, claim.resolvedWorkdir, {
   heartbeat: () => heartbeatCueLineCallerJob(result.runId, job.jobId, claimProof),
 });
 await submitCueLineCallerJobResult(

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -15,6 +15,7 @@ import { loadPersistedRunStore } from "./core/persisted-run.js";
 import { runtimeEnvironment } from "./core/runtime.js";
 import type {
   CallerWorkClaim,
+  CallerWorkdirIdentity,
   CueLineRunState,
   StoredJob,
 } from "./core/state-machine.js";
@@ -93,8 +94,15 @@ function callerWorkJob(store: RunStore<CueLineRunState>, jobId: string): StoredJ
   return job;
 }
 
-async function assertWorkdirAvailable(workdir: string): Promise<void> {
-  const metadata = await stat(workdir).catch((error: unknown) => {
+async function inspectWorkdir(workdir: string): Promise<CallerWorkdirIdentity> {
+  const resolvedPath = await realpath(workdir).catch((error: unknown) => {
+    throw new CueLineError(
+      "CALLER_WORKDIR_UNAVAILABLE",
+      `Caller workdir '${workdir}' is unavailable.`,
+      { cause: error },
+    );
+  });
+  const metadata = await stat(resolvedPath).catch((error: unknown) => {
     throw new CueLineError(
       "CALLER_WORKDIR_UNAVAILABLE",
       `Caller workdir '${workdir}' is unavailable.`,
@@ -107,6 +115,45 @@ async function assertWorkdirAvailable(workdir: string): Promise<void> {
       `Caller workdir '${workdir}' is not a directory.`,
     );
   }
+  return {
+    resolvedPath,
+    device: String(metadata.dev),
+    inode: String(metadata.ino),
+  };
+}
+
+function sameWorkdirIdentity(
+  left: CallerWorkdirIdentity,
+  right: CallerWorkdirIdentity,
+): boolean {
+  return (
+    left.resolvedPath === right.resolvedPath &&
+    left.device === right.device &&
+    left.inode === right.inode
+  );
+}
+
+async function assertClaimedWorkdir(claim: CallerWorkClaim): Promise<CallerWorkdirIdentity> {
+  if (claim.workdirIdentity === undefined) {
+    throw new CueLineError(
+      "CALLER_WORKDIR_IDENTITY_REQUIRED",
+      `Caller work claim '${claim.claimId}' predates directory pinning; reclaim it with the same caller before starting local work.`,
+    );
+  }
+  const observed = await inspectWorkdir(claim.workdir);
+  if (!sameWorkdirIdentity(observed, claim.workdirIdentity)) {
+    throw new CueLineError(
+      "CALLER_WORKDIR_IDENTITY_MISMATCH",
+      `Caller workdir '${claim.workdir}' no longer identifies the directory pinned by claim '${claim.claimId}'.`,
+      {
+        details: {
+          expected_resolved_path: claim.workdirIdentity.resolvedPath,
+          observed_resolved_path: observed.resolvedPath,
+        },
+      },
+    );
+  }
+  return observed;
 }
 
 function claimExpired(claim: CallerWorkClaim, now: Date): boolean {
@@ -201,13 +248,14 @@ async function releaseExpiredUnstartedClaim(
   claim: CallerWorkClaim,
   home: string,
   now: Date,
+  reason = "expired_before_start",
 ): Promise<void> {
   await store.append("caller_work_claim_released", {
     job_id: job.jobId,
     claim_id: claim.claimId,
     fencing_token: claim.fencingToken,
     caller_id: claim.callerId,
-    reason: "expired_before_start",
+    reason,
     released_at: now.toISOString(),
   });
   await writeClaimJobStatus(home, store, job, "pending", now.toISOString());
@@ -266,6 +314,7 @@ function claimResult(
     task: job.spec.task,
     taskHash: claim.taskHash,
     workdir: claim.workdir,
+    resolvedWorkdir: claim.workdirIdentity?.resolvedPath ?? claim.workdir,
     claimId: claim.claimId,
     callerId: claim.callerId,
     fencingToken: claim.fencingToken,
@@ -332,19 +381,32 @@ export async function claimCueLineCallerJob(
     if (existing !== null && existing !== undefined) {
       if (!claimExpired(existing, currentTime)) {
         if (existing.callerId === options.callerId) {
-          return claimResult(runId, job, existing, "already_claimed");
+          if (existing.workdirIdentity !== undefined || existing.startedAt !== null) {
+            return claimResult(runId, job, existing, "already_claimed");
+          }
+          await releaseExpiredUnstartedClaim(
+            store,
+            job,
+            existing,
+            home,
+            currentTime,
+            "identity_upgrade_before_start",
+          );
+          job = callerWorkJob(store, jobId);
+        } else {
+          throw new CueLineError(
+            "CALLER_WORK_ALREADY_CLAIMED",
+            `Caller work job '${jobId}' already has an active claim.`,
+            { details: { job_id: jobId, expires_at: existing.expiresAt } },
+          );
         }
-        throw new CueLineError(
-          "CALLER_WORK_ALREADY_CLAIMED",
-          `Caller work job '${jobId}' already has an active claim.`,
-          { details: { job_id: jobId, expires_at: existing.expiresAt } },
-        );
+      } else {
+        if (existing.startedAt !== null) {
+          await markStartedClaimAmbiguous(store, job, existing, home, currentTime);
+        }
+        await releaseExpiredUnstartedClaim(store, job, existing, home, currentTime);
+        job = callerWorkJob(store, jobId);
       }
-      if (existing.startedAt !== null) {
-        await markStartedClaimAmbiguous(store, job, existing, home, currentTime);
-      }
-      await releaseExpiredUnstartedClaim(store, job, existing, home, currentTime);
-      job = callerWorkJob(store, jobId);
     }
     if (job.status !== "pending") {
       throw new CueLineError(
@@ -353,7 +415,7 @@ export async function claimCueLineCallerJob(
       );
     }
     const workdir = job.spec.workdir!;
-    await assertWorkdirAvailable(workdir);
+    const workdirIdentity = await inspectWorkdir(workdir);
     const timestamp = currentTime.toISOString();
     const fencingToken = (job.callerWork?.nextFencingToken ?? 0) + 1;
     const claim: CallerWorkClaim = {
@@ -361,6 +423,7 @@ export async function claimCueLineCallerJob(
       callerId: options.callerId,
       taskHash: jobSpecHash(job.spec),
       workdir,
+      workdirIdentity,
       fencingToken,
       claimedAt: timestamp,
       heartbeatAt: timestamp,
@@ -406,7 +469,7 @@ export async function startCueLineCallerJob(
         expiresAt: claim.expiresAt,
       };
     }
-    await assertWorkdirAvailable(claim.workdir);
+    await assertClaimedWorkdir(claim);
     const timestamp = currentTime.toISOString();
     const expiresAt = expiration(currentTime, claim.ttlMs);
     await store.append("caller_work_started", {
@@ -416,6 +479,9 @@ export async function startCueLineCallerJob(
       fencing_token: claim.fencingToken,
       task_hash: claim.taskHash,
       workdir: claim.workdir,
+      ...(claim.workdirIdentity === undefined
+        ? {}
+        : { workdir_identity: claim.workdirIdentity }),
       started_at: timestamp,
       expires_at: expiresAt,
     });
