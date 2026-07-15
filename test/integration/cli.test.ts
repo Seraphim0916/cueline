@@ -623,6 +623,7 @@ test("run status refuses to call a legacy running run active without ownership e
     jobs: {
       total: number;
       counts: Record<string, number>;
+      items: Array<Record<string, unknown>>;
     };
     continueAllowed: boolean;
     safeNextAction: string;
@@ -645,6 +646,8 @@ test("run status refuses to call a legacy running run active without ownership e
   assert.equal(status.jobs.counts.timed_out, 3);
   assert.equal(status.jobs.counts.running, 0);
   assert.equal(status.jobs.counts.orphaned, 1);
+  assert.equal(status.jobs.items.some((job) => "task" in job), false);
+  assert.doesNotMatch(jsonResult.stdout, /Audit [1-4]/);
   assert.equal(status.continueAllowed, false);
   assert.equal(status.safeNextAction, "inspect_runtime");
 
@@ -654,6 +657,8 @@ test("run status refuses to call a legacy running run active without ownership e
   assert.match(humanResult.stdout, /runtime\s+missing/);
   assert.match(humanResult.stdout, /controller\s+response_accepted/);
   assert.match(humanResult.stdout, /jobs\s+total=4\s+.*running=0\s+.*timed_out=3\s+.*orphaned=1/);
+  assert.doesNotMatch(humanResult.stdout, /task=/);
+  assert.doesNotMatch(humanResult.stdout, /Audit [1-4]/);
   assert.match(humanResult.stdout, /next\s+inspect_runtime/);
 });
 
