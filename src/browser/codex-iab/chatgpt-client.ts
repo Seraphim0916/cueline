@@ -307,12 +307,16 @@ class CodexIabAdapter implements BrowserAdapter {
     return label;
   }
 
-  async #submissionStarted(tab: IabTab, previousUrl: string): Promise<boolean> {
+  async #submissionStarted(
+    tab: IabTab,
+    previousUrl: string,
+    baseline: PageChatState,
+  ): Promise<boolean> {
     const currentUrl = (await tab.url().catch(() => previousUrl)) ?? previousUrl;
     if (!isConversationUrl(previousUrl) && isConversationUrl(currentUrl)) {
       return true;
     }
-    return (
+    const state =
       await readPageChatState(tab).catch(() => ({
         pageUrl: "",
         isAnswering: false,
@@ -321,8 +325,17 @@ class CodexIabAdapter implements BrowserAdapter {
         assistantModelSlug: null,
         lastUserText: null,
         lastMessageRole: null,
-      }))
-    ).isAnswering;
+      }));
+    if (
+      isConversationUrl(previousUrl) &&
+      normalizedConversationUrl(state.pageUrl) !== normalizedConversationUrl(previousUrl)
+    ) {
+      return false;
+    }
+    return (
+      state.isAnswering ||
+      state.assistantMessageCount > baseline.assistantMessageCount
+    );
   }
 
   async #resolveSendTarget(tab: IabTab): Promise<SendTarget> {
@@ -336,7 +349,11 @@ class CodexIabAdapter implements BrowserAdapter {
     );
   }
 
-  async #clickSend(tab: IabTab, target: SendTarget): Promise<void> {
+  async #clickSend(
+    tab: IabTab,
+    target: SendTarget,
+    baseline: PageChatState,
+  ): Promise<void> {
     const previousUrl = (await tab.url()) ?? "";
     try {
       if (target.kind === "locator") {
@@ -346,7 +363,7 @@ class CodexIabAdapter implements BrowserAdapter {
         await tab.playwright.waitForTimeout(100);
       }
     } catch (error) {
-      if (await this.#submissionStarted(tab, previousUrl)) return;
+      if (await this.#submissionStarted(tab, previousUrl, baseline)) return;
       if (isTabUnavailableError(error)) throw error;
       throw ambiguousSubmissionError(error);
     }
@@ -657,7 +674,7 @@ class CodexIabAdapter implements BrowserAdapter {
     const sendTarget = await this.#resolveSendTarget(tab);
     await this.#emitCheckpoint(tab, context, hooks, "submitting");
     context.stage = "submitting";
-    await this.#clickSend(tab, sendTarget);
+    await this.#clickSend(tab, sendTarget, context.baseline);
     if (requireRecoverableCheckpoint) {
       this.#conversationUrl = await captureConversationUrlAfterSubmit(
         tab,

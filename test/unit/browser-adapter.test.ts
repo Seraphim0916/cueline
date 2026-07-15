@@ -1536,6 +1536,93 @@ test("does not retry a timed-out click when answering already started", async ()
   assert.equal(turn.text, "finished");
 });
 
+test("a completed response proves a timed-out click submitted on an existing conversation", async () => {
+  const conversationUrl = "https://chatgpt.com/c/fast-click-completion";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "previous",
+        assistantMessageCount: 1,
+      },
+      {
+        isAnswering: false,
+        assistantText: "fast complete",
+        assistantMessageCount: 2,
+      },
+    ],
+    failFirstClick: true,
+    firstSendClickSubmitsBeforeThrow: true,
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_fast_click_completion",
+    round: 2,
+    requestId: "msg_fast_click_completion",
+    prompt: "Accept the one completed response",
+  });
+
+  assert.equal(turn.text, "fast complete");
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendButtons[1]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 0);
+  assert.equal(fixture.sendSubmissions(), 1);
+});
+
+test("a response count from another conversation cannot prove a timed-out click submitted", async () => {
+  const originalUrl = "https://chatgpt.com/c/click-proof-original";
+  const fixture = fakeBrowser({
+    initialUrl: originalUrl,
+    states: [
+      {
+        pageUrl: originalUrl,
+        isAnswering: false,
+        assistantText: "previous",
+        assistantMessageCount: 1,
+      },
+      {
+        pageUrl: "https://chatgpt.com/c/click-proof-unrelated",
+        isAnswering: false,
+        assistantText: "unrelated complete",
+        assistantMessageCount: 2,
+      },
+    ],
+    failFirstClick: true,
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl: originalUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_click_proof_unrelated",
+      round: 2,
+      requestId: "msg_click_proof_unrelated",
+      prompt: "Do not import another conversation",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS",
+  );
+
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendButtons[1]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 0);
+});
+
 test("does not send twice when an ambiguous locator failure hides a successful click", async () => {
   const fixture = fakeBrowser({
     states: [
