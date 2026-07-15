@@ -15,6 +15,7 @@ import path from "node:path";
 import { CueLineError } from "../core/errors.js";
 import { canonicalJson } from "../core/ids.js";
 import { runtimePidTag, runtimePlatform } from "../core/runtime.js";
+import { validatedTimerDelay } from "../core/timing.js";
 import { atomicWriteJson } from "./atomic-write.js";
 import {
   captureEventLegacyFence,
@@ -707,6 +708,13 @@ export class RuntimeLease {
   }
 
   static async claim(options: RuntimeLeaseOptions): Promise<RuntimeLease> {
+    const heartbeatIntervalMs = validatedTimerDelay(
+      options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      {
+        code: "RUNTIME_HEARTBEAT_INTERVAL_INVALID",
+        name: "runtime heartbeat interval",
+      },
+    );
     const now = options.now ?? (() => new Date());
     let target = "";
     const timestamp = now().toISOString();
@@ -787,7 +795,7 @@ export class RuntimeLease {
       target,
       record,
       now,
-      options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      heartbeatIntervalMs,
     );
     lease.startHeartbeat();
     return lease;
@@ -802,6 +810,13 @@ export class RuntimeLease {
   static async takeoverStale(
     options: RuntimeLeaseTakeoverOptions,
   ): Promise<RuntimeLease> {
+    const heartbeatIntervalMs = validatedTimerDelay(
+      options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      {
+        code: "RUNTIME_HEARTBEAT_INTERVAL_INVALID",
+        name: "runtime heartbeat interval",
+      },
+    );
     const now = options.now ?? (() => new Date());
     let target = "";
     const takeoverAt = now();
@@ -904,7 +919,7 @@ export class RuntimeLease {
       target,
       record,
       now,
-      options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      heartbeatIntervalMs,
     );
     lease.startHeartbeat();
     return lease;

@@ -160,6 +160,26 @@ test("rejects nested routing before it can spawn", async () => {
   );
 });
 
+test("rejects process timeouts that Node timers cannot represent before spawn", async () => {
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+
+  for (const timeoutMs of [0, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+    let spawned = false;
+    await assert.rejects(
+      runner.run(
+        spec("invalid-timeout", "process.exit(0);", { timeoutMs }),
+        {
+          onSpawn() {
+            spawned = true;
+          },
+        },
+      ),
+      hasCode("PROCESS_TIMEOUT_INVALID"),
+    );
+    assert.equal(spawned, false, String(timeoutMs));
+  }
+});
+
 test("rejects argv executables that were not pre-registered", async () => {
   const runner = new ProcessRunner(new RunnerRegistry(), { environment: cleanEnvironment() });
 
