@@ -9,6 +9,7 @@ import {
   cancelCueLineJob,
   cancelCueLineRun,
   confirmManualControllerSubmission,
+  listCueLineRuns,
   loadCueLineRunStatus,
   reconcileCueLineRuntime,
   routingConfigPath,
@@ -36,7 +37,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|jobs|runs|run status|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -51,6 +52,7 @@ function help(): string {
     "  doctor         report Node, caller readiness, state home, and process lanes",
     "  routing        list every lane and the candidate that would be selected",
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
+    "  runs           list safe summaries of every persisted run",
     "  run status     summarize one persisted run for safe cross-session handoff",
     "  run reconcile  confirm one manually sent controller turn; never resends it",
     "  run takeover   explicitly retire one exact stale runtime owner",
@@ -69,6 +71,7 @@ function help(): string {
     "  cueline doctor",
     "  cueline routing",
     "  cueline jobs [--json]",
+    "  cueline runs [--json]",
     "  cueline run status <run-id> [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
     "  cueline run takeover <run-id> [--json]",
@@ -95,7 +98,7 @@ function help(): string {
     "  2  the arguments were not understood",
     "",
     "state effects:",
-    "  Read-only: doctor, routing, jobs, run status, api path, config path, help, version.",
+    "  Read-only: doctor, routing, jobs, runs, run status, api path, config path, help, version.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
@@ -128,6 +131,30 @@ async function routingCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promis
     }
   }
   return available > 0 ? 0 : 1;
+}
+
+async function runsCommand(
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const runs = await listCueLineRuns({ environment });
+  if (json) {
+    io.stdout(JSON.stringify(runs, null, 2));
+  } else if (runs.length === 0) {
+    io.stdout("No runs.");
+  } else {
+    for (const run of runs) {
+      if (!run.readable) {
+        io.stdout(`${run.runId}\tunreadable\t${run.errorCode}`);
+        continue;
+      }
+      io.stdout(
+        `${run.runId}\t${run.status}\t${run.executor}\t${run.phase}\t${run.safeNextAction}\tround=${run.round}\tpending=${run.pendingTurns}\tactive_jobs=${run.activeJobs}\truntime=${run.runtimeOwnership}\tsequence=${run.lastEventSequence}\tupdated=${run.lastEventAt}`,
+      );
+    }
+  }
+  return runs.some((run) => !run.readable) ? 1 : 0;
 }
 
 type ObservedJobStatus = JobStatus["status"] | "orphaned" | "unverified" | "conflict";
@@ -439,6 +466,12 @@ export async function main(
       (args.length === 1 || (args.length === 2 && args[1] === "--json"))
     ) {
       return jobsCommand(args[1] === "--json", environment, io);
+    }
+    if (
+      args[0] === "runs" &&
+      (args.length === 1 || (args.length === 2 && args[1] === "--json"))
+    ) {
+      return runsCommand(args[1] === "--json", environment, io);
     }
     if (
       args[0] === "run" &&

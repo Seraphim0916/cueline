@@ -248,6 +248,44 @@ test("jobs is read-only and reports an empty store", async () => {
   assert.match(result.stdout, /No jobs\./);
 });
 
+test("runs lists safe run summaries in human and JSON forms", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+
+  const jsonResult = invoke(["runs", "--json"], context.environment);
+  assert.equal(jsonResult.status, 0, jsonResult.stderr);
+  const runs = JSON.parse(jsonResult.stdout) as Array<Record<string, unknown>>;
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.runId, runId);
+  assert.equal(runs[0]?.readable, true);
+  assert.equal(runs[0]?.phase, "runtime_ownership_unknown");
+  assert.equal("task" in (runs[0] ?? {}), false);
+
+  const humanResult = invoke(["runs"], context.environment);
+  assert.equal(humanResult.status, 0, humanResult.stderr);
+  assert.match(
+    humanResult.stdout,
+    new RegExp(`${runId}\\s+running\\s+process\\s+runtime_ownership_unknown\\s+inspect_runtime`),
+  );
+  assert.doesNotMatch(humanResult.stdout, /Inspect a large project|Audit 1/);
+});
+
+test("runs reports degraded while preserving readable entries beside a corrupt run", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  await mkdir(path.join(context.home, "runs", "run_corrupt_cli"), { recursive: true });
+
+  const result = invoke(["runs", "--json"], context.environment);
+
+  assert.equal(result.status, 1, result.stderr);
+  const runs = JSON.parse(result.stdout) as Array<Record<string, unknown>>;
+  assert.equal(runs.some((run) => run.runId === runId && run.readable === true), true);
+  assert.deepEqual(
+    runs.find((run) => run.runId === "run_corrupt_cli"),
+    { runId: "run_corrupt_cli", readable: false, errorCode: "RUN_NOT_FOUND" },
+  );
+});
+
 test("run status refuses to call a legacy running run active without ownership evidence", async () => {
   const context = await fixture();
   const runId = await seedActiveRun(context.home);

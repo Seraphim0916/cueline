@@ -1,9 +1,13 @@
+import { readdir } from "node:fs/promises";
+import path from "node:path";
+
 import type {
   CueLineJobCancellationResult,
   CueLineRunCancellationResult,
   CueLineRuntimeOptions,
   CueLineRuntimeReconciliationResult,
   CueLineRuntimeTakeoverResult,
+  CueLineRunListEntry,
 } from "./api-contracts.js";
 import type { CueLineResult } from "./core/controller-loop.js";
 import { CueLineError } from "./core/errors.js";
@@ -25,7 +29,7 @@ import {
   requestJobCancellation,
   requestRunCancellation,
 } from "./state/cancellation.js";
-import { defaultCueLineHome } from "./state/paths.js";
+import { defaultCueLineHome, runPaths } from "./state/paths.js";
 import {
   readRuntimeLease,
   retireDeadRuntimeLease,
@@ -90,6 +94,94 @@ export async function loadCueLineRunStatus(
     acceptedCommand,
     persistedJobStatuses,
   );
+}
+
+function isNotFound(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ENOENT"
+  );
+}
+
+function runListErrorCode(error: unknown): string {
+  return error instanceof CueLineError ? error.code : "RUN_UNREADABLE";
+}
+
+function validRunDirectory(home: string, name: string): boolean {
+  try {
+    runPaths(home, name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns a sanitized, read-only inventory. It intentionally omits requests,
+ * controller text, conversation URLs, job tasks, and worker output.
+ */
+export async function listCueLineRuns(
+  options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> = {},
+): Promise<CueLineRunListEntry[]> {
+  const environment = options.environment ?? runtimeEnvironment();
+  const home = options.home ?? defaultCueLineHome(environment);
+  let directories;
+  try {
+    directories = await readdir(path.join(home, "runs"), { withFileTypes: true });
+  } catch (error) {
+    if (isNotFound(error)) return [];
+    throw error;
+  }
+
+  const entries: CueLineRunListEntry[] = [];
+  for (const directory of directories) {
+    if (!directory.isDirectory() || !validRunDirectory(home, directory.name)) continue;
+    try {
+      const [status, events] = await Promise.all([
+        loadCueLineRunStatus(directory.name, options),
+        readAuthoritativeRunEvents(home, directory.name),
+      ]);
+      const lastEvent = events.at(-1);
+      if (lastEvent === undefined) {
+        entries.push({
+          runId: directory.name,
+          readable: false,
+          errorCode: "RUN_NOT_FOUND",
+        });
+        continue;
+      }
+      entries.push({
+        runId: status.runId,
+        readable: true,
+        status: status.status,
+        executor: status.executor,
+        phase: status.phase,
+        round: status.round,
+        pendingTurns: status.controller.pendingTurns,
+        activeJobs: status.jobs.counts.pending + status.jobs.counts.running,
+        runtimeOwnership: status.runtime.ownership,
+        safeNextAction: status.safeNextAction,
+        lastEventSequence: status.lastEventSequence,
+        lastEventAt: lastEvent.timestamp,
+      });
+    } catch (error) {
+      entries.push({
+        runId: directory.name,
+        readable: false,
+        errorCode: runListErrorCode(error),
+      });
+    }
+  }
+
+  return entries.sort((left, right) => {
+    if (left.readable !== right.readable) return left.readable ? -1 : 1;
+    if (left.readable && right.readable && left.lastEventAt !== right.lastEventAt) {
+      return right.lastEventAt.localeCompare(left.lastEventAt);
+    }
+    return left.runId.localeCompare(right.runId);
+  });
 }
 
 /**

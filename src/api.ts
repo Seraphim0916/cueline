@@ -408,6 +408,7 @@ export {
 export {
   cancelCueLineJob,
   cancelCueLineRun,
+  listCueLineRuns,
   loadCueLineRunState,
   loadCueLineRunStatus,
   reconcileCueLineRuntime,
@@ -426,6 +427,7 @@ export type {
   CueLineCallerWorkMutationOptions,
   CueLineCallerWorkMutationResult,
   CueLineJobCancellationResult,
+  CueLineRunListEntry,
   CueLineRunCancellationResult,
   CueLineRuntimeOptions,
   CueLineRuntimeReconciliationResult,

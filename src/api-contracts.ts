@@ -1,5 +1,6 @@
 import type { BrowserAdapter } from "./browser/browser-adapter.js";
 import type { CodexIabAdapterOptions } from "./browser/codex-iab/chatgpt-client.js";
+import type { CueLineRunStatusSummary } from "./core/run-status.js";
 import type { RoutingConfig } from "./router/types.js";
 import type { JobResultStatus } from "./runners/runner-adapter.js";
 
@@ -30,6 +31,27 @@ export interface StartCueLineRunOptions extends CueLineRuntimeOptions {
   request: string;
   runId?: string;
 }
+
+export type CueLineRunListEntry =
+  | {
+      runId: string;
+      readable: true;
+      status: CueLineRunStatusSummary["status"];
+      executor: CueLineRunStatusSummary["executor"];
+      phase: CueLineRunStatusSummary["phase"];
+      round: number;
+      pendingTurns: number;
+      activeJobs: number;
+      runtimeOwnership: CueLineRunStatusSummary["runtime"]["ownership"];
+      safeNextAction: CueLineRunStatusSummary["safeNextAction"];
+      lastEventSequence: number;
+      lastEventAt: string;
+    }
+  | {
+      runId: string;
+      readable: false;
+      errorCode: string;
+    };
 
 export interface ContinueCueLineRunOptions extends CueLineRuntimeOptions {
   runId: string;
