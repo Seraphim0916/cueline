@@ -17,6 +17,15 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane or GPT Relay.
 
+## Latest release: 0.1.6
+
+- Added durable caller `work` claim/start/heartbeat/result fencing, with safe reclaim before start and `ambiguous` settlement after side effects may have begun.
+- Fixed hidden `Stop answering` detection, inspected-output priority, stale read-only observation recovery, process double authorization, and process status observability.
+- Hardened the bundled process route with `--ignore-user-config` and protected model/provider status from later untrusted-output spoofing.
+- Verified 267/267 tests, clean package installation, and a terminal `complete` verdict from a new real ChatGPT Web Pro run without resend or interruption.
+
+Read the complete [changelog](CHANGELOG.md#016---2026-07-15) or the immutable [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6).
+
 ## How a run actually goes
 
 <img alt="A caller-first CueLine run: ChatGPT emits text commands, the current Codex performs local advice, and CueLine returns bounded evidence until complete." src="docs/assets/cueline-loop-en.svg" width="100%">

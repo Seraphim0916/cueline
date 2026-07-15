@@ -17,6 +17,15 @@
 
 CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane이나 GPT Relay를 감싼 래퍼가 아닙니다.
 
+## 최신 릴리스: 0.1.6
+
+- caller `work`에 영속적인 claim/start/heartbeat/result fencing을 추가해 시작 전 안전한 회수와 시작 후 `ambiguous` 종결을 지원합니다.
+- 숨겨진 `Stop answering` 오탐, inspect 대상 출력 우선순위, stale 읽기 전용 관찰 복구, process 이중 승인, process 상태 관측성을 수정했습니다.
+- 번들 process route에 `--ignore-user-config`를 추가하고 이후의 신뢰할 수 없는 출력이 model/provider 상태를 위조하지 못하게 했습니다.
+- 267/267 테스트, 깨끗한 패키지 설치, 새 ChatGPT Web Pro run의 최종 `complete`를 재전송이나 중단 없이 검증했습니다.
+
+전체 내용은 [changelog](CHANGELOG.md#016---2026-07-15) 또는 변경 불가능한 [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6)에서 확인할 수 있습니다.
+
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
 <img alt="Caller-first CueLine: ChatGPT가 텍스트 명령을 내리고 현재 Codex가 로컬 조언 작업을 수행하며 CueLine이 완료까지 제한된 증거를 반환합니다." src="docs/assets/cueline-loop-ko.svg" width="100%">

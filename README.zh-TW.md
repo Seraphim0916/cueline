@@ -17,6 +17,15 @@
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 或 GPT Relay 的包裝層。
 
+## 最新版本：0.1.6
+
+- 新增 caller `work` 的持久 claim／start／heartbeat／result fencing；開始前可安全回收，可能已有副作用時一律收斂為 `ambiguous`。
+- 修正隱藏 `Stop answering` 誤判、inspect 指定輸出優先、stale 唯讀觀測恢復、process 雙重授權與 process 狀態可觀測性。
+- 內建 process route 加上 `--ignore-user-config`，並防止後續不受信任輸出偽造 model/provider 狀態。
+- 完成 267/267 測試、乾淨套件安裝，以及全新真實 ChatGPT Web Pro run 的終態 `complete` 驗收；無重送、無中斷。
+
+完整內容請看 [changelog](CHANGELOG.md#016---2026-07-15) 或不可變的 [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6)。
+
 ## 一次執行實際上怎麼跑
 
 <img alt="Caller-first CueLine 執行：ChatGPT 下文字命令，目前的 Codex 做本機唯讀查驗，CueLine 回送有界證據直到 complete。" src="docs/assets/cueline-loop-zh-TW.svg" width="100%">
