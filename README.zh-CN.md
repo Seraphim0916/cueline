@@ -155,7 +155,7 @@ if (result.status === "complete") {
 
 ## CLI
 
-CLI 不驱动浏览器。`doctor`、`routing`、`jobs`、`run status`、`api path`、`config path` 都是只读；`install`/`uninstall` 只修改包所拥有的 skill 链接；`run reconcile`、`run takeover`、`run reconcile-runtime`、`run cancel`/`run stop`、`job cancel` 会追加审计证据或修改持久 run/job 状态。执行写入状态的命令前，先用 `cueline help` 核对完整参数。
+CLI 不驱动浏览器。`doctor`、`routing`、`jobs`、`runs`、`run status`、`api path`、`config path` 都是只读；`install`/`uninstall` 只修改包所拥有的 skill 链接；`run reconcile`、`run takeover`、`run reconcile-runtime`、`run cancel`/`run stop`、`job cancel` 会追加审计证据或修改持久 run/job 状态。执行写入状态的命令前，先用 `cueline help` 核对完整参数。
 
 ```console
 $ cueline install
@@ -179,6 +179,9 @@ default	codex-default	available
 
 $ cueline jobs
 No jobs.
+
+$ cueline runs
+No runs.
 
 $ cueline run status run_... --json
 {"status":"running","executor":"caller","phase":"caller_jobs_pending","runtime":{"ownership":"missing"},...}

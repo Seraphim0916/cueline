@@ -158,13 +158,15 @@ if (result.status === "complete") {
 
 若回傳 `awaiting_controller`，代表同一個精確 request 已送出、但 Pro 回覆尚未被觀測；稍後續跑只會唯讀觀測，不會重送。`awaiting_caller` 交接 `advise`；`awaiting_caller_work` 則必須依序 claim、start、執行、heartbeat 與帶 claim proof 提交結果。Pro 網頁從未直接使用本機工具。
 
+`listCueLineRuns()` 是唯讀且已去敏感資訊的 run 清單，可用來找回持久化的 run ID；它不包含主控文字、對話網址、工作內容或 worker 輸出。
+
 在 Codex 的 runtime 裡，import `cueline api path` 印出的那個絕對路徑模組——那就是你安裝的那份套件建置出來的 API。
 
 `startCueLineRun` 只建立持久 run 並回傳 `ready`；`runCueLine` 會建立並推進到持久 controller 觀測暫停、caller 交接或終態。續跑前先執行 `cueline run status <run-id> --json`。單一正常送出、非人工、具精確 URL、無 job／pending command／取消的 stale caller observer 可被 fencing 後唯讀恢復；其他 stale 狀態仍須正式接管。`caller_work_pending`、`caller_work_claimed`、`caller_work_running` 分別只允許 `claim_caller_work`、`start_caller_work`、`continue_caller_work`，主控的 `dispatch` 本身不代表本機工作已開始。
 
 ## CLI
 
-CLI 不驅動瀏覽器。`doctor`、`routing`、`jobs`、`run status`、`api path`、`config path` 都是唯讀；`install`／`uninstall` 只改套件擁有的 skill 連結；`run reconcile`、`run takeover`、`run reconcile-runtime`、`run cancel`／`run stop`、`job cancel` 會追加稽核證據或修改持久 run/job 狀態。執行寫入狀態的命令前，先用 `cueline help` 核對完整參數。
+CLI 不驅動瀏覽器。`doctor`、`routing`、`jobs`、`runs`、`run status`、`api path`、`config path` 都是唯讀；`install`／`uninstall` 只改套件擁有的 skill 連結；`run reconcile`、`run takeover`、`run reconcile-runtime`、`run cancel`／`run stop`、`job cancel` 會追加稽核證據或修改持久 run/job 狀態。執行寫入狀態的命令前，先用 `cueline help` 核對完整參數。
 
 ```console
 $ cueline install
@@ -188,6 +190,9 @@ default	codex-default	available
 
 $ cueline jobs
 No jobs.
+
+$ cueline runs
+No runs.
 
 $ cueline run status run_... --json
 {"status":"running","executor":"caller","phase":"caller_jobs_pending","runtime":{"ownership":"missing"},...}

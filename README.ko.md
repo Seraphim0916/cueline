@@ -153,7 +153,7 @@ Codex 런타임에서는 `cueline api path`가 출력하는 절대 경로 모듈
 
 ## CLI
 
-CLI는 브라우저를 구동하지 않습니다. `doctor`, `routing`, `jobs`, `run status`, `api path`, `config path`는 읽기 전용입니다. `install`/`uninstall`은 패키지가 소유한 스킬 링크만 변경합니다. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, `job cancel`은 감사 증거를 추가하거나 지속 run/job 상태를 변경합니다. 상태를 쓰는 명령 전에는 `cueline help`로 전체 인수를 확인하세요.
+CLI는 브라우저를 구동하지 않습니다. `doctor`, `routing`, `jobs`, `runs`, `run status`, `api path`, `config path`는 읽기 전용입니다. `install`/`uninstall`은 패키지가 소유한 스킬 링크만 변경합니다. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, `job cancel`은 감사 증거를 추가하거나 지속 run/job 상태를 변경합니다. 상태를 쓰는 명령 전에는 `cueline help`로 전체 인수를 확인하세요.
 
 ```console
 $ cueline install
@@ -177,6 +177,9 @@ default	codex-default	available
 
 $ cueline jobs
 No jobs.
+
+$ cueline runs
+No runs.
 
 $ cueline run status run_... --json
 {"status":"running","executor":"caller","phase":"caller_jobs_pending","runtime":{"ownership":"missing"},...}
