@@ -9,6 +9,7 @@ import {
   cancelCueLineJob,
   cancelCueLineRun,
   confirmManualControllerSubmission,
+  diagnoseCueLineRun,
   loadCueLineRunStatus,
   reconcileCueLineRuntime,
   routingConfigPath,
@@ -36,7 +37,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run doctor|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -52,6 +53,7 @@ function help(): string {
     "  routing        list every lane and the candidate that would be selected",
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
     "  run status     summarize one persisted run for safe cross-session handoff",
+    "  run doctor     explain why a run is waiting or blocked and name the safe next action",
     "  run reconcile  confirm one manually sent controller turn; never resends it",
     "  run takeover   explicitly retire one exact stale runtime owner",
     "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
@@ -70,6 +72,7 @@ function help(): string {
     "  cueline routing",
     "  cueline jobs [--json]",
     "  cueline run status <run-id> [--json]",
+    "  cueline run doctor <run-id> [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
     "  cueline run takeover <run-id> [--json]",
     "  cueline run reconcile-runtime <run-id> [--json]",
@@ -95,7 +98,7 @@ function help(): string {
     "  2  the arguments were not understood",
     "",
     "state effects:",
-    "  Read-only: doctor, routing, jobs, run status, api path, config path, help, version.",
+    "  Read-only: doctor, routing, jobs, run status, run doctor, api path, config path, help, version.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
@@ -359,6 +362,32 @@ async function runStatusCommand(
   return 0;
 }
 
+async function runDoctorCommand(
+  runId: string,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const diagnosis = await diagnoseCueLineRun(runId, { environment });
+  if (json) {
+    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...diagnosis }, null, 2));
+  } else {
+    io.stdout(`run\t${diagnosis.runId}`);
+    io.stdout(`version\t${CUELINE_VERSION}`);
+    io.stdout(`outcome\t${diagnosis.outcome}`);
+    io.stdout(`phase\t${diagnosis.phase}`);
+    io.stdout(`sequence\t${diagnosis.eventSequence}`);
+    io.stdout(`summary\t${diagnosis.summary}`);
+    io.stdout(`next\t${diagnosis.nextAction}`);
+    for (const finding of diagnosis.findings) {
+      io.stdout(
+        `finding\t${finding.severity}\t${finding.code}\t${finding.message}\taction=${finding.action}\tevidence=${JSON.stringify(finding.evidence)}`,
+      );
+    }
+  }
+  return diagnosis.outcome === "blocked" ? 1 : 0;
+}
+
 async function doctorCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promise<number> {
   const configPath = routingConfigPath(environment);
   const home = defaultCueLineHome(environment);
@@ -517,6 +546,14 @@ export async function main(
       if (json) io.stdout(JSON.stringify(result, null, 2));
       else io.stdout(`${result.runId}\t${result.requestId}\t${result.outcome}\tno_resend`);
       return 0;
+    }
+    if (
+      args[0] === "run" &&
+      args[1] === "doctor" &&
+      typeof args[2] === "string" &&
+      (args.length === 3 || (args.length === 4 && args[3] === "--json"))
+    ) {
+      return runDoctorCommand(args[2], args[3] === "--json", environment, io);
     }
     if (
       args[0] === "run" &&

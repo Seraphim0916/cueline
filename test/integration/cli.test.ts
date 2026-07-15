@@ -303,6 +303,26 @@ test("run status refuses to call a legacy running run active without ownership e
   assert.match(humanResult.stdout, /next\s+inspect_runtime/);
 });
 
+test("run doctor explains the blocker without mutating the run", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  const before = await readEvents(runPaths(context.home, runId).events);
+
+  const result = invoke(["run", "doctor", runId, "--json"], context.environment);
+
+  assert.equal(result.status, 1, result.stderr);
+  const diagnosis = JSON.parse(result.stdout) as {
+    outcome: string;
+    nextAction: string;
+    findings: Array<{ code: string }>;
+  };
+  assert.equal(diagnosis.outcome, "blocked");
+  assert.equal(diagnosis.nextAction, "inspect_runtime");
+  assert.equal(diagnosis.findings[0]?.code, "RUNTIME_OWNERSHIP_UNKNOWN");
+  const after = await readEvents(runPaths(context.home, runId).events);
+  assert.deepEqual(after, before);
+});
+
 test("run reconcile records operator-confirmed manual submission without resending", async () => {
   const context = await fixture();
   const runId = "run_cli_manual_reconcile";
