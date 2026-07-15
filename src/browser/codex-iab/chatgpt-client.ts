@@ -21,13 +21,17 @@ import { hasExactControllerEnvelopeIdentity, isProLabel, isProModelSlug,
   normalizedConversationUrl, normalizedMessageText } from "./recovery-evidence.js";
 import { captureConversationUrlAfterSubmit } from "./submission-url.js";
 import { acquireChatGptTab, isTabUnavailableError } from "./tab-discovery.js";
+import { validatedTimingOption } from "./timing-options.js";
 import type { ExpectedControllerIdentity } from "../../protocol/types.js";
 
 export interface CodexIabAdapterOptions {
   browser?: IabBrowser;
   conversationUrl?: string;
+  /** Positive integer no greater than Node's maximum timer delay. */
   timeoutMs?: number;
+  /** Positive integer no greater than Node's maximum timer delay. */
   pollIntervalMs?: number;
+  /** Non-negative integer no greater than Node's maximum timer delay. */
   stableMs?: number;
 }
 
@@ -42,7 +46,6 @@ const MODEL_LABEL_READ_ATTEMPTS = 50;
 const MODEL_LABEL_RETRY_INTERVAL_MS = 100;
 const COMPOSER_READY_TIMEOUT_MS = 30_000;
 const COMPOSER_READY_STABLE_MS = 250;
-
 type TurnStage = "pre_submit" | "submitting" | "submitted";
 
 interface TurnAttemptContext {
@@ -229,9 +232,24 @@ class CodexIabAdapter implements BrowserAdapter {
 
   constructor(options: CodexIabAdapterOptions) {
     this.#options = {
-      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
-      stableMs: options.stableMs ?? DEFAULT_STABLE_MS,
+      timeoutMs: validatedTimingOption(
+        "timeoutMs",
+        options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        1,
+        "IAB_TIMEOUT_INVALID",
+      ),
+      pollIntervalMs: validatedTimingOption(
+        "pollIntervalMs",
+        options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+        1,
+        "IAB_POLL_INTERVAL_INVALID",
+      ),
+      stableMs: validatedTimingOption(
+        "stableMs",
+        options.stableMs ?? DEFAULT_STABLE_MS,
+        0,
+        "IAB_STABLE_WINDOW_INVALID",
+      ),
       ...(options.browser === undefined ? {} : { browser: options.browser }),
       ...(options.conversationUrl === undefined ? {} : { conversationUrl: options.conversationUrl }),
     };

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createCodexIabAdapter } from "../../src/browser/codex-iab/chatgpt-client.js";
+import { CueLineError } from "../../src/core/errors.js";
 import {
   readPageChatState,
   readPageComposerState,
@@ -264,6 +265,40 @@ function fakeBrowser(options: {
     sendSubmissions: () => sendSubmissions,
   };
 }
+
+test("rejects unsafe browser timing options before touching the Browser runtime", () => {
+  const invalid: Array<{
+    options: Parameters<typeof createCodexIabAdapter>[0];
+    code: string;
+  }> = [
+    { options: { timeoutMs: 0 }, code: "IAB_TIMEOUT_INVALID" },
+    { options: { timeoutMs: -1 }, code: "IAB_TIMEOUT_INVALID" },
+    { options: { timeoutMs: Number.NaN }, code: "IAB_TIMEOUT_INVALID" },
+    { options: { timeoutMs: Number.POSITIVE_INFINITY }, code: "IAB_TIMEOUT_INVALID" },
+    { options: { timeoutMs: 2_147_483_648 }, code: "IAB_TIMEOUT_INVALID" },
+    { options: { pollIntervalMs: 0 }, code: "IAB_POLL_INTERVAL_INVALID" },
+    { options: { pollIntervalMs: -1 }, code: "IAB_POLL_INTERVAL_INVALID" },
+    { options: { pollIntervalMs: 0.5 }, code: "IAB_POLL_INTERVAL_INVALID" },
+    { options: { pollIntervalMs: 2_147_483_648 }, code: "IAB_POLL_INTERVAL_INVALID" },
+    { options: { stableMs: -1 }, code: "IAB_STABLE_WINDOW_INVALID" },
+    { options: { stableMs: Number.NaN }, code: "IAB_STABLE_WINDOW_INVALID" },
+    { options: { stableMs: 0.5 }, code: "IAB_STABLE_WINDOW_INVALID" },
+    { options: { stableMs: 2_147_483_648 }, code: "IAB_STABLE_WINDOW_INVALID" },
+  ];
+
+  for (const fixture of invalid) {
+    assert.throws(
+      () => createCodexIabAdapter(fixture.options),
+      (error: unknown) => error instanceof CueLineError && error.code === fixture.code,
+    );
+  }
+});
+
+test("accepts an explicit zero stabilization window for deterministic tests", () => {
+  assert.doesNotThrow(() =>
+    createCodexIabAdapter({ timeoutMs: 1, pollIntervalMs: 1, stableMs: 0 }),
+  );
+});
 
 test("treats contenteditable block newlines as the same inline prompt", async () => {
   const sendButton = {
