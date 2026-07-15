@@ -20,6 +20,7 @@ import { CHATGPT_URL, COMPOSER_TEXTBOX_NAMES, SEND_BUTTON_NAMES } from "./select
 import { hasExactControllerEnvelopeIdentity, isProLabel, isProModelSlug,
   normalizedConversationUrl, normalizedMessageText } from "./recovery-evidence.js";
 import { captureConversationUrlAfterSubmit } from "./submission-url.js";
+import { findVisibleSendButtonCoordinates } from "./send-button.js";
 import { acquireChatGptTab, isTabUnavailableError } from "./tab-discovery.js";
 import { validatedTimingOption } from "./timing-options.js";
 import type { ExpectedControllerIdentity } from "../../protocol/types.js";
@@ -98,56 +99,6 @@ async function findUniqueLocator(
     }
   }
   return undefined;
-}
-
-async function findVisibleSendButtonCoordinates(
-  tab: IabTab,
-): Promise<{ x: number; y: number } | undefined> {
-  if (!tab.cua?.click) return undefined;
-  const target = await tab.playwright.evaluate(
-    ({ sendButtonNames }) => {
-      const normalize = (value: unknown): string =>
-        String(value ?? "").trim().replace(/\s+/g, " ");
-      const candidates = Array.from(document.querySelectorAll("button")).filter((element) => {
-        const button = element as HTMLButtonElement;
-        const style = window.getComputedStyle(button);
-        const rect = button.getBoundingClientRect();
-        const label = normalize(
-          button.getAttribute("aria-label") ?? button.innerText ?? button.textContent,
-        );
-        return (
-          sendButtonNames.some((name) => name === label) &&
-          !button.disabled &&
-          button.getAttribute("aria-disabled") !== "true" &&
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rect.width > 0 &&
-          rect.height > 0 &&
-          rect.right > 0 &&
-          rect.bottom > 0 &&
-          rect.left < window.innerWidth &&
-          rect.top < window.innerHeight
-        );
-      });
-      if (candidates.length !== 1) return null;
-      const rect = candidates[0]!.getBoundingClientRect();
-      return {
-        x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2,
-      };
-    },
-    { sendButtonNames: [...SEND_BUTTON_NAMES] },
-  ).catch(() => null);
-  if (
-    target === null ||
-    !Number.isFinite(target.x) ||
-    !Number.isFinite(target.y) ||
-    target.x < 0 ||
-    target.y < 0
-  ) {
-    return undefined;
-  }
-  return { x: Math.round(target.x), y: Math.round(target.y) };
 }
 
 async function findHydratedComposer(tab: IabTab): Promise<IabLocator | undefined> {
