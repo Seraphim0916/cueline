@@ -1,5 +1,5 @@
 import type { IabBrowser, IabTab } from "./bootstrap.js";
-import { normalizedConversationUrl } from "./recovery-evidence.js";
+import { sameChatGptConversationUrl } from "../../core/conversation-url.js";
 import { CHATGPT_URL } from "./selectors.js";
 
 const TAB_DISCOVERY_RETRY_MS = 100;
@@ -18,7 +18,7 @@ export async function acquireChatGptTab(
   const matchesTarget = (url: string): boolean =>
     conversationUrl === undefined
       ? url.startsWith(CHATGPT_URL)
-      : normalizedConversationUrl(url) === normalizedConversationUrl(conversationUrl);
+      : sameChatGptConversationUrl(url, conversationUrl);
   const canDiscover =
     browser.tabs.selected !== undefined ||
     browser.tabs.list !== undefined ||

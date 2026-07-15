@@ -14,6 +14,10 @@ import {
 } from "../protocol/types.js";
 import { RunStore } from "../state/store.js";
 import { throwIfCancelled } from "./controller-abort.js";
+import {
+  isExactChatGptConversationUrl,
+  sameChatGptConversationUrl,
+} from "./conversation-url.js";
 import { asCueLineError, CueLineError } from "./errors.js";
 import { commandHash } from "./ids.js";
 import {
@@ -90,15 +94,6 @@ function promptJson(value: unknown): string {
     .replaceAll("&", "\\u0026");
 }
 
-function normalizedConversationUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return value;
-  }
-}
-
 export function assertConversationUrlCompatible(
   state: CueLineRunState,
   candidate: string | undefined,
@@ -109,7 +104,7 @@ export function assertConversationUrlCompatible(
   if (
     persisted !== null &&
     turnUrl !== null &&
-    normalizedConversationUrl(persisted) !== normalizedConversationUrl(turnUrl)
+    !sameChatGptConversationUrl(persisted, turnUrl)
   ) {
     throw new CueLineError(
       "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
@@ -120,7 +115,7 @@ export function assertConversationUrlCompatible(
   if (
     candidate !== undefined &&
     expected !== null &&
-    normalizedConversationUrl(candidate) !== normalizedConversationUrl(expected)
+    !sameChatGptConversationUrl(candidate, expected)
   ) {
     throw new CueLineError(
       "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
@@ -139,8 +134,7 @@ function assertControllerTurnEvidence(
   expectedConversationUrl: string | null,
 ): void {
   if (
-    turn.conversationUrl === undefined ||
-    !/^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+(?:[/?#]|$)/.test(turn.conversationUrl)
+    !isExactChatGptConversationUrl(turn.conversationUrl)
   ) {
     throw new CueLineError(
       "CONTROLLER_CONVERSATION_UNVERIFIED",
@@ -149,8 +143,7 @@ function assertControllerTurnEvidence(
   }
   if (
     expectedConversationUrl !== null &&
-    normalizedConversationUrl(turn.conversationUrl) !==
-      normalizedConversationUrl(expectedConversationUrl)
+    !sameChatGptConversationUrl(turn.conversationUrl, expectedConversationUrl)
   ) {
     throw new CueLineError(
       "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",

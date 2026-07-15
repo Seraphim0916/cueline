@@ -55,6 +55,34 @@ class FakeLocator implements IabLocator {
   }
 }
 
+test("rejects a non-conversation URL before touching the Browser runtime", () => {
+  let browserTouched = false;
+  const browser: IabBrowser = {
+    async documentation() {
+      browserTouched = true;
+    },
+    tabs: {
+      async new() {
+        browserTouched = true;
+        throw new Error("BROWSER_MUST_NOT_BE_TOUCHED");
+      },
+    },
+  };
+
+  assert.throws(
+    () =>
+      createCodexIabAdapter({
+        browser,
+        conversationUrl: "https://chatgpt.com/c/real-id/not-the-conversation",
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_RECONCILIATION_URL_REQUIRED",
+  );
+  assert.equal(browserTouched, false);
+});
+
 function fakeBrowser(options: {
   states: Array<
     Omit<
@@ -681,6 +709,49 @@ test("submitTurn waits for a delayed exact conversation URL after clicking only 
   ]);
 });
 
+test("submitTurn accepts an equivalent trailing-slash conversation URL", async () => {
+  const conversationUrl = "https://chatgpt.com/c/existing-canonical-conversation";
+  const equivalentUrl = `${conversationUrl}/?utm_source=cueline#latest`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    urlReadSequence: [conversationUrl, conversationUrl, equivalentUrl],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+  const checkpoints: Array<{ state: string; url?: string }> = [];
+
+  await adapter.submitTurn!(
+    {
+      runId: "run_existing_canonical_conversation",
+      round: 2,
+      requestId: "msg_existing_canonical_conversation",
+      prompt: "Keep the same canonical conversation",
+    },
+    {
+      async onCheckpoint(checkpoint) {
+        checkpoints.push({
+          state: checkpoint.submissionState,
+          ...(checkpoint.conversationUrl === undefined
+            ? {}
+            : { url: checkpoint.conversationUrl }),
+        });
+      },
+    },
+  );
+
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.deepEqual(checkpoints, [
+    { state: "submitting", url: conversationUrl },
+    { state: "submitted", url: conversationUrl },
+  ]);
+});
+
 test("submitTurn refuses a post-click navigation away from an existing conversation", async () => {
   const conversationUrl = "https://chatgpt.com/c/existing-conversation-a";
   const navigatedUrl = "https://chatgpt.com/c/unrelated-conversation-b";
@@ -757,6 +828,38 @@ test("submitTurn reports possibly sent when a new conversation never exposes an 
       error.code === "CONTROLLER_CONVERSATION_URL_UNAVAILABLE" &&
       "details" in error &&
       (error.details as { submission_state?: unknown }).submission_state === "possibly_sent",
+  );
+  assert.equal(fixture.sendSubmissions(), 1);
+});
+
+test("submitTurn never binds a nested path that only starts like a conversation URL", async () => {
+  const fixture = fakeBrowser({
+    initialUrl: "https://chatgpt.com/",
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    urlReadSequence: [
+      "https://chatgpt.com/",
+      "https://chatgpt.com/",
+      "https://chatgpt.com/c/real-conversation/not-the-conversation",
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 5,
+  });
+
+  await assert.rejects(
+    adapter.submitTurn!({
+      runId: "run_nested_conversation_path",
+      round: 1,
+      requestId: "msg_nested_conversation_path",
+      prompt: "Never bind a URL prefix",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_CONVERSATION_URL_UNAVAILABLE",
   );
   assert.equal(fixture.sendSubmissions(), 1);
 });

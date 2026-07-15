@@ -7,6 +7,10 @@ import type {
   ManualControllerSubmissionConfirmation,
 } from "./api-contracts.js";
 import { validateCallerWorkResultClaim } from "./api-caller-work.js";
+import {
+  isExactChatGptConversationUrl,
+  sameChatGptConversationUrl,
+} from "./core/conversation-url.js";
 import { CueLineError } from "./core/errors.js";
 import { loadPersistedRunStore } from "./core/persisted-run.js";
 import { runtimeEnvironment } from "./core/runtime.js";
@@ -18,28 +22,6 @@ import {
   RuntimeLease,
 } from "./state/runtime-lease.js";
 import { readAuthoritativeRunEvents } from "./state/store.js";
-
-function normalizedConversationUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return value;
-  }
-}
-
-function isChatGptConversationUrl(value: string): boolean {
-  try {
-    const parsed = new URL(value);
-    return (
-      parsed.protocol === "https:" &&
-      parsed.hostname === "chatgpt.com" &&
-      /^\/c\/[^/]+\/?$/.test(parsed.pathname)
-    );
-  } catch {
-    return false;
-  }
-}
 
 export async function confirmManualControllerSubmission(
   runId: string,
@@ -88,9 +70,9 @@ export async function confirmManualControllerSubmission(
         `Controller request '${options.requestId}' is neither pending nor recoverably abandoned in run '${runId}'.`,
       );
     }
-    const conversationUrl =
+    const suppliedConversationUrl =
       options.conversationUrl ?? turn.conversationUrl ?? state.conversationUrl;
-    if (!conversationUrl || !isChatGptConversationUrl(conversationUrl)) {
+    if (!isExactChatGptConversationUrl(suppliedConversationUrl)) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_URL_REQUIRED",
         "Manual submission confirmation requires the exact ChatGPT conversation URL.",
@@ -98,8 +80,7 @@ export async function confirmManualControllerSubmission(
     }
     if (
       state.conversationUrl !== null &&
-      normalizedConversationUrl(conversationUrl) !==
-      normalizedConversationUrl(state.conversationUrl)
+      !sameChatGptConversationUrl(suppliedConversationUrl, state.conversationUrl)
     ) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
@@ -108,14 +89,15 @@ export async function confirmManualControllerSubmission(
     }
     if (
       turn.conversationUrl !== null &&
-      normalizedConversationUrl(conversationUrl) !==
-        normalizedConversationUrl(turn.conversationUrl)
+      !sameChatGptConversationUrl(suppliedConversationUrl, turn.conversationUrl)
     ) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
         "The operator-confirmed conversation URL does not match the exact conversation bound to this controller turn.",
       );
     }
+    const conversationUrl =
+      state.conversationUrl ?? turn.conversationUrl ?? suppliedConversationUrl;
     const events = await readAuthoritativeRunEvents(home, runId);
     for (const event of events) {
       if (event.type !== "controller_command_accepted") continue;

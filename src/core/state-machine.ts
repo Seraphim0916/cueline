@@ -4,6 +4,10 @@ import type {
   JobObservation,
 } from "../protocol/types.js";
 import type { RunEvent } from "../state/event-log.js";
+import {
+  isExactChatGptConversationUrl,
+  sameChatGptConversationUrl,
+} from "./conversation-url.js";
 import { jobSpecHash } from "./ids.js";
 
 export type CueLineRunStatus = "running" | "complete" | "blocked" | "cancelled" | "failed";
@@ -158,23 +162,14 @@ function recordPayload(event: RunEvent): Record<string, unknown> {
   return event.payload as Record<string, unknown>;
 }
 
-function normalizedConversationUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return value;
-  }
-}
-
 function preserveCanonicalConversationUrl(
   canonical: string | null,
   candidate: unknown,
 ): string | null {
-  if (typeof candidate !== "string" || candidate === "") return canonical;
+  if (!isExactChatGptConversationUrl(candidate)) return canonical;
   if (
     canonical !== null &&
-    normalizedConversationUrl(candidate) !== normalizedConversationUrl(canonical)
+    !sameChatGptConversationUrl(candidate, canonical)
   ) {
     return canonical;
   }

@@ -3165,6 +3165,48 @@ test("manual submission confirmation atomically binds the first conversation URL
   assert.equal(replayed.state.pendingControllerTurns[0]?.manualSendConfirmed, true);
 });
 
+test("manual submission confirmation preserves a canonically equivalent conversation URL", async () => {
+  const runId = "run_manual_canonical_url";
+  const requestId = "msg_manual_canonical_url";
+  const conversationUrl = "https://chatgpt.com/c/manual-canonical-url";
+  const equivalentUrl = `${conversationUrl}/?utm_source=cueline#latest`;
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Accept only the same canonical conversation" });
+  await store.append("controller_conversation_bound", {
+    conversation_url: conversationUrl,
+  });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: requestId,
+    prompt: "manually submitted prompt",
+    prompt_hash: "manual-canonical-url-hash",
+  });
+
+  const confirmation = await confirmManualControllerSubmission(runId, {
+    home: stateHome,
+    requestId,
+    conversationUrl: equivalentUrl,
+  });
+
+  assert.equal(confirmation.outcome, "confirmed");
+  assert.equal(confirmation.conversationUrl, conversationUrl);
+  const replayed = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  assert.equal(replayed.state.conversationUrl, conversationUrl);
+  assert.equal(replayed.state.pendingControllerTurns[0]?.conversationUrl, conversationUrl);
+  assert.equal(replayed.state.pendingControllerTurns[0]?.manualSendConfirmed, true);
+});
+
 test("rejects a wrong manual-recovery envelope without repair or resend", async () => {
   const runId = "run_manual_attachment_wrong_identity";
   const requestId = "msg_manual_attachment_wrong_identity";
