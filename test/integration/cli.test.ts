@@ -260,6 +260,75 @@ test("doctor reports caller and process readiness separately", async () => {
   assert.match(result.stdout, new RegExp(context.home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
+test("doctor exposes a stable machine-readable report", async () => {
+  const context = await fixture();
+  const result = invoke(["doctor", "--json"], context.environment);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    version: await packageVersion(),
+    status: "ok",
+    node: {
+      version: process.versions.node,
+      ok: true,
+      requirement: ">=22",
+    },
+    config: {
+      path: context.config,
+      valid: true,
+    },
+    home: context.home,
+    caller: {
+      ready: true,
+      enabledLanes: 1,
+    },
+    process: {
+      availableLanes: 1,
+    },
+    findings: [],
+  });
+});
+
+test("doctor JSON remains parseable and redacted when routing config is invalid", async () => {
+  const context = await fixture();
+  await writeFile(context.config, "{PRIVATE_CONFIG_SENTINEL", "utf8");
+
+  const result = invoke(["doctor", "--json"], context.environment);
+
+  assert.equal(result.status, 1, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    version: await packageVersion(),
+    status: "degraded",
+    node: {
+      version: process.versions.node,
+      ok: true,
+      requirement: ">=22",
+    },
+    config: {
+      path: context.config,
+      valid: false,
+      errorCode: "ROUTING_CONFIG_INVALID",
+    },
+    home: context.home,
+    caller: {
+      ready: false,
+      enabledLanes: 0,
+    },
+    process: {
+      availableLanes: 0,
+    },
+    findings: [
+      {
+        code: "ROUTING_CONFIG_INVALID",
+        surface: "config",
+        message: "Routing configuration could not be loaded.",
+      },
+    ],
+  });
+  assert.equal(result.stderr, "");
+  assert.doesNotMatch(result.stdout, /PRIVATE_CONFIG_SENTINEL/);
+});
+
 test("doctor keeps caller ready when no process executable is available", async () => {
   const context = await fixture();
   await writeFile(
@@ -289,6 +358,56 @@ test("doctor keeps caller ready when no process executable is available", async 
   assert.match(result.stdout, /caller_ready\s+yes/);
   assert.match(result.stdout, /caller_lanes\s+1/);
   assert.match(result.stdout, /process_available_lanes\s+0/);
+
+  const jsonResult = invoke(["doctor", "--json"], context.environment);
+  assert.equal(jsonResult.status, 0, jsonResult.stderr);
+  const report = JSON.parse(jsonResult.stdout) as {
+    status: string;
+    caller: { ready: boolean; enabledLanes: number };
+    process: { availableLanes: number };
+  };
+  assert.equal(report.status, "ok");
+  assert.deepEqual(report.caller, { ready: true, enabledLanes: 1 });
+  assert.deepEqual(report.process, { availableLanes: 0 });
+});
+
+test("doctor JSON degrades with a stable finding when every caller lane is disabled", async () => {
+  const context = await fixture();
+  await writeFile(
+    context.config,
+    `${JSON.stringify({
+      version: 1,
+      lanes: {
+        default: {
+          enabled: false,
+          candidates: [
+            {
+              id: "disabled-node",
+              argv: [process.execPath, "-e", "process.stdout.write('unused')"],
+              task_input: "stdin",
+            },
+          ],
+        },
+      },
+    })}\n`,
+    "utf8",
+  );
+
+  const result = invoke(["doctor", "--json"], context.environment);
+
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout) as {
+    status: string;
+    caller: { ready: boolean; enabledLanes: number };
+    process: { availableLanes: number };
+    findings: Array<{ code: string }>;
+  };
+  assert.equal(report.status, "degraded");
+  assert.deepEqual(report.caller, { ready: false, enabledLanes: 0 });
+  assert.deepEqual(report.process, { availableLanes: 0 });
+  assert.deepEqual(report.findings.map((finding) => finding.code), [
+    "CALLER_LANES_UNAVAILABLE",
+  ]);
 });
 
 test("jobs is read-only and reports an empty store", async () => {
@@ -1151,6 +1270,7 @@ test("help lists every command, the environment, and the exit codes", async () =
     assert.match(result.stdout, /CUELINE_CONFIG/);
     assert.match(result.stdout, /exit codes:/);
     for (const syntax of [
+      "doctor [--json]",
       "jobs [--json]",
       "run status <run-id> [--json]",
       "run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
@@ -1171,6 +1291,7 @@ test("help lists every command, the environment, and the exit codes", async () =
 test("nested command help never treats --help as a run or job id", async () => {
   const context = await fixture();
   for (const args of [
+    ["doctor", "--help"],
     ["run", "--help"],
     ["run", "status", "--help"],
     ["run", "reconcile", "--help"],
