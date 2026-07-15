@@ -3,6 +3,7 @@ import {
   diagnoseCueLineRun,
   listCueLineRuns,
   loadCueLineRunTimeline,
+  verifyCueLineRun,
   waitForCueLineRunChange,
 } from "../api.js";
 import { CueLineError } from "../core/errors.js";
@@ -32,6 +33,35 @@ async function runsCommand(
     }
   }
   return runs.some((run) => !run.readable) ? 1 : 0;
+}
+
+async function runVerifyCommand(
+  runId: string,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const report = await verifyCueLineRun(runId, { environment });
+  if (json) {
+    io.stdout(JSON.stringify(report, null, 2));
+  } else {
+    io.stdout(`run\t${report.runId}`);
+    io.stdout(`outcome\t${report.outcome}`);
+    io.stdout(`marker\t${report.marker}`);
+    io.stdout(
+      report.eventLog.readable
+        ? `events\treadable\ttotal=${report.eventLog.totalEvents}\tauthoritative=${report.eventLog.authoritativeEvents}\tlast_sequence=${report.eventLog.lastSequence}`
+        : "events\tunreadable",
+    );
+    io.stdout(`snapshot\t${report.snapshot}`);
+    io.stdout(`runtime\t${report.runtimeOwnership}`);
+    for (const item of report.findings) {
+      io.stdout(
+        `finding\t${item.severity}\t${item.code}\t${item.surface}\t${item.message}`,
+      );
+    }
+  }
+  return report.outcome === "verified" ? 0 : 1;
 }
 
 async function runDoctorCommand(
@@ -144,6 +174,14 @@ export async function handleObservationCommand(
     (args.length === 1 || (args.length === 2 && args[1] === "--json"))
   ) {
     return runsCommand(args[1] === "--json", environment, io);
+  }
+  if (
+    args[0] === "run" &&
+    args[1] === "verify" &&
+    typeof args[2] === "string" &&
+    (args.length === 3 || (args.length === 4 && args[3] === "--json"))
+  ) {
+    return runVerifyCommand(args[2], args[3] === "--json", environment, io);
   }
   if (
     args[0] === "run" &&

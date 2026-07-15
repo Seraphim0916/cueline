@@ -516,6 +516,43 @@ test("run handoff rejects a content limit when content is not enabled", async ()
   assert.match(result.stderr, /CLI_ARGUMENTS_INVALID/);
 });
 
+test("run verify reports durable evidence health in human and JSON forms", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+
+  const jsonResult = invoke(["run", "verify", runId, "--json"], context.environment);
+  assert.equal(jsonResult.status, 0, jsonResult.stderr);
+  const report = JSON.parse(jsonResult.stdout) as Record<string, unknown>;
+  assert.equal(report.runId, runId);
+  assert.equal(report.outcome, "verified");
+  assert.equal("request" in report, false);
+
+  const humanResult = invoke(["run", "verify", runId], context.environment);
+  assert.equal(humanResult.status, 0, humanResult.stderr);
+  assert.match(humanResult.stdout, new RegExp(`run\\s+${runId}`));
+  assert.match(humanResult.stdout, /outcome\s+verified/);
+  assert.doesNotMatch(humanResult.stdout, /Inspect a large project|Audit 1/);
+});
+
+test("run verify exits degraded with static findings for corrupt optional evidence", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  await writeFile(runPaths(context.home, runId).snapshot, "{PRIVATE_BAD_SNAPSHOT", "utf8");
+
+  const result = invoke(["run", "verify", runId, "--json"], context.environment);
+
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout) as {
+    outcome: string;
+    findings: Array<{ code: string }>;
+  };
+  assert.equal(report.outcome, "degraded");
+  assert.deepEqual(report.findings.map((finding) => finding.code), [
+    "SNAPSHOT_INVALID_JSON",
+  ]);
+  assert.doesNotMatch(result.stdout, /PRIVATE_BAD_SNAPSHOT/);
+});
+
 test("run reconcile records operator-confirmed manual submission without resending", async () => {
   const context = await fixture();
   const runId = "run_cli_manual_reconcile";

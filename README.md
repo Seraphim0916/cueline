@@ -160,11 +160,13 @@ if (result.status === "complete") {
 
 `listCueLineRuns()` is a read-only, sanitized inventory for discovering persisted run IDs. It omits controller text, conversation URLs, job tasks, and worker output.
 
+`verifyCueLineRun(runId)` is a read-only integrity check for the creation marker, event replay and authority fences, optional snapshot, runtime lease, and job status evidence. It returns stable findings without returning durable run content.
+
 Inside Codex's runtime, import the absolute module that `cueline api path` prints — that is the built API of the package you installed.
 
 ## The CLI
 
-The CLI does not drive the browser. `doctor`, `routing`, `jobs`, `runs`, `run status`, `api path`, and `config path` are read-only. `install`/`uninstall` change the package-owned skill link. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, and `job cancel` append evidence or change durable local run/job state. Run `cueline help` for every positional argument and option before using a state-changing command.
+The CLI does not drive the browser. `doctor`, `routing`, `jobs`, `runs`, `run status`, `run verify`, `api path`, and `config path` are read-only. `install`/`uninstall` change the package-owned skill link. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, and `job cancel` append evidence or change durable local run/job state. Run `cueline help` for every positional argument and option before using a state-changing command.
 
 ```console
 $ cueline install
@@ -209,6 +211,9 @@ $ cueline run handoff run_... --json
 
 $ cueline run timeline run_... --after 40 --limit 20 --json
 {"schema":"cueline-timeline/0.1","entries":[{"sequence":41,"type":"job_status",...}],...}
+
+$ cueline run verify run_... --json
+{"runId":"run_...","outcome":"verified","marker":"valid",...}
 
 $ cueline run takeover stale_run_... --json
 {"runId":"stale_run_...","outcome":"taken_over","next":"continue",...}

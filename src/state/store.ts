@@ -18,7 +18,7 @@ import {
   withRuntimeLeaseMutation,
 } from "./runtime-lease.js";
 
-const STATE_PROTOCOL = "cueline/state/0.3";
+export const STATE_PROTOCOL = "cueline/state/0.3";
 
 export type RunReducer<State> = (state: State, event: RunEvent) => State;
 

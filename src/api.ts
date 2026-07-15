@@ -6,6 +6,7 @@ import type {
   StartCueLineRunOptions,
 } from "./api-contracts.js";
 import { confirmManualControllerSubmission } from "./api-controller-handoff.js";
+import { verifyCueLineRun } from "./api-run-verification.js";
 import {
   claimCueLineCallerJob,
   heartbeatCueLineCallerJob,
@@ -418,6 +419,7 @@ export {
   diagnoseCueLineRun,
   diagnoseCueLineRunStatus,
 } from "./diagnostics/run-doctor.js";
+export { verifyCueLineRun };
 export { createCodexIabAdapter };
 export { waitForCueLineRunChange } from "./observation/run-watch.js";
 export { lintControllerCommandText } from "./protocol/lint-command.js";
@@ -444,6 +446,9 @@ export type {
   CueLineJobCancellationResult,
   CueLineRunListEntry,
   CueLineRunCancellationResult,
+  CueLineRunVerificationFinding,
+  CueLineRunVerificationOutcome,
+  CueLineRunVerificationReport,
   CueLineRuntimeOptions,
   CueLineRuntimeReconciliationResult,
   CueLineRuntimeTakeoverResult,
