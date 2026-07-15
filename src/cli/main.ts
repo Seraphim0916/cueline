@@ -15,7 +15,7 @@ import {
   takeoverCueLineRuntime,
 } from "../api.js";
 import { CueLineError } from "../core/errors.js";
-import type { JobStatus } from "../jobs/status.js";
+import { parseJobStatus, type JobStatus } from "../jobs/status.js";
 import { executableAvailability } from "../router/availability.js";
 import { loadRoutingConfig } from "../router/config-loader.js";
 import { resolveRoute } from "../router/resolver.js";
@@ -231,13 +231,10 @@ async function readJobs(home: string): Promise<ListedJobStatus[]> {
   }
   const statuses: JobStatus[] = [];
   for (const name of names.filter((candidate) => candidate.endsWith(".json")).sort()) {
-    try {
-      statuses.push(JSON.parse(await readFile(path.join(directory, name), "utf8")) as JobStatus);
-    } catch (error) {
-      throw new CueLineError("JOB_STATUS_INVALID", `unable to parse job status: ${name}`, {
-        cause: error,
-      });
-    }
+    const expectedJobId = name.slice(0, -".json".length);
+    statuses.push(
+      parseJobStatus(await readFile(path.join(directory, name), "utf8"), expectedJobId),
+    );
   }
   const runMetadata = await readRunJobMetadata(home);
   const persistedById = new Map(statuses.map((status) => [status.jobId, status]));

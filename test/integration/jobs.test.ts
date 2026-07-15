@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { CueLineError } from "../../src/core/errors.js";
-import { JobStatusStore } from "../../src/jobs/status.js";
+import { JobStatusStore, parseJobStatus } from "../../src/jobs/status.js";
 import { JobSupervisor } from "../../src/jobs/supervisor.js";
 import type {
   RunnerAdapter,
@@ -52,6 +52,86 @@ function processIsAlive(pid: number): boolean {
     );
   }
 }
+
+test("job status store rejects structurally invalid JSON evidence", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-invalid-status-"));
+  const store = new JobStatusStore(directory);
+  const target = store.pathFor("malformed");
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "{}\n", "utf8");
+
+  await assert.rejects(store.read("malformed"), hasCode("JOB_STATUS_INVALID"));
+});
+
+test("job status parser rejects identity, chronology, and result contradictions", () => {
+  const timestamp = "2026-07-15T00:00:00.000Z";
+  const validResult = {
+    status: "succeeded",
+    exitCode: 0,
+    stdout: "ok",
+    stderr: "",
+    output: "ok",
+    emptyOutput: false,
+    timedOut: false,
+    cancelled: false,
+    ambiguousSideEffects: false,
+    retryable: false,
+    startedAt: timestamp,
+    finishedAt: timestamp,
+  };
+  const invalid = [
+    {
+      jobId: "other-job",
+      execution: "foreground",
+      status: "succeeded",
+      startedAt: timestamp,
+    },
+    {
+      jobId: "checked-job",
+      execution: "foreground",
+      status: "succeeded",
+      startedAt: "2026-07-15T00:00:01.000Z",
+      finishedAt: timestamp,
+    },
+    {
+      jobId: "checked-job",
+      execution: "foreground",
+      status: "running",
+      startedAt: timestamp,
+      result: validResult,
+    },
+    {
+      jobId: "checked-job",
+      execution: "foreground",
+      status: "failed",
+      startedAt: timestamp,
+      result: validResult,
+    },
+  ];
+
+  for (const value of invalid) {
+    assert.throws(
+      () => parseJobStatus(JSON.stringify(value), "checked-job"),
+      hasCode("JOB_STATUS_INVALID"),
+    );
+  }
+});
+
+test("job status store rejects invalid writes before creating a status file", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-invalid-status-write-"));
+  const store = new JobStatusStore(directory);
+  const invalid = {
+    jobId: "invalid-write",
+    execution: "foreground",
+    status: "succeeded",
+    startedAt: "not-a-timestamp",
+  } as Parameters<typeof store.write>[0];
+
+  await assert.rejects(store.write(invalid), hasCode("JOB_STATUS_INVALID"));
+  await assert.rejects(readFile(store.pathFor("invalid-write"), "utf8"), {
+    code: "ENOENT",
+  });
+});
 
 async function descendantProcessSpec(
   jobId: string,

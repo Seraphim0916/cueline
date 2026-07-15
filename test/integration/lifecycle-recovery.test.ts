@@ -13,6 +13,7 @@ import {
   cancelCueLineJob,
   cancelCueLineRun,
   continueCueLineRun,
+  loadCueLineRunState,
   loadCueLineRunStatus,
   reconcileCueLineRuntime,
   submitCueLineCallerJobResult,
@@ -371,6 +372,28 @@ test("process takeover's advertised runtime reconciliation is executable before 
   });
   assert.equal(result.status, "complete");
   assert.equal(result.finalDeliveryText, "PROCESS_TAKEOVER_CONTINUED");
+});
+
+test("runtime reconciliation refuses malformed job status without inventing a terminal state", async () => {
+  const home = await temporaryHome();
+  const runId = "run_reconcile_malformed_job_status";
+  const fixture = await createJobRun(home, runId, "process");
+  await writeFile(new JobStatusStore(home).pathFor(fixture.jobId), "{}\n", "utf8");
+  const before = await readEvents(runPaths(home, runId).events);
+
+  await assert.rejects(
+    reconcileCueLineRuntime(runId, { home }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "JOB_STATUS_INVALID",
+  );
+
+  const after = await readEvents(runPaths(home, runId).events);
+  assert.deepEqual(after, before);
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.status, "running");
+  assert.equal(state.jobs[fixture.jobId]?.status, "running");
 });
 
 test("concurrent explicit takeovers record attempts safely but only one confirmed success", async () => {

@@ -145,6 +145,10 @@ async function writeClaimJobStatus(
 ): Promise<void> {
   const statusStore = new JobStatusStore(home);
   const existing = await statusStore.read(job.jobId);
+  const startedAt =
+    status === "running" && existing?.status !== "running"
+      ? timestamp
+      : (existing?.startedAt ?? timestamp);
   const next: JobStatus = {
     jobId: job.jobId,
     runId: store.runId,
@@ -153,7 +157,7 @@ async function writeClaimJobStatus(
     mode: job.spec.mode,
     execution: "foreground",
     status,
-    startedAt: existing?.startedAt ?? timestamp,
+    startedAt,
     ...(status === "ambiguous" ? { finishedAt: timestamp } : {}),
     ...(error === undefined ? {} : { error }),
   };
