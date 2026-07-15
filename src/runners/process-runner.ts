@@ -14,6 +14,47 @@ export interface ProcessRunnerOptions {
   environment?: NodeJS.ProcessEnv;
 }
 
+const MAX_CAPTURED_STREAM_CHARS = 512_000;
+const PROCESS_METADATA_CHARS = 16_384;
+
+class BoundedTextCapture {
+  readonly #headLimit: number;
+  readonly #tailLimit: number;
+  #head = "";
+  #tail = "";
+  #totalChars = 0;
+
+  constructor(limit: number) {
+    this.#headLimit = Math.ceil(limit / 2);
+    this.#tailLimit = Math.floor(limit / 2);
+  }
+
+  append(value: string): void {
+    this.#totalChars += value.length;
+    const headSpace = this.#headLimit - this.#head.length;
+    const headAddition = headSpace > 0 ? value.slice(0, headSpace) : "";
+    this.#head += headAddition;
+    const remainder = value.slice(headAddition.length);
+    if (remainder !== "") {
+      this.#tail = `${this.#tail}${remainder}`.slice(-this.#tailLimit);
+    }
+  }
+
+  get truncatedChars(): number {
+    return Math.max(0, this.#totalChars - this.#head.length - this.#tail.length);
+  }
+
+  get prefix(): string {
+    return this.#head;
+  }
+
+  value(): string {
+    const truncated = this.truncatedChars;
+    if (truncated === 0) return `${this.#head}${this.#tail}`;
+    return `${this.#head}\n...[truncated ${truncated} chars]...\n${this.#tail}`;
+  }
+}
+
 function combineOutput(stdout: string, stderr: string): string {
   if (stdout.length === 0) {
     return stderr;
@@ -174,8 +215,8 @@ export class ProcessRunner implements RunnerAdapter {
         ...spec.env,
         CUELINE_DEPTH: "1",
       };
-      let stdout = "";
-      let stderr = "";
+      const stdoutCapture = new BoundedTextCapture(MAX_CAPTURED_STREAM_CHARS);
+      const stderrCapture = new BoundedTextCapture(MAX_CAPTURED_STREAM_CHARS);
       let timedOut = false;
       let cancelled = false;
       let settled = false;
@@ -202,12 +243,20 @@ export class ProcessRunner implements RunnerAdapter {
           terminateProcessTree(child, "SIGKILL");
         }
         spec.signal?.removeEventListener("abort", cancel);
+        const stdout = stdoutCapture.value();
+        const stderr = stderrCapture.value();
         const output = combineOutput(stdout, stderr);
         resolve({
           status,
           exitCode,
           stdout,
           stderr,
+          ...(stdoutCapture.truncatedChars === 0
+            ? {}
+            : { stdoutTruncatedChars: stdoutCapture.truncatedChars }),
+          ...(stderrCapture.truncatedChars === 0
+            ? {}
+            : { stderrTruncatedChars: stderrCapture.truncatedChars }),
           output,
           emptyOutput: output.length === 0,
           timedOut,
@@ -242,7 +291,7 @@ export class ProcessRunner implements RunnerAdapter {
           stdio: [spec.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         });
       } catch (error) {
-        stderr = errorText(error);
+        stderrCapture.append(errorText(error));
         finish("failed", null);
         return;
       }
@@ -259,7 +308,7 @@ export class ProcessRunner implements RunnerAdapter {
 
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string | Buffer) => {
-        stdout += chunk.toString();
+        stdoutCapture.append(chunk.toString());
         emitProgress("producing_output", {
           ...(observedModel === undefined ? {} : { model: observedModel }),
           ...(observedProvider === undefined ? {} : { provider: observedProvider }),
@@ -267,8 +316,8 @@ export class ProcessRunner implements RunnerAdapter {
       });
       child.stderr?.setEncoding("utf8");
       child.stderr?.on("data", (chunk: string | Buffer) => {
-        stderr += chunk.toString();
-        const metadata = processMetadata(stderr.slice(0, 16_384));
+        stderrCapture.append(chunk.toString());
+        const metadata = processMetadata(stderrCapture.prefix.slice(0, PROCESS_METADATA_CHARS));
         const changed =
           (metadata.model !== undefined && metadata.model !== observedModel) ||
           (metadata.provider !== undefined && metadata.provider !== observedProvider);
@@ -285,7 +334,7 @@ export class ProcessRunner implements RunnerAdapter {
         child.stdin?.end(spec.stdin, "utf8");
       }
       child.once("error", (error) => {
-        stderr += errorText(error);
+        stderrCapture.append(errorText(error));
         finish(
           cancelled ? (spec.mode === "work" ? "ambiguous" : "cancelled") : "failed",
           null,

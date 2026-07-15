@@ -54,7 +54,8 @@ interface RunnerSpec {
 - `CUELINE_DEPTH=1` is injected into the child.
 - A pre-existing `CUELINE_DEPTH` in the process or job environment rejects nested routing.
 - Standard input is closed unless the route explicitly selects stdin task input; stdout and stderr are captured as UTF-8 text.
-- Full stdout and stderr are persisted separately. Successful non-empty stdout is the preferred controller evidence; combined output remains diagnostic status only.
+- Each stream keeps up to 512,000 characters. Output within that bound is persisted in full. Larger output preserves its head and tail around an explicit truncation marker, with exact `stdoutTruncatedChars` or `stderrTruncatedChars` metadata, so a noisy worker cannot grow CueLine memory and status JSON without limit.
+- Stdout and stderr are persisted separately. Successful non-empty stdout is the preferred controller evidence; combined output remains diagnostic status only.
 - Exit code 0 is `succeeded`; a non-zero exit or spawn error is `failed`.
 - At timeout CueLine sends `SIGTERM`, then schedules `SIGKILL` after 250 ms if needed; the result is `timed_out`.
 - Cancellation uses the same owned-process termination path. `advise` becomes `cancelled`; started `work` becomes `ambiguous`.
