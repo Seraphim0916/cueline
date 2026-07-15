@@ -160,7 +160,7 @@ if (result.status === "complete") {
 
 在 Codex 的 runtime 裡，import `cueline api path` 印出的那個絕對路徑模組——那就是你安裝的那份套件建置出來的 API。
 
-`startCueLineRun` 只建立持久 run 並回傳 `ready`；`runCueLine` 會建立並推進到持久 controller 觀測暫停、caller 交接或終態。續跑前先執行 `cueline run status <run-id> --json`。單一正常送出、非人工、具精確 URL、無 job／pending command／取消的 stale caller observer 可被 fencing 後唯讀恢復；其他 stale 狀態仍須正式接管。`caller_work_pending`、`caller_work_claimed`、`caller_work_running` 分別只允許 `claim_caller_work`、`start_caller_work`、`continue_caller_work`，主控的 `dispatch` 本身不代表本機工作已開始。
+`startCueLineRun` 只建立持久 run 並回傳 `ready`；`runCueLine` 會建立並推進到持久 controller 觀測暫停、caller 交接或終態。續跑前先執行 `cueline run status <run-id> --json`。單一正常送出、非人工、具精確 URL、無 job／pending command／取消的 stale caller observer 可被 fencing 後唯讀恢復；其他 stale 狀態仍須正式接管。`caller_work_pending`、`caller_work_claimed`、`caller_work_running` 分別只允許 `claim_caller_work`、`start_caller_work`、`continue_caller_work`，主控的 `dispatch` 本身不代表本機工作已開始。CLI 的 `run status` 只輸出交接所需 metadata，不包含 task 內文、caller 身分、task hash、workdir 或 runtime owner ID；完成正式 claim 後，API 才會把精確 task 與 workdir 交給獲授權的 caller。
 
 ## CLI
 

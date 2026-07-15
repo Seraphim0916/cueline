@@ -23,6 +23,7 @@ import { defaultCueLineHome } from "../state/paths.js";
 import { readRuntimeLease } from "../state/runtime-lease.js";
 import { readAuthoritativeRunEvents } from "../state/store.js";
 import { CUELINE_VERSION } from "../version.js";
+import { safeCueLineRunStatus } from "./run-status-view.js";
 import { installSkill, uninstallSkill } from "./skill-links.js";
 
 interface CliIo {
@@ -51,7 +52,7 @@ function help(): string {
     "  doctor         report Node, caller readiness, state home, and process lanes",
     "  routing        list every lane and the candidate that would be selected",
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
-    "  run status     summarize one persisted run for safe cross-session handoff",
+    "  run status     metadata-only summary for safe cross-session handoff",
     "  run reconcile  confirm one manually sent controller turn; never resends it",
     "  run takeover   explicitly retire one exact stale runtime owner",
     "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
@@ -317,7 +318,9 @@ async function runStatusCommand(
 ): Promise<number> {
   const status = await loadCueLineRunStatus(runId, { environment });
   if (json) {
-    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...status }, null, 2));
+    io.stdout(
+      JSON.stringify({ version: CUELINE_VERSION, ...safeCueLineRunStatus(status) }, null, 2),
+    );
     return 0;
   }
   const controller = status.controller.responseAccepted
@@ -348,7 +351,7 @@ async function runStatusCommand(
   );
   for (const job of status.jobs.items) {
     io.stdout(
-      `job\t${job.jobId}\t${job.jobKey}\t${job.status}\t${job.mode}\t${job.lane}\trequired=${job.required}\tpersisted=${job.persistedStatus}\trunner=${job.execution?.runnerId ?? "-"}\tpid=${job.execution?.pid ?? "-"}\tmodel=${job.execution?.model ?? "-"}\tprovider=${job.execution?.provider ?? "-"}\tphase=${job.execution?.phase ?? "-"}\tprogress=${job.execution?.lastProgressAt ?? "-"}\ttask=${JSON.stringify(job.task)}`,
+      `job\t${job.jobId}\t${job.jobKey}\t${job.status}\t${job.mode}\t${job.lane}\trequired=${job.required}\tpersisted=${job.persistedStatus}\trunner=${job.execution?.runnerId ?? "-"}\tpid=${job.execution?.pid ?? "-"}\tmodel=${job.execution?.model ?? "-"}\tprovider=${job.execution?.provider ?? "-"}\tphase=${job.execution?.phase ?? "-"}\tprogress=${job.execution?.lastProgressAt ?? "-"}`,
     );
   }
   io.stdout(
