@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { CueLineError } from "../../src/core/errors.js";
-import { JobStatusStore } from "../../src/jobs/status.js";
+import { JobStatusStore, type JobStatus } from "../../src/jobs/status.js";
 import { JobSupervisor } from "../../src/jobs/supervisor.js";
 import type {
   RunnerAdapter,
@@ -27,6 +27,25 @@ function cleanEnvironment(): NodeJS.ProcessEnv {
 
 function registry(): RunnerRegistry {
   return new RunnerRegistry([{ id: "node", executable: process.execPath }]);
+}
+
+class MemoryJobStatusStore extends JobStatusStore {
+  readonly writes: JobStatus[] = [];
+  latest: JobStatus | undefined;
+
+  constructor() {
+    super(tmpdir());
+  }
+
+  override async write(status: JobStatus): Promise<void> {
+    const snapshot = structuredClone(status);
+    this.writes.push(snapshot);
+    this.latest = snapshot;
+  }
+
+  override async read(jobId: string): Promise<JobStatus | undefined> {
+    return this.latest?.jobId === jobId ? structuredClone(this.latest) : undefined;
+  }
 }
 
 function spec(jobId: string, script: string, overrides: Partial<RunnerSpec> = {}): RunnerSpec {
@@ -458,4 +477,151 @@ test("supervisor marks started work ambiguous when post-spawn bookkeeping fails"
   assert.equal(terminal.pid, 424_242);
   assert.match(terminal.error ?? "", /status persistence failed after spawn/);
   assert.equal((await store.read("post-spawn-work"))?.status, "ambiguous");
+});
+
+test("supervisor coalesces burst progress before persisting the terminal result", async () => {
+  const store = new MemoryJobStatusStore();
+  const progressCount = 2_000;
+  const startedAt = new Date("2026-07-15T00:00:00.000Z");
+  const runner: RunnerAdapter = {
+    async run(_spec: RunnerSpec, hooks: RunnerRunHooks = {}) {
+      await hooks.onSpawn?.(432_100);
+      for (let index = 0; index < progressCount; index += 1) {
+        void hooks.onProgress?.({
+          phase: `output_${index}`,
+          at: new Date(startedAt.getTime() + index).toISOString(),
+          ...(index === 0 ? { provider: "openai" } : {}),
+          ...(index === progressCount - 1 ? { model: "gpt-5.6-sol" } : {}),
+        });
+      }
+      const finishedAt = new Date(startedAt.getTime() + progressCount).toISOString();
+      return {
+        status: "succeeded",
+        exitCode: 0,
+        stdout: "DONE",
+        stderr: "",
+        output: "DONE",
+        emptyOutput: false,
+        timedOut: false,
+        cancelled: false,
+        ambiguousSideEffects: false,
+        retryable: false,
+        startedAt: startedAt.toISOString(),
+        finishedAt,
+      };
+    },
+  };
+  const supervisor = new JobSupervisor(runner, { statusStore: store });
+
+  const terminal = await supervisor.start(spec("progress-burst", ""));
+
+  assert.equal(terminal.status, "succeeded");
+  assert.equal(terminal.phase, "completed");
+  assert.equal(terminal.pid, 432_100);
+  assert.equal(terminal.provider, "openai");
+  assert.equal(terminal.model, "gpt-5.6-sol");
+  assert.equal(
+    terminal.lastProgressAt,
+    new Date(startedAt.getTime() + progressCount).toISOString(),
+  );
+  assert.equal(store.writes.at(0)?.status, "running");
+  assert.equal(store.writes.at(-1)?.status, "succeeded");
+  assert.ok(
+    store.writes.length <= 5,
+    `expected burst progress to be coalesced, received ${store.writes.length} writes`,
+  );
+});
+
+test("supervisor ignores diagnostic progress emitted after a runner returns", async () => {
+  const store = new MemoryJobStatusStore();
+  let finishLateProgress: (() => void) | undefined;
+  const lateProgressFinished = new Promise<void>((resolve) => {
+    finishLateProgress = resolve;
+  });
+  const startedAt = "2026-07-15T00:00:00.000Z";
+  const finishedAt = "2026-07-15T00:00:01.000Z";
+  const runner: RunnerAdapter = {
+    async run(_spec: RunnerSpec, hooks: RunnerRunHooks = {}) {
+      await hooks.onSpawn?.(432_101);
+      setImmediate(() => {
+        void Promise.resolve(
+          hooks.onProgress?.({
+            phase: "late_output",
+            at: "2026-07-15T00:00:02.000Z",
+          }),
+        ).finally(() => finishLateProgress?.());
+      });
+      return {
+        status: "succeeded",
+        exitCode: 0,
+        stdout: "DONE",
+        stderr: "",
+        output: "DONE",
+        emptyOutput: false,
+        timedOut: false,
+        cancelled: false,
+        ambiguousSideEffects: false,
+        retryable: false,
+        startedAt,
+        finishedAt,
+      };
+    },
+  };
+  const supervisor = new JobSupervisor(runner, { statusStore: store });
+
+  const terminal = await supervisor.start(spec("late-progress", ""));
+  await lateProgressFinished;
+
+  assert.equal(terminal.status, "succeeded");
+  assert.equal((await store.read("late-progress"))?.status, "succeeded");
+  assert.equal(store.writes.at(-1)?.status, "succeeded");
+  assert.equal(store.writes.some((status) => status.phase === "late_output"), false);
+});
+
+test("supervisor reports a progress persistence failure instead of false success", async () => {
+  class FailingProgressStore extends MemoryJobStatusStore {
+    attempts = 0;
+
+    override async write(status: JobStatus): Promise<void> {
+      this.attempts += 1;
+      if (this.attempts === 3) {
+        throw new Error("progress persistence unavailable");
+      }
+      await super.write(status);
+    }
+  }
+
+  const store = new FailingProgressStore();
+  const runner: RunnerAdapter = {
+    async run(_spec: RunnerSpec, hooks: RunnerRunHooks = {}) {
+      await hooks.onSpawn?.(432_102);
+      void Promise.resolve(
+        hooks.onProgress?.({
+          phase: "producing_output",
+          at: "2026-07-15T00:00:00.500Z",
+        }),
+      ).catch(() => undefined);
+      return {
+        status: "succeeded",
+        exitCode: 0,
+        stdout: "DONE",
+        stderr: "",
+        output: "DONE",
+        emptyOutput: false,
+        timedOut: false,
+        cancelled: false,
+        ambiguousSideEffects: false,
+        retryable: false,
+        startedAt: "2026-07-15T00:00:00.000Z",
+        finishedAt: "2026-07-15T00:00:01.000Z",
+      };
+    },
+  };
+  const supervisor = new JobSupervisor(runner, { statusStore: store });
+
+  const terminal = await supervisor.start(spec("progress-write-failure", ""));
+
+  assert.equal(terminal.status, "failed");
+  assert.match(terminal.error ?? "", /progress persistence unavailable/);
+  assert.equal((await store.read("progress-write-failure"))?.status, "failed");
 });
