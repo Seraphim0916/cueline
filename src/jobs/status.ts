@@ -1,10 +1,10 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { CueLineError } from "../core/errors.js";
-import { runtimePidTag } from "../core/runtime.js";
 import type { JobMode } from "../protocol/types.js";
 import type { JobExecution, JobResult, JobResultStatus } from "../runners/runner-adapter.js";
+import { atomicWriteJson } from "../state/atomic-write.js";
 
 export type JobStatusKind = "pending" | "running" | JobResultStatus;
 
@@ -49,11 +49,8 @@ export class JobStatusStore {
 
   async write(status: JobStatus): Promise<void> {
     assertSafeJobId(status.jobId);
-    await mkdir(this.#directory, { recursive: true });
-    const target = this.pathFor(status.jobId);
-    const temporary = `${target}.${runtimePidTag()}.${Date.now()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(status)}\n`, "utf8");
-    await rename(temporary, target);
+    const jsonStatus = JSON.parse(JSON.stringify(status)) as JobStatus;
+    await atomicWriteJson(this.pathFor(status.jobId), jsonStatus);
   }
 
   async read(jobId: string): Promise<JobStatus | undefined> {

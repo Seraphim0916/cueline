@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -374,6 +374,54 @@ test("persists distinct foreground and background job states", async () => {
   assert.equal(completed.status, "succeeded");
   assert.equal((await store.read("background"))?.status, "succeeded");
   assert.equal((await supervisor.inspect("background")).status, "succeeded");
+});
+
+test("same-millisecond concurrent job status writes use distinct atomic temporaries", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-concurrent-"));
+  const store = new JobStatusStore(directory);
+  const originalNow = Date.now;
+  Date.now = () => 1_784_150_400_000;
+  try {
+    await Promise.all(
+      Array.from({ length: 64 }, (_, index) =>
+        store.write({
+          jobId: "same-millisecond",
+          execution: "foreground",
+          status: "running",
+          phase: `write_${index}`,
+          startedAt: "2026-07-15T00:00:00.000Z",
+        }),
+      ),
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+
+  const persisted = await store.read("same-millisecond");
+  assert.equal(persisted?.status, "running");
+  assert.match(persisted?.phase ?? "", /^write_\d+$/);
+  assert.deepEqual(await readdir(path.dirname(store.pathFor("same-millisecond"))), [
+    "same-millisecond.json",
+  ]);
+});
+
+test("durable job status writes preserve JSON omission of optional undefined fields", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-undefined-"));
+  const store = new JobStatusStore(directory);
+
+  await store.write(
+    {
+      jobId: "optional-undefined",
+      execution: "foreground",
+      status: "running",
+      phase: undefined,
+      startedAt: "2026-07-15T00:00:00.000Z",
+    } as unknown as JobStatus,
+  );
+
+  const persisted = await store.read("optional-undefined");
+  assert.equal(persisted?.status, "running");
+  assert.equal(Object.hasOwn(persisted ?? {}, "phase"), false);
 });
 
 test("supervisor persists run metadata and cancels an owned background job", async () => {
