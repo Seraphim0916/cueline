@@ -77,6 +77,7 @@ interface BrowserAgent {
 
 declare global {
   // These globals are injected by the Codex browser runtime. They are absent in plain Node.
+  var browser: IabBrowser | undefined;
   var iab: IabBrowser | undefined;
   var agent: BrowserAgent | undefined;
 }
@@ -85,6 +86,11 @@ export async function resolveIabBrowser(requested?: IabBrowser): Promise<IabBrow
   if (requested) {
     await requested.documentation?.();
     return requested;
+  }
+  if (globalThis.browser) {
+    await globalThis.browser.documentation?.();
+    globalThis.iab = globalThis.browser;
+    return globalThis.browser;
   }
   if (globalThis.iab) {
     await globalThis.iab.documentation?.();
@@ -166,7 +172,9 @@ export async function readPageComposerState(
       const normalize = (value: unknown): string =>
         String(value ?? "")
           .replace(/\u00a0/g, " ")
-          .replace(/\r\n/g, "\n")
+          .replace(/\r\n?/g, "\n")
+          .replace(/[ \t]*\n[ \t]*/g, "\n")
+          .replace(/\n{2,}/g, "\n")
           .trim();
       const composer = document.querySelector('#prompt-textarea[contenteditable="true"]');
       const inlineText = normalize(

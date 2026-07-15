@@ -62,3 +62,29 @@ test("multiple submitted turns require explicit reconciliation selection", () =>
   const summary = summarizeCueLineRunState(state, 3, { ownership: "missing" });
   assert.equal(summary.safeNextAction, "reconcile");
 });
+
+test("a requested turn with no write-ahead send checkpoint is retry-ready", () => {
+  for (const status of ["running", "failed"] as const) {
+    const state = pendingState("requested");
+    state.status = status;
+    state.conversationUrl = null;
+    state.pendingControllerTurns[0]!.conversationUrl = null;
+    state.pendingControllerTurns[0]!.submissionCheckpointContract = "write_ahead_v1";
+    state.lastFailure =
+      status === "failed"
+        ? {
+            code: "MODEL_SELECTOR_MISSING",
+            requestId: state.pendingControllerTurns[0]!.requestId,
+            message: "No send click was attempted.",
+            stage: "pre_submit",
+            submissionState: "definitely_not_sent",
+            conversationUrl: null,
+          }
+        : null;
+
+    const summary = summarizeCueLineRunState(state, 2, { ownership: "missing" });
+    assert.equal(summary.phase, "prompt_not_sent");
+    assert.equal(summary.safeNextAction, "retry");
+    assert.equal(summary.controller.responseAccepted, false);
+  }
+});

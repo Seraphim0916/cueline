@@ -1,6 +1,6 @@
 {
   "name": "cueline",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "A ChatGPT web conversation directs; CueLine validates each text command and hands durable local advice to the current Codex.",
   "keywords": [
     "chatgpt",

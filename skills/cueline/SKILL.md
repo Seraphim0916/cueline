@@ -5,7 +5,7 @@ description: Use CueLine whenever the user wants a ChatGPT web Pro conversation 
 
 # CueLine
 
-Use CueLine to put the current ChatGPT web conversation in charge of planning and next-step decisions while the current Codex remains the local intermediary and executor. The web page has no direct machine tools or filesystem access; it only sends validated text commands. Never describe a Pro response as having inspected the repository or used local tools.
+Use CueLine to put the current ChatGPT web conversation in charge of planning and next-step decisions while the current Codex remains the local intermediary and executor. The web page has no direct machine tools or filesystem access; it only sends validated text commands. Pro starts with no knowledge of local paths, repository layout, files, services, or runtime state. Never describe a Pro response as having inspected the repository or used local tools.
 
 ## Preconditions
 
@@ -15,6 +15,7 @@ Use CueLine to put the current ChatGPT web conversation in charge of planning an
 4. CueLine requires the composer model selector to show `Pro` before every controller turn and requires the completed assistant message's `data-message-model-slug` to identify a Pro model. The account label (for example, a profile name ending in `Pro`) is subscription evidence only and never model evidence. Do not bypass `MODEL_SELECTOR_MISSING`, `PRO_MODEL_UNAVAILABLE`, `PRO_MODEL_SELECTION_FAILED`, or `PRO_MODEL_MISMATCH`.
 5. Do not request, read, copy, or print cookies, access tokens, browser session material, or private environment values.
 6. Keep v0.1 controller traffic text-only. ChatGPT may automatically convert a long filled prompt into an attachment; CueLine recognizes that state. Do not deliberately upload files, images, use Deep Research, Projects, or Apps. CueLine may switch the composer from another model to `Pro`; no other model switching is allowed.
+7. Never interrupt Pro while it is answering. Never click or invoke `Answer now`, `Respond now`, `Stop`, or any equivalent acceleration/interruption control. While Pro is thinking, perform only the read-only observation path and return `awaiting_controller`.
 
 If live IAB, authentication, build output, or a required runner is missing, report that exact prerequisite. Do not claim a live run from fake or read-only evidence.
 
@@ -62,11 +63,11 @@ The web controller decides `dispatch`, `wait`, `inspect`, `complete`, or `blocke
 
 ### Observe the controller turn
 
-When the result is `awaiting_controller`, CueLine has submitted the exact request once, captured its exact conversation URL, released the runtime lease, and stopped holding the outer tool call open. Do not send or start another run. After a bounded backoff, call `continueCueLineRun` on the same `runId` and browser. It performs one read-only `observeTurn`; if Pro is still answering, it returns `awaiting_controller` immediately again. Repeat until the exact response is accepted or reconciliation reports a concrete error.
+When the result is `awaiting_controller`, CueLine has submitted the exact request once, captured its exact conversation URL, released the runtime lease, and stopped holding the outer tool call open. Do not send or start another run. After a bounded backoff, call `continueCueLineRun` on the same `runId` and browser. It performs one read-only `observeTurn`; if Pro is still answering, it returns `awaiting_controller` immediately again. Never press `Answer now`, `Respond now`, `Stop`, or another control that shortens or interrupts Pro's reasoning. Repeat until the exact response is accepted or reconciliation reports a concrete error.
 
 ### Execute caller jobs
 
-When the result is `awaiting_caller`, execute every `pendingJobs` task exactly as written using the current Codex's local tools. Caller mode accepts `advise` only. It has no execution claim: coordinate one session before starting local advice, because two sessions could perform the same task and only the first submitted terminal evidence wins. If the controller requested `work`, stop on `CALLER_WORK_REQUIRES_CLAIM`; do not perform the mutation. Submit terminal evidence, then continue the same run:
+When the result is `awaiting_caller`, execute every `pendingJobs` task exactly as written using the current Codex's local tools. Caller mode accepts `advise` only. It has no execution claim: coordinate one session before starting local advice, because two sessions could perform the same task and only the first submitted terminal evidence wins. If the controller requested `work`, stop on `CALLER_WORK_REQUIRES_CLAIM`; do not perform the mutation. Every result sent back to Pro must name the exact absolute local paths inspected, include the relevant code excerpt or exact error/code identifiers, and distinguish verified facts from unknowns. End the evidence by asking whether Pro needs any additional local code, paths, or runtime evidence; Pro cannot discover them itself. Submit terminal evidence, then continue the same run:
 
 ```js
 for (const job of result.pendingJobs ?? []) {

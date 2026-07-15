@@ -14,6 +14,7 @@ import {
   cancelCueLineRun,
   continueCueLineRun,
   loadCueLineRunStatus,
+  reconcileCueLineRuntime,
   submitCueLineCallerJobResult,
   takeoverCueLineRuntime,
 } from "../../src/api.js";
@@ -316,6 +317,56 @@ test("explicit stale takeover releases a shared live-host owner, audits it, and 
   });
   assert.equal(result.status, "complete");
   assert.equal(result.finalDeliveryText, "TAKEOVER_CONTINUED");
+});
+
+test("process takeover's advertised runtime reconciliation is executable before continuation", async () => {
+  const home = await temporaryHome();
+  const runId = "run_process_takeover_reconcile_continue";
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, "", "process"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: "Resume a process run only after runtime reconciliation",
+    executor: "process",
+  });
+  const heartbeatAt = "2026-07-15T00:00:00.000Z";
+  await writeFile(
+    runPaths(home, runId).runtimeLease,
+    `${JSON.stringify({
+      protocol: "cueline/runtime-lease/0.1",
+      run_id: runId,
+      owner_id: "lost-process-owner",
+      pid: String(process.pid),
+      state: "active",
+      claimed_at: heartbeatAt,
+      heartbeat_at: heartbeatAt,
+    })}\n`,
+    "utf8",
+  );
+  const now = () => new Date("2026-07-15T00:01:00.000Z");
+
+  const takeover = await takeoverCueLineRuntime(runId, { home, now });
+  assert.equal(takeover.outcome, "taken_over");
+  assert.equal(takeover.next, "reconcile_runtime");
+
+  const reconciled = await reconcileCueLineRuntime(runId, { home, now });
+  assert.equal(reconciled.outcome, "reconciled");
+  assert.equal(reconciled.affectedJobs, 0);
+
+  const result = await continueCueLineRun({
+    runId,
+    home,
+    now,
+    browser: new FakeBrowserAdapter([
+      (input) => completeReply(input, "PROCESS_TAKEOVER_CONTINUED"),
+    ]),
+    routingConfig,
+  });
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "PROCESS_TAKEOVER_CONTINUED");
 });
 
 test("concurrent explicit takeovers record attempts safely but only one confirmed success", async () => {

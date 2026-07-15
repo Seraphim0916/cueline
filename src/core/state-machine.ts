@@ -43,6 +43,7 @@ export interface PendingControllerTurn {
   baselineAssistantMessageCount: number | null;
   composerPromptState: "inline_ready" | "attachment_ready" | null;
   manualSendConfirmed: boolean;
+  submissionCheckpointContract?: "write_ahead_v1" | null;
 }
 
 export interface RunFailureEvidence {
@@ -146,6 +147,18 @@ export function initialRunState(
   };
 }
 
+export function isControllerTurnProvenUnsent(
+  state: CueLineRunState,
+  turn: PendingControllerTurn | undefined,
+): boolean {
+  if (turn?.submissionState !== "requested") return false;
+  if (turn.submissionCheckpointContract === "write_ahead_v1") return true;
+  return (
+    state.lastFailure?.requestId === turn.requestId &&
+    state.lastFailure.submissionState === "definitely_not_sent"
+  );
+}
+
 export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLineRunState {
   const payload = recordPayload(event);
   if (event.type === "run_created" && typeof payload.request === "string") {
@@ -191,6 +204,10 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           baselineAssistantMessageCount: null,
           composerPromptState: null,
           manualSendConfirmed: false,
+          submissionCheckpointContract:
+            payload.submission_checkpoint_contract === "write_ahead_v1"
+              ? "write_ahead_v1"
+              : null,
         },
       ],
       abandonedControllerTurns: (state.abandonedControllerTurns ?? []).filter(
@@ -292,8 +309,13 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     const abandoned = (state.pendingControllerTurns ?? []).find(
       (turn) => turn.requestId === payload.request_id,
     );
+    const roundWasNotConsumed =
+      payload.round_not_consumed === true &&
+      abandoned !== undefined &&
+      abandoned.round === state.round;
     return {
       ...state,
+      round: roundWasNotConsumed ? Math.max(0, state.round - 1) : state.round,
       pendingControllerTurns: (state.pendingControllerTurns ?? []).filter(
         (turn) => turn.requestId !== payload.request_id,
       ),

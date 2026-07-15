@@ -25,6 +25,19 @@ function normalizedConversationUrl(value: string): string {
   }
 }
 
+function isChatGptConversationUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.hostname === "chatgpt.com" &&
+      /^\/c\/[^/]+\/?$/.test(parsed.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function confirmManualControllerSubmission(
   runId: string,
   options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> & {
@@ -74,13 +87,14 @@ export async function confirmManualControllerSubmission(
     }
     const conversationUrl =
       options.conversationUrl ?? turn.conversationUrl ?? state.conversationUrl;
-    if (!conversationUrl || !state.conversationUrl) {
+    if (!conversationUrl || !isChatGptConversationUrl(conversationUrl)) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_URL_REQUIRED",
-        "Manual submission confirmation requires the exact persisted ChatGPT conversation URL.",
+        "Manual submission confirmation requires the exact ChatGPT conversation URL.",
       );
     }
     if (
+      state.conversationUrl !== null &&
       normalizedConversationUrl(conversationUrl) !==
       normalizedConversationUrl(state.conversationUrl)
     ) {
@@ -125,6 +139,13 @@ export async function confirmManualControllerSubmission(
           "A command for this request or the same/newer controller round was already accepted; refusing duplicate reconciliation.",
         );
       }
+    }
+    if (state.conversationUrl === null) {
+      await store.append("controller_conversation_bound", {
+        request_id: turn.requestId,
+        conversation_url: conversationUrl,
+        operator_confirmation: true,
+      });
     }
     if (turn.manualSendConfirmed) {
       return {

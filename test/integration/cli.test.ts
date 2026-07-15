@@ -374,6 +374,63 @@ test("run reconcile records operator-confirmed manual submission without resendi
   );
 });
 
+test("run reconcile accepts the first conversation URL created by a manual send", async () => {
+  const context = await fixture();
+  const runId = "run_cli_manual_first_url";
+  const requestId = "msg_cli_manual_first_url";
+  const conversationUrl = "https://chatgpt.com/c/cli-manual-first-url";
+  const store = await RunStore.create({
+    home: context.home,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Bind URL after one manual send" });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: requestId,
+    prompt: "manual prompt",
+    prompt_hash: "cli-manual-first-url-hash",
+  });
+  await store.append("run_failed", {
+    code: "CONTROLLER_PROMPT_NOT_READY",
+    request_id: requestId,
+    stage: "pre_submit",
+    submission_state: "definitely_not_sent",
+  });
+  await store.snapshot();
+
+  const result = invoke(
+    [
+      "run",
+      "reconcile",
+      runId,
+      "--request-id",
+      requestId,
+      "--manual-send-confirmed",
+      "--conversation-url",
+      conversationUrl,
+      "--json",
+    ],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    runId,
+    requestId,
+    conversationUrl,
+    outcome: "confirmed",
+  });
+  const eventTypes = (await readEvents(runPaths(context.home, runId).events)).map(
+    (event) => event.type,
+  );
+  assert.ok(
+    eventTypes.indexOf("controller_conversation_bound") <
+      eventTypes.indexOf("controller_turn_manual_submission_confirmed"),
+  );
+});
+
 test("run reconcile-runtime settles a dead ownerless advise job", async () => {
   const context = await fixture();
   const runId = "run_cli_runtime_reconcile";
@@ -451,6 +508,48 @@ test("run takeover retires one exact stale owner and reports the next action", a
       "runtime_stale_owner_takeover_confirmed",
     ],
   );
+});
+
+test("run takeover directs an interrupted process run through runtime reconciliation", async () => {
+  const context = await fixture();
+  const runId = "run_cli_process_takeover";
+  const store = await RunStore.create({
+    home: context.home,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Reconcile a lost process owner" });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: "msg_cli_process_takeover",
+    prompt: "controller prompt",
+    prompt_hash: "cli-process-takeover-hash",
+  });
+  const heartbeatAt = "2000-01-01T00:00:00.000Z";
+  await writeFile(
+    runPaths(context.home, runId).runtimeLease,
+    `${JSON.stringify({
+      protocol: "cueline/runtime-lease/0.1",
+      run_id: runId,
+      owner_id: "cli-process-stale-owner",
+      pid: String(process.pid),
+      state: "active",
+      claimed_at: heartbeatAt,
+      heartbeat_at: heartbeatAt,
+    })}\n`,
+    "utf8",
+  );
+
+  const result = invoke(["run", "takeover", runId, "--json"], context.environment);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    runId,
+    outcome: "taken_over",
+    next: "reconcile_runtime",
+    previousOwnerId: "cli-process-stale-owner",
+  });
 });
 
 test("run takeover refuses a fresh active owner", async () => {
@@ -792,7 +891,7 @@ test("help lists every command, the environment, and the exit codes", async () =
     for (const syntax of [
       "jobs [--json]",
       "run status <run-id> [--json]",
-      "run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--json]",
+      "run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
       "run takeover <run-id> [--json]",
       "run reconcile-runtime <run-id> [--json]",
       "run cancel <run-id> [--json]",
@@ -804,6 +903,30 @@ test("help lists every command, the environment, and the exit codes", async () =
     assert.match(result.stdout, /read-only/i);
     assert.match(result.stdout, /append-only|durable state/i);
     assert.doesNotMatch(result.stdout, /commands only diagnose/i);
+  }
+});
+
+test("nested command help never treats --help as a run or job id", async () => {
+  const context = await fixture();
+  for (const args of [
+    ["run", "--help"],
+    ["run", "status", "--help"],
+    ["run", "reconcile", "--help"],
+    ["run", "takeover", "--help"],
+    ["run", "reconcile-runtime", "--help"],
+    ["run", "cancel", "--help"],
+    ["run", "stop", "--help"],
+    ["job", "--help"],
+    ["job", "cancel", "--help"],
+    ["api", "--help"],
+    ["api", "path", "--help"],
+    ["config", "--help"],
+    ["config", "path", "--help"],
+  ]) {
+    const result = invoke(args, context.environment);
+    assert.equal(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
+    assert.match(result.stdout, /usage: cueline/);
+    assert.equal(result.stderr.trim(), "");
   }
 });
 

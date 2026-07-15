@@ -1,7 +1,8 @@
 import { CueLineError } from "./errors.js";
-import type {
-  CueLineRunState,
-  StoredJobStatus,
+import {
+  isControllerTurnProvenUnsent,
+  type CueLineRunState,
+  type StoredJobStatus,
 } from "./state-machine.js";
 import type { RuntimeLeaseObservation } from "../state/runtime-lease.js";
 import type { CancellationObservation } from "../state/cancellation.js";
@@ -21,6 +22,7 @@ export type CueLineObservedJobStatus = (typeof OBSERVED_JOB_STATUSES)[number];
 
 export type CueLineRunPhase =
   | "starting"
+  | "prompt_not_sent"
   | "controller_response_pending"
   | "jobs_running"
   | "controller_decision_pending"
@@ -39,6 +41,7 @@ export type CueLineRunPhase =
 
 export type CueLineSafeNextAction =
   | "observe"
+  | "retry"
   | "reconcile"
   | "inspect_jobs_then_continue"
   | "inspect_runtime"
@@ -146,6 +149,13 @@ function roundLimitReached(state: CueLineRunState): boolean {
   );
 }
 
+function hasRetryableUnsentTurn(state: CueLineRunState): boolean {
+  return (
+    state.pendingControllerTurns.length === 1 &&
+    isControllerTurnProvenUnsent(state, state.pendingControllerTurns[0])
+  );
+}
+
 function safeNextActionFor(
   state: CueLineRunState,
   runtime: RuntimeLeaseObservation,
@@ -164,6 +174,7 @@ function safeNextActionFor(
   if (runtime.ownership === "stale" || runtime.ownership === "invalid") {
     return "inspect_runtime";
   }
+  if (hasRetryableUnsentTurn(state)) return "retry";
   if (state.pendingControllerTurns.length > 0) {
     const turn = state.pendingControllerTurns[0];
     const normallySubmitted =
@@ -192,6 +203,9 @@ export function cueLineRunPhase(
   if (state.status === "failed" && runtime.ownership === "active") return "runtime_active";
   if (runtime.ownership === "stale") return "runtime_stale";
   if (isPristineRun(state) && runtime.ownership !== "active") return "starting";
+  if (runtime.ownership !== "active" && hasRetryableUnsentTurn(state)) {
+    return "prompt_not_sent";
+  }
   if (state.status === "running" && state.pendingControllerTurns.length > 0) {
     return "controller_response_pending";
   }

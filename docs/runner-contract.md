@@ -4,7 +4,7 @@
 
 `startCueLineRun` and `runCueLine` default to `executor: "caller"`. With the built-in browser, one durable submission returns `awaiting_controller`; later continuations observe the same URL/request once without resending. A validated dispatch then persists pending jobs and returns them to the current Codex; it does not spawn `codex exec`. The caller executes each exact `advise` task with its own permitted local tools, submits one terminal result through `submitCueLineCallerJobResult`, and continues the same run. Duplicate terminal submissions return `already_terminal`.
 
-The ChatGPT web controller only emits a text command. It does not inspect the repository, call tools, or run the job itself. Caller execution rejects `work` with `CALLER_WORK_REQUIRES_CLAIM`; use caller `advise`, or explicitly opt into the process executor after the user has authorized local mutation.
+The ChatGPT web controller only emits a text command. It does not inspect the repository, call tools, run the job itself, or know local paths by default. Caller results therefore provide absolute paths, relevant code excerpts, and exact code/error identifiers, distinguish unknowns, and ask whether the controller needs more local evidence. While Pro is answering, CueLine only observes; operators must not use `Answer now`, `Respond now`, `Stop`, or an equivalent interruption control. Caller execution rejects `work` with `CALLER_WORK_REQUIRES_CLAIM`; use caller `advise`, or explicitly opt into the process executor after the user has authorized local mutation.
 
 ## Process routing happens before spawn
 

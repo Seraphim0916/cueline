@@ -2,13 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createCodexIabAdapter } from "../../src/browser/codex-iab/chatgpt-client.js";
-import type {
-  IabBrowser,
-  IabLocator,
-  IabTab,
-  PageComposerState,
-  PageChatState,
+import {
+  readPageComposerState,
+  resolveIabBrowser,
+  type IabBrowser,
+  type IabLocator,
+  type IabTab,
+  type PageComposerState,
+  type PageChatState,
 } from "../../src/browser/codex-iab/bootstrap.js";
+/*
+ * Keep these browser-runtime tests at the public adapter boundary. The actual
+ * page evaluator runs against a tiny DOM double so newline handling cannot be
+ * accidentally hidden by fake precomputed composer states.
+ */
+type BrowserGlobals = typeof globalThis & {
+  browser?: IabBrowser;
+  iab?: IabBrowser;
+};
 
 class FakeLocator implements IabLocator {
   readonly fills: string[] = [];
@@ -252,6 +263,90 @@ function fakeBrowser(options: {
     sendSubmissions: () => sendSubmissions,
   };
 }
+
+test("treats contenteditable block newlines as the same inline prompt", async () => {
+  const sendButton = {
+    disabled: false,
+    innerText: "Send prompt",
+    textContent: "Send prompt",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Send prompt";
+      if (name === "aria-disabled") return "false";
+      return null;
+    },
+  };
+  const form = {
+    querySelectorAll(selector: string) {
+      return selector === "button" ? [sendButton] : [];
+    },
+  };
+  const composer = {
+    innerText: "first line\n\nsecond line",
+    textContent: "first line\n\nsecond line",
+    parentElement: null,
+    closest() {
+      return form;
+    },
+  };
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelector() {
+        return composer;
+      },
+    },
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result, Argument>(
+        pageFunction: (argument: Argument) => Result | Promise<Result>,
+        argument: Argument,
+      ): Promise<Result> {
+        return pageFunction(argument);
+      },
+    },
+  } as unknown as IabTab;
+
+  try {
+    const state = await readPageComposerState(
+      tab,
+      "first line\nsecond line",
+      ["Send prompt"],
+    );
+    assert.equal(state.state, "inline_ready");
+    assert.equal(state.sendButtonEnabled, true);
+  } finally {
+    if (documentDescriptor) {
+      Object.defineProperty(globalThis, "document", documentDescriptor);
+    } else {
+      delete (globalThis as { document?: unknown }).document;
+    }
+  }
+});
+
+test("prefers the active injected Browser binding over a stale legacy iab binding", async () => {
+  const active = fakeBrowser({
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  }).browser;
+  const stale = fakeBrowser({
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  }).browser;
+  const globals = globalThis as BrowserGlobals;
+  const browserDescriptor = Object.getOwnPropertyDescriptor(globalThis, "browser");
+  const iabDescriptor = Object.getOwnPropertyDescriptor(globalThis, "iab");
+  globals.browser = active;
+  globals.iab = stale;
+
+  try {
+    assert.equal(await resolveIabBrowser(), active);
+  } finally {
+    if (browserDescriptor) Object.defineProperty(globalThis, "browser", browserDescriptor);
+    else delete globals.browser;
+    if (iabDescriptor) Object.defineProperty(globalThis, "iab", iabDescriptor);
+    else delete globals.iab;
+  }
+});
 
 test("fills the ChatGPT composer and returns the completed assistant control text", async () => {
   const fixture = fakeBrowser({
@@ -517,6 +612,12 @@ test("observeTurn checks once without resending and later returns the exact comp
   assert.equal(completed?.conversationUrl, conversationUrl);
   assert.equal(fixture.sendSubmissions(), 1);
   assert.deepEqual(fixture.composer.fills, [prompt]);
+  assert.equal(
+    fixture.requestedRoles.some((request) =>
+      /answer now|respond now|立即回答/i.test(request.name),
+    ),
+    false,
+  );
 });
 
 test("returns the conversation URL captured with the completed response DOM", async () => {
@@ -1446,6 +1547,35 @@ test("rejects a response whose actual model slug is not Pro", async () => {
   );
 });
 
+test("waits for the Pro composer label to hydrate before sending", async () => {
+  const fixture = fakeBrowser({
+    initialModel: "Pro",
+    modelReadSequence: [null, "Pro"],
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_hydrating_pro_before_send",
+    round: 1,
+    requestId: "msg_hydrating_pro_before_send",
+    prompt: "Wait for the actual Pro composer before sending",
+  });
+
+  assert.equal(turn.text, "complete");
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.deepEqual(fixture.composer.fills, ["Wait for the actual Pro composer before sending"]);
+});
+
 test("reacquires the exact conversation once when the cached tab is gone", async () => {
   const conversationUrl = "https://chatgpt.com/c/controller-recovery";
   const healthy = fakeBrowser({
@@ -1836,6 +1966,77 @@ test("recovers an existing completed response from the exact conversation withou
   assert.equal(turn?.conversationUrl, conversationUrl);
   assert.deepEqual(fixture.composer.fills, []);
   assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
+test("recovery ignores a stale selected webview and claims the exact user conversation", async () => {
+  const conversationUrl = "https://chatgpt.com/c/claimed-existing-response";
+  const prompt = "Claim the exact completed controller conversation";
+  const healthy = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "claimed complete response",
+        assistantMessageCount: 1,
+        lastUserText: prompt,
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const staleSelected: IabTab = {
+    async goto() {},
+    async url() {
+      throw new Error("Timed out waiting for the Browser webview to attach");
+    },
+    playwright: healthy.tab.playwright,
+  };
+  let claimCalls = 0;
+  let newCalls = 0;
+  const browser: IabBrowser = {
+    async documentation() {},
+    tabs: {
+      async selected() {
+        return staleSelected;
+      },
+      async list() {
+        return [];
+      },
+      async new() {
+        newCalls += 1;
+        throw new Error("UNEXPECTED_NEW_TAB");
+      },
+    },
+    user: {
+      async openTabs() {
+        return [{ id: "user-conversation", url: conversationUrl }];
+      },
+      async claimTab() {
+        claimCalls += 1;
+        return healthy.tab;
+      },
+    },
+  };
+  const adapter = createCodexIabAdapter({
+    browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_claimed_existing_response",
+    round: 1,
+    requestId: "msg_claimed_existing_response",
+    prompt,
+  });
+
+  assert.equal(turn.text, "claimed complete response");
+  assert.equal(turn.conversationUrl, conversationUrl);
+  assert.equal(claimCalls, 1);
+  assert.equal(newCalls, 0);
+  assert.deepEqual(healthy.composer.fills, []);
 });
 
 test("refuses recovery when response evidence and URL come from different DOM snapshots", async () => {

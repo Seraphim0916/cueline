@@ -2651,6 +2651,162 @@ test("a post-create submission failure exposes the generated run id for reconcil
   assert.equal(events.at(-1)?.type, "run_failed");
 });
 
+test("a proven pre-submit failure retries the same controller round", async () => {
+  const runId = "run_pre_submit_round_reuse";
+  const stateHome = await home();
+  const browser: BrowserAdapter = {
+    async sendTurn(input): Promise<ControllerTurn> {
+      throw new CueLineError("MODEL_SELECTOR_MISSING", "Pro selector is unavailable.", {
+        details: {
+          stage: "pre_submit",
+          submission_state: "definitely_not_sent",
+          request_id: input.requestId,
+        },
+      });
+    },
+  };
+
+  await assert.rejects(
+    runControllerLoop({
+      request: "Do not spend a round before the first send attempt",
+      runId,
+      home: stateHome,
+      browser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "MODEL_SELECTOR_MISSING",
+  );
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      browser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "MODEL_SELECTOR_MISSING",
+  );
+
+  const replayed = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  assert.equal(replayed.state.round, 1);
+  const requestedRounds = (await readEvents(runPaths(stateHome, runId).events))
+    .filter((event) => event.type === "controller_turn_requested")
+    .map((event) => (event.payload as Record<string, unknown>).round);
+  assert.deepEqual(requestedRounds, [1, 1]);
+});
+
+test("an ownerless requested turn is durable proof that no send click occurred", async () => {
+  const runId = "run_requested_owner_died";
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: "Retry after the owner died before the write-ahead submission checkpoint",
+    executor: "caller",
+  });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: "msg_owner_died_before_checkpoint",
+    prompt: "controller prompt",
+    prompt_hash: "owner-died-before-checkpoint-hash",
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.snapshot();
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "complete", final_delivery_text: "SAFE_RETRY" })),
+  ]);
+
+  const result = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "SAFE_RETRY");
+  assert.equal(browser.calls.length, 1);
+  assert.equal(browser.calls[0]?.round, 1);
+});
+
+test("process recovery observes once and returns instead of waiting for a completed response", async () => {
+  const runId = "run_process_bounded_recovery";
+  const requestId = "msg_process_bounded_recovery";
+  const conversationUrl = "https://chatgpt.com/c/process-bounded-recovery";
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Observe an old process turn without blocking" });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: requestId,
+    prompt: "controller prompt",
+    prompt_hash: "process-bounded-recovery-hash",
+  });
+  await store.append("controller_turn_submitted", {
+    round: 1,
+    request_id: requestId,
+    submission_state: "submitted",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "inline_ready",
+    baseline_assistant_message_count: 0,
+  });
+  await store.append("run_failed", {
+    code: "RUNTIME_OWNER_LOST",
+    request_id: requestId,
+    stage: "runtime_reconciliation",
+    submission_state: "submitted",
+    conversation_url: conversationUrl,
+  });
+  await store.snapshot();
+  let observeCalls = 0;
+  let recoverCalls = 0;
+  const browser: BrowserAdapter = {
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("must not resend a submitted controller turn");
+    },
+    async observeTurn(): Promise<ControllerTurn | undefined> {
+      observeCalls += 1;
+      return undefined;
+    },
+    async recoverTurn(): Promise<ControllerTurn> {
+      recoverCalls += 1;
+      throw new Error("unbounded recovery must not run when one-shot observation exists");
+    },
+  };
+
+  const result = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    conversationUrl,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "awaiting_controller");
+  assert.equal(observeCalls, 1);
+  assert.equal(recoverCalls, 0);
+});
+
 test("a post-create lease-claim failure exposes the generated run id without unowned failure events", async () => {
   const stateHome = await home();
   const routingConfig = {
@@ -2766,7 +2922,8 @@ test("continues after a proven pre-submit failure without trying to recover a no
   assert.equal(result.status, "complete");
   assert.equal(result.finalDeliveryText, "SAFE_RETRY_COMPLETE");
   assert.equal(resumedBrowser.calls.length, 1);
-  assert.notEqual(resumedBrowser.calls[0]?.requestId, failedRequestId);
+  assert.equal(resumedBrowser.calls[0]?.requestId, failedRequestId);
+  assert.equal(resumedBrowser.calls[0]?.round, 1);
   const events = await readEvents(runPaths(stateHome, runId).events);
   assert.equal(
     events.some(
@@ -2920,6 +3077,64 @@ test("restores an abandoned manually sent attachment turn through an append-only
   );
   assert.equal(events.filter((event) => event.type === "controller_command_accepted").length, 1);
   assert.equal(events.some((event) => event.type === "job_registered"), false);
+});
+
+test("manual submission confirmation atomically binds the first conversation URL", async () => {
+  const runId = "run_manual_first_url";
+  const requestId = "msg_manual_first_url";
+  const conversationUrl = "https://chatgpt.com/c/manual-first-url";
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Bind the URL created by a manual send" });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: requestId,
+    prompt: "prompt filled before CueLine could persist a conversation URL",
+    prompt_hash: "manual-first-url-hash",
+  });
+  await store.append("run_failed", {
+    code: "CONTROLLER_PROMPT_NOT_READY",
+    request_id: requestId,
+    stage: "pre_submit",
+    submission_state: "definitely_not_sent",
+  });
+  await store.snapshot();
+
+  const confirmation = await confirmManualControllerSubmission(runId, {
+    home: stateHome,
+    requestId,
+    conversationUrl,
+  });
+
+  assert.deepEqual(confirmation, {
+    runId,
+    requestId,
+    conversationUrl,
+    outcome: "confirmed",
+  });
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  const bindingIndex = events.findIndex(
+    (event) => event.type === "controller_conversation_bound",
+  );
+  const confirmationIndex = events.findIndex(
+    (event) => event.type === "controller_turn_manual_submission_confirmed",
+  );
+  assert.ok(bindingIndex >= 0);
+  assert.ok(confirmationIndex > bindingIndex);
+  const replayed = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  assert.equal(replayed.state.conversationUrl, conversationUrl);
+  assert.equal(replayed.state.pendingControllerTurns[0]?.conversationUrl, conversationUrl);
+  assert.equal(replayed.state.pendingControllerTurns[0]?.manualSendConfirmed, true);
 });
 
 test("rejects a wrong manual-recovery envelope without repair or resend", async () => {
@@ -3656,6 +3871,10 @@ test("includes runtime routing instructions in every controller prompt", async (
   });
 
   assert.match(browser.calls[0]?.prompt ?? "", /Available routing lanes: triage \[node\]\./);
+  assert.match(browser.calls[0]?.prompt ?? "", /no local tools or filesystem access/i);
+  assert.match(browser.calls[0]?.prompt ?? "", /absolute local paths/i);
+  assert.match(browser.calls[0]?.prompt ?? "", /exact code or error identifiers/i);
+  assert.match(browser.calls[0]?.prompt ?? "", /need any additional local/i);
 });
 
 test("reports a pre-spawn route failure to the controller instead of aborting the run", async () => {

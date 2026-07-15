@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.5 - 2026-07-15
+
+### Fixed
+
+- Add a durable built-in-browser `write_ahead_v1` submission contract. Only an exact request with that contract or request-correlated `definitely_not_sent` evidence may retry; the retry reuses the controller round. Status now reports `prompt_not_sent` / `retry` instead of incorrectly claiming that an unsent prompt is waiting for a response.
+- Normalize contenteditable block newlines before prompt-readiness comparison, wait for the Pro composer label to hydrate before sending, extend new-conversation URL capture to 15 seconds for attachment conversion, prefer the active injected Browser binding, and recover from a stale selected webview by claiming the exact matching user conversation.
+- Let manual submission confirmation atomically bind the first exact ChatGPT `/c/...` URL through the API and `cueline run reconcile ... --conversation-url URL`, without hand-editing the event log or resending.
+- Make process recovery perform one-shot controller observation and always direct a stale process takeover through `reconcile_runtime`; the advertised reconcile-then-continue path is covered end to end.
+- Fix nested `-h` / `--help` parsing and a date-dependent runtime-lease takeover test.
+- Make the controller boundary explicit: Pro has no local tools or implicit path knowledge. Controller prompts and caller evidence require exact code/error identifiers, relevant code excerpts, absolute local paths, and an explicit request for any additional missing evidence. Pro observation must never invoke `Answer now`, `Respond now`, `Stop`, or an equivalent interruption control.
+
+### Verification
+
+- Real ChatGPT Web Pro attachment runs verified one-click submission, exact URL capture, fast `awaiting_controller` release, repeated one-shot observation while Pro reasoned, exact envelope reconciliation, zero duplicate jobs, and terminal `complete` without interruption.
+
 ## 0.1.4 - 2026-07-15
 
 ### Fixed

@@ -34,6 +34,7 @@ import { assertRunCanContinue } from "./run-status.js";
 import {
   DEFAULT_MAX_ROUNDS,
   initialRunState,
+  isControllerTurnProvenUnsent,
   jobObservations,
   reduceRunState,
   type CueLineRunState,
@@ -436,15 +437,14 @@ async function reconcilePendingControllerTurn(
   if (pendingTurns.length === 0) return "continue";
   const provenUnsent =
     pendingTurns.length === 1 &&
-    pendingTurns[0]?.submissionState === "requested" &&
-    store.state.lastFailure?.submissionState === "definitely_not_sent" &&
-    store.state.lastFailure.requestId === pendingTurns[0]?.requestId;
+    isControllerTurnProvenUnsent(store.state, pendingTurns[0]);
   if (provenUnsent) {
     const pending = pendingTurns[0]!;
     await store.append("controller_turn_abandoned", {
       round: pending.round,
       request_id: pending.requestId,
       reason: "definitely_not_sent_retry",
+      round_not_consumed: true,
     });
     return "continue";
   }
@@ -493,7 +493,6 @@ async function reconcilePendingControllerTurn(
     );
   }
   const observeWithoutWaiting =
-    options.returnAfterControllerSubmission === true &&
     options.browser.observeTurn !== undefined;
   if (!observeWithoutWaiting && !options.browser.recoverTurn) {
     throw new CueLineError(

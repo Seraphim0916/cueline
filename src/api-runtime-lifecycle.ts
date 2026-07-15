@@ -101,15 +101,10 @@ export async function takeoverCueLineRuntime(
     ...(options.now === undefined ? {} : { now: options.now }),
   });
   if (runtime.ownership === "missing" || runtime.ownership === "released") {
-    const hasActiveProcessJobs =
-      state.executor === "process" &&
-      Object.values(state.jobs).some(
-        (job) => job.status === "pending" || job.status === "running",
-      );
     return {
       runId,
       outcome: "already_available",
-      next: hasActiveProcessJobs ? "reconcile_runtime" : "continue",
+      next: state.executor === "process" ? "reconcile_runtime" : "continue",
     };
   }
   if (runtime.ownership === "invalid") {
@@ -170,15 +165,11 @@ export async function takeoverCueLineRuntime(
       operator_confirmation: true,
     });
     await takeoverStore.snapshot();
-    const hasActiveProcessJobs =
-      takeoverStore.state.executor === "process" &&
-      Object.values(takeoverStore.state.jobs).some(
-        (job) => job.status === "pending" || job.status === "running",
-      );
     return {
       runId,
       outcome: "taken_over",
-      next: hasActiveProcessJobs ? "reconcile_runtime" : "continue",
+      next:
+        takeoverStore.state.executor === "process" ? "reconcile_runtime" : "continue",
       previousOwnerId: runtime.ownerId,
     };
   } finally {

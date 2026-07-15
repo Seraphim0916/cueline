@@ -40,6 +40,11 @@ export interface BrowserTurnHooks {
 }
 
 export interface BrowserAdapter {
+  /**
+   * Declares that `controller_turn_requested` is durably recorded before any
+   * submission side effect and every later submission phase is checkpointed.
+   */
+  readonly submissionCheckpointContract?: "write_ahead_v1";
   /** Submit durably and return after the submitted checkpoint, without waiting for Pro. */
   submitTurn?(input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<void>;
   /** Observe the exact submitted turn once; undefined means Pro is not finished yet. */

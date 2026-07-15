@@ -340,7 +340,14 @@ test("explicit stale takeover refuses an active heartbeat and has one atomic con
   );
   assert.equal(winners.length, 1);
   assert.equal(attempts.filter((result) => result.status === "rejected").length, 1);
-  assert.equal((await readRuntimeLease(home, runId)).ownership, "active");
+  assert.equal(
+    (
+      await readRuntimeLease(home, runId, {
+        now: () => new Date("2026-07-15T00:01:00.000Z"),
+      })
+    ).ownership,
+    "active",
+  );
   await winners[0]?.value.release();
 });
 

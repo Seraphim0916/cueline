@@ -20,6 +20,7 @@ import { CHATGPT_URL, COMPOSER_TEXTBOX_NAMES, SEND_BUTTON_NAMES } from "./select
 import { hasExactControllerEnvelopeIdentity, isProLabel, isProModelSlug,
   normalizedConversationUrl, normalizedMessageText } from "./recovery-evidence.js";
 import { captureConversationUrlAfterSubmit } from "./submission-url.js";
+import { acquireChatGptTab, isTabUnavailableError } from "./tab-discovery.js";
 import type { ExpectedControllerIdentity } from "../../protocol/types.js";
 
 export interface CodexIabAdapterOptions {
@@ -39,7 +40,6 @@ const MODEL_PICKER_SELECTOR = "button.__composer-pill";
 const REQUIRED_MODEL_LABEL = "Pro";
 const MODEL_LABEL_READ_ATTEMPTS = 50;
 const MODEL_LABEL_RETRY_INTERVAL_MS = 100;
-const TAB_DISCOVERY_RETRY_MS = 100;
 const COMPOSER_READY_TIMEOUT_MS = 30_000;
 const COMPOSER_READY_STABLE_MS = 250;
 
@@ -162,13 +162,6 @@ function isConversationUrl(url: string): boolean {
   return /^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+/.test(url);
 }
 
-function isTabUnavailableError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /tab not found|existing tabs: none|webview attach|cdp operation exceeded|target closed|page closed|browser.*disconnected/i.test(
-    message,
-  );
-}
-
 function ambiguousSubmissionError(error: unknown): CueLineError {
   return new CueLineError(
     "CONTROLLER_SUBMISSION_AMBIGUOUS",
@@ -227,6 +220,7 @@ async function readComposerModelLabelWhenReady(
 }
 
 class CodexIabAdapter implements BrowserAdapter {
+  readonly submissionCheckpointContract = "write_ahead_v1" as const;
   readonly #options: Required<Pick<CodexIabAdapterOptions, "timeoutMs" | "pollIntervalMs" | "stableMs">> &
     Pick<CodexIabAdapterOptions, "browser" | "conversationUrl">;
   #browser: IabBrowser | undefined;
@@ -267,57 +261,12 @@ class CodexIabAdapter implements BrowserAdapter {
       this.#tab = undefined;
     }
     const browser = await this.#getBrowser();
-    const targetUrl = this.#conversationUrl;
-    const matchesTarget = (url: string): boolean =>
-      targetUrl
-        ? normalizedConversationUrl(url) === normalizedConversationUrl(targetUrl)
-        : url.startsWith(CHATGPT_URL);
-    let tab: IabTab | undefined;
-    const canDiscover =
-      browser.tabs.selected !== undefined ||
-      browser.tabs.list !== undefined ||
-      browser.user?.openTabs !== undefined;
-    const discoveryPasses = canDiscover ? 2 : 1;
-    for (let pass = 0; pass < discoveryPasses && tab === undefined; pass += 1) {
-      const selected = await browser.tabs.selected?.();
-      if (selected && matchesTarget((await selected.url()) ?? "")) {
-        tab = selected;
-        break;
-      }
-      const sessionTabs = (await browser.tabs.list?.()) ?? [];
-      const sessionCandidate = sessionTabs.find((candidate) =>
-        matchesTarget(String(candidate.url ?? "")),
-      );
-      if (sessionCandidate?.id && browser.tabs.get) {
-        tab = await browser.tabs.get(sessionCandidate.id);
-      }
-      if (tab === undefined) {
-        const openTabs = (await browser.user?.openTabs?.()) ?? [];
-        const candidate = openTabs.find((openTab) =>
-          matchesTarget(String(openTab.url ?? "")),
-        );
-        if (candidate && browser.user?.claimTab) {
-          tab = await browser.user.claimTab(candidate);
-        }
-      }
-      if (tab === undefined && pass < discoveryPasses - 1) {
-        await delay(TAB_DISCOVERY_RETRY_MS);
-      }
-    }
-    if (tab === undefined) {
-      tab = await browser.tabs.new();
-      await tab.goto(targetUrl ?? CHATGPT_URL);
-    }
-    await tab.playwright.waitForLoadState?.({
-      state: "domcontentloaded",
-      timeoutMs: 30_000,
-    });
-    this.#tab = tab;
-    return tab;
+    this.#tab = await acquireChatGptTab(browser, this.#conversationUrl);
+    return this.#tab;
   }
 
-  async #ensureProModel(tab: IabTab): Promise<string> {
-    let label = await readComposerModelLabel(tab);
+  async #ensureProModel(tab: IabTab, signal?: AbortSignal): Promise<string> {
+    let label = await readComposerModelLabelWhenReady(tab, signal);
     if (isProLabel(label)) return label;
     if (label === null) {
       throw new CueLineError(
@@ -678,7 +627,7 @@ class CodexIabAdapter implements BrowserAdapter {
     if (!composer) {
       throw new CueLineError("COMPOSER_MISSING", "Could not find ChatGPT's message composer.");
     }
-    context.selectedModelLabel = await this.#ensureProModel(tab);
+    context.selectedModelLabel = await this.#ensureProModel(tab, input.signal);
     context.baseline = await readPageChatState(tab);
     const composerBaseline = await readPageComposerState(
       tab,

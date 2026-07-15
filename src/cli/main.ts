@@ -70,7 +70,7 @@ function help(): string {
     "  cueline routing",
     "  cueline jobs [--json]",
     "  cueline run status <run-id> [--json]",
-    "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--json]",
+    "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
     "  cueline run takeover <run-id> [--json]",
     "  cueline run reconcile-runtime <run-id> [--json]",
     "  cueline run cancel <run-id> [--json]",
@@ -393,6 +393,13 @@ export async function main(
       io.stdout(help());
       return 0;
     }
+    if (
+      args.length > 1 &&
+      args.some((argument) => argument === "--help" || argument === "-h")
+    ) {
+      io.stdout(help());
+      return 0;
+    }
     if (args.length === 1 && ["version", "--version", "-v"].includes(args[0] as string)) {
       io.stdout(CUELINE_VERSION);
       return 0;
@@ -462,6 +469,7 @@ export async function main(
       typeof args[2] === "string"
     ) {
       let requestId: string | undefined;
+      let conversationUrl: string | undefined;
       let manualConfirmed = false;
       let json = false;
       let valid = true;
@@ -469,6 +477,12 @@ export async function main(
         const argument = args[index];
         if (argument === "--request-id" && typeof args[index + 1] === "string") {
           requestId = args[index + 1];
+          index += 1;
+        } else if (
+          argument === "--conversation-url" &&
+          typeof args[index + 1] === "string"
+        ) {
+          conversationUrl = args[index + 1];
           index += 1;
         } else if (argument === "--manual-send-confirmed") {
           manualConfirmed = true;
@@ -481,12 +495,13 @@ export async function main(
       if (!valid || !requestId || !manualConfirmed) {
         throw new CueLineError(
           "CLI_ARGUMENTS_INVALID",
-          "usage: cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--json]",
+          "usage: cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
         );
       }
       const result = await confirmManualControllerSubmission(args[2], {
         environment,
         requestId,
+        ...(conversationUrl === undefined ? {} : { conversationUrl }),
       });
       if (json) io.stdout(JSON.stringify(result, null, 2));
       else io.stdout(`${result.runId}\t${result.requestId}\t${result.outcome}\tno_resend`);

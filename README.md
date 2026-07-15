@@ -48,15 +48,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.1.4
+npm install -g cueline@0.1.5
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.1.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.4), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.1.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.5), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.4/cueline-0.1.4.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.5/cueline-0.1.5.tgz
 cueline install
 cueline doctor
 ```
@@ -122,7 +122,7 @@ if (result.status === "complete") {
 }
 ```
 
-`startCueLineRun` creates the durable run and returns `ready` without driving the browser. `runCueLine` creates and advances it to a durable controller-observation pause, caller handoff, or terminal state. `continueCueLineRun({ runId })` advances the same conversation and reuses its stored URL. `loadCueLineRunState(runId)` is read-only. A terminal run is returned as-is. Before continuation, run `cueline run status <run-id> --json`: ownerless `controller_response_pending` with exactly one normally submitted turn and `safeNextAction: observe` means Pro's response has not yet been observed; wait briefly and continue it without resend. `safeNextAction: reconcile` is reserved for ambiguous, manually submitted, or multiple pending turns. Ownerless `caller_jobs_pending` is a healthy local handoff; an accepted response plus `jobs_running` means an explicit process executor is active.
+`startCueLineRun` creates the durable run and returns `ready` without driving the browser. `runCueLine` creates and advances it to a durable controller-observation pause, caller handoff, or terminal state. `continueCueLineRun({ runId })` advances the same conversation and reuses its stored URL. `loadCueLineRunState(runId)` is read-only. A terminal run is returned as-is. Before continuation, run `cueline run status <run-id> --json`: ownerless `controller_response_pending` with exactly one normally submitted turn and `safeNextAction: observe` means Pro's response has not yet been observed; wait briefly and continue it without resend. `phase: prompt_not_sent` with `safeNextAction: retry` is used only when the exact request has built-in write-ahead evidence or request-correlated `definitely_not_sent` evidence. `safeNextAction: reconcile` is reserved for ambiguous, manually submitted, or multiple pending turns. Ownerless `caller_jobs_pending` is a healthy local handoff; an accepted response plus `jobs_running` means an explicit process executor is active.
 
 Inside Codex's runtime, import the absolute module that `cueline api path` prints — that is the built API of the package you installed.
 
@@ -135,7 +135,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.4
+CueLine 0.1.5
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -159,7 +159,7 @@ $ cueline run status run_... --json
 $ cueline run takeover stale_run_... --json
 {"runId":"stale_run_...","outcome":"taken_over","next":"continue",...}
 
-$ cueline run reconcile run_... --request-id msg_... --manual-send-confirmed
+$ cueline run reconcile run_... --request-id msg_... --manual-send-confirmed --conversation-url https://chatgpt.com/c/...
 run_...\tmsg_...\tconfirmed
 
 $ cueline run cancel run_...
@@ -196,7 +196,9 @@ jobs/<job-id>.json            per-job execution evidence
 
 The event log is the record: the controller turn is written before it is sent, and a job is registered before its process starts, so an interruption between intent and side effect leaves a trace. A corrupt snapshot is ignored and rebuilt from event 1 rather than trusted.
 
-Recovery reattaches only to the exact recorded conversation URL. CueLine recognizes long prompts that ChatGPT automatically converts into attachment chips and makes at most one send attempt. An ambiguous click is `possibly_sent` and is never clicked again. If an operator manually sends that attachment, `cueline run reconcile ... --manual-send-confirmed` records an append-only confirmation; CueLine then requires exact conversation, Pro model, and protocol/run/round/request identity before importing the response without resend or duplicate dispatch.
+Recovery reattaches only to the exact recorded conversation URL. CueLine recognizes long prompts that ChatGPT automatically converts into attachment chips and makes at most one send attempt. Contenteditable block newlines are normalized before readiness comparison. An ambiguous click is `possibly_sent` and is never clicked again. If an operator manually sends that attachment after ChatGPT creates the first `/c/...` URL, `cueline run reconcile ... --manual-send-confirmed --conversation-url URL` atomically binds the exact URL and records an append-only confirmation; CueLine then requires exact conversation, Pro model, and protocol/run/round/request identity before importing the response without resend or duplicate dispatch.
+
+Never interrupt Pro or use `Answer now`, `Respond now`, `Stop`, or an equivalent acceleration control while it is answering. Pro has no local tools and no default knowledge of repository layout or local paths. Caller evidence must include exact code/error identifiers, relevant code excerpts, and absolute local paths, then explicitly ask whether Pro needs more local evidence.
 
 Controller observations prefer successful non-empty stdout, retain full stdout/stderr in local job status, and share one 12,000-character evidence budget with an explicit truncation marker.
 

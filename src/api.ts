@@ -119,7 +119,7 @@ function routingInstruction(
     const lanes = Object.entries(config.lanes)
       .filter(([, lane]) => lane.enabled)
       .map(([name]) => name);
-    return `Caller execution lanes: ${lanes.join(", ")}. Use only a listed lane with mode advise. The current Codex executes each task after handoff; do not select runner or runner_id.`;
+    return `Caller execution lanes: ${lanes.join(", ")}. Use only a listed lane with mode advise. The current Codex executes each task after handoff; do not select runner or runner_id. The web controller has no local tools. Local inspection tasks must return exact code or error identifiers, relevant code excerpts, and absolute local paths; request any missing local evidence explicitly.`;
   }
   const lanes = Object.entries(config.lanes)
     .filter(([, lane]) => lane.enabled)

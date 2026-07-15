@@ -1,7 +1,11 @@
 import { CueLineError } from "../../core/errors.js";
 import type { IabTab } from "./bootstrap.js";
 
-const CAPTURE_TIMEOUT_MS = 5_000;
+// ChatGPT can spend several seconds converting a large composer payload into
+// an attachment before the new `/c/...` route becomes visible. Keep this below
+// the common 30-second outer tool window while leaving enough time for that
+// real transition.
+const CAPTURE_TIMEOUT_MS = 15_000;
 
 function isConversationUrl(url: string): boolean {
   return /^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+/.test(url);
