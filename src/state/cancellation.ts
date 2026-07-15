@@ -7,6 +7,14 @@ import { runPaths } from "./paths.js";
 
 const CANCELLATION_PROTOCOL = "cueline/cancellation/0.1";
 const JOB_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const RUN_REQUEST_FIELDS = new Set([
+  "protocol",
+  "run_id",
+  "target",
+  "reason",
+  "requested_at",
+]);
+const JOB_REQUEST_FIELDS = new Set([...RUN_REQUEST_FIELDS, "job_id"]);
 
 export interface RunCancellationRequest {
   protocol: typeof CANCELLATION_PROTOCOL;
@@ -64,14 +72,38 @@ function parseRequest(
   source: string,
   runId: string,
 ): RunCancellationRequest | JobCancellationRequest {
-  const value = JSON.parse(source) as Record<string, unknown>;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source) as unknown;
+  } catch (error) {
+    throw new CueLineError(
+      "CANCELLATION_REQUEST_INVALID",
+      `CueLine run '${runId}' has a cancellation request that is not valid JSON.`,
+      { cause: error },
+    );
+  }
+  const value =
+    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  const expectedFields =
+    value.target === "job" ? JOB_REQUEST_FIELDS : RUN_REQUEST_FIELDS;
+  const hasUnknownField = Object.keys(value).some((field) => !expectedFields.has(field));
+  const requestedAt = value.requested_at;
+  const requestedAtDate =
+    typeof requestedAt === "string" ? new Date(requestedAt) : undefined;
+  const hasCanonicalTimestamp =
+    requestedAtDate !== undefined &&
+    Number.isFinite(requestedAtDate.getTime()) &&
+    requestedAtDate.toISOString() === requestedAt;
   if (
+    hasUnknownField ||
     value.protocol !== CANCELLATION_PROTOCOL ||
     value.run_id !== runId ||
     (value.target !== "run" && value.target !== "job") ||
     typeof value.reason !== "string" ||
     value.reason.trim() === "" ||
-    typeof value.requested_at !== "string" ||
+    !hasCanonicalTimestamp ||
     (value.target === "job" &&
       (typeof value.job_id !== "string" || !JOB_ID_PATTERN.test(value.job_id)))
   ) {
@@ -182,6 +214,12 @@ export async function readJobCancellations(
       throw new CueLineError(
         "CANCELLATION_REQUEST_INVALID",
         `CueLine run '${runId}' has a run request in its job cancellation directory.`,
+      );
+    }
+    if (name !== `${request.job_id}.json`) {
+      throw new CueLineError(
+        "CANCELLATION_REQUEST_INVALID",
+        `CueLine run '${runId}' has a job cancellation filename that does not match its job identity.`,
       );
     }
     requests.push(request);
