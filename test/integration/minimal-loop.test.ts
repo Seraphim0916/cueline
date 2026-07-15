@@ -1466,6 +1466,115 @@ test("process execution queues jobs behind per-lane concurrency limits", async (
   assert.equal(starts[2], ids[1]);
 });
 
+test("process execution ignores inherited lane concurrency values", async () => {
+  const runId = "run_inherited_lane_concurrency";
+  const spec = {
+    job_key: "inherited_limit",
+    lane: "triage",
+    mode: "advise" as const,
+    task: "Ignore a prototype-only concurrency value",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const starts: string[] = [];
+  const supervisor = {
+    async start(runnerSpec: RunnerSpec): Promise<JobStatus> {
+      starts.push(runnerSpec.jobId);
+      return terminalStatus(runnerSpec.jobId);
+    },
+    async waitForCompletion(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_WAIT: ${jobId}`);
+    },
+    async inspect(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_INSPECT: ${jobId}`);
+    },
+  };
+  const inherited = Object.create({ triage: 0 }) as Readonly<Record<string, number>>;
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [spec] })),
+    reply(() => ({ action: "complete", final_delivery_text: "INHERITED_IGNORED" })),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Ignore inherited runtime options",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+    executor: "process",
+    maxConcurrency: 1,
+    laneConcurrency: inherited,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.deepEqual(starts, [id]);
+});
+
+test("lane concurrency rejects non-record values before browser access", async () => {
+  for (const laneConcurrency of [null, [1]]) {
+    let browserCalls = 0;
+    const browser: BrowserAdapter = {
+      async sendTurn(input): Promise<ControllerTurn> {
+        browserCalls += 1;
+        return reply(() => ({ action: "complete", final_delivery_text: "UNREACHABLE" }))(input);
+      },
+    };
+
+    await assert.rejects(
+      runControllerLoop({
+        request: "Reject malformed runtime options",
+        home: await home(),
+        browser,
+        jobSupervisor: new FakeJobSupervisor([]),
+        resolveRunnerSpec: resolver,
+        executor: "process",
+        laneConcurrency: laneConcurrency as unknown as Readonly<Record<string, number>>,
+      }),
+      (error: unknown) =>
+        error instanceof CueLineError && error.code === "LANE_CONCURRENCY_INVALID",
+    );
+    assert.equal(browserCalls, 0);
+  }
+});
+
+test("lane concurrency is snapshotted before controller callbacks can mutate it", async () => {
+  const runId = "run_mutated_lane_concurrency";
+  const spec = {
+    job_key: "stable_limit",
+    lane: "triage",
+    mode: "advise" as const,
+    task: "Use the validated runtime option snapshot",
+  };
+  const limits: Record<string, number> = { triage: 1 };
+  let browserCalls = 0;
+  const browser: BrowserAdapter = {
+    async sendTurn(input): Promise<ControllerTurn> {
+      browserCalls += 1;
+      if (browserCalls === 1) {
+        limits.triage = 0;
+        return reply(() => ({ action: "dispatch", jobs: [spec] }))(input);
+      }
+      return reply(() => ({ action: "complete", final_delivery_text: "SNAPSHOT_OK" }))(input);
+    },
+  };
+
+  const result = await runControllerLoop({
+    request: "Snapshot mutable runtime options",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: new FakeJobSupervisor([terminalStatus(jobId(runId, spec.job_key, spec))]),
+    resolveRunnerSpec: resolver,
+    executor: "process",
+    maxConcurrency: 1,
+    laneConcurrency: limits,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "SNAPSHOT_OK");
+  assert.equal(limits.triage, 0);
+});
+
 test("a second session cannot continue a legacy running run without ownership evidence", async () => {
   const runId = "run_active_owner";
   const stateHome = await home();

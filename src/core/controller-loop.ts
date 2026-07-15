@@ -310,6 +310,7 @@ function watchOwnedCancellation(
 function validatedLimits(options: ControllerRuntimeOptions): {
   maxRounds: number;
   maxRepairAttempts: number;
+  laneConcurrency: Readonly<Record<string, number>> | undefined;
 } {
   const maxRounds = validatedMaxRounds(options.maxRounds);
   const maxRepairAttempts = options.maxRepairAttempts ?? 2;
@@ -332,15 +333,42 @@ function validatedLimits(options: ControllerRuntimeOptions): {
       "maxConcurrency must be a positive integer.",
     );
   }
-  for (const [lane, limit] of Object.entries(options.laneConcurrency ?? {})) {
-    if (!Number.isSafeInteger(limit) || limit < 1) {
+  const laneConcurrency: unknown = options.laneConcurrency;
+  let normalizedLaneConcurrency: Readonly<Record<string, number>> | undefined;
+  if (laneConcurrency !== undefined) {
+    if (
+      laneConcurrency === null ||
+      typeof laneConcurrency !== "object" ||
+      Array.isArray(laneConcurrency)
+    ) {
       throw new CueLineError(
         "LANE_CONCURRENCY_INVALID",
-        `laneConcurrency['${lane}'] must be a positive integer.`,
+        "laneConcurrency must be a record of positive integer limits.",
       );
     }
+    const ownLimits: Record<string, number> = Object.create(null) as Record<string, number>;
+    for (const [lane, limit] of Object.entries(laneConcurrency)) {
+      if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1) {
+        throw new CueLineError(
+          "LANE_CONCURRENCY_INVALID",
+          `laneConcurrency['${lane}'] must be a positive integer.`,
+        );
+      }
+      ownLimits[lane] = limit;
+    }
+    normalizedLaneConcurrency = Object.freeze(ownLimits);
   }
-  return { maxRounds, maxRepairAttempts };
+  return { maxRounds, maxRepairAttempts, laneConcurrency: normalizedLaneConcurrency };
+}
+
+function validatedRuntimeOptions<Options extends ControllerRuntimeOptions>(
+  options: Options,
+): Options {
+  const { laneConcurrency } = validatedLimits(options);
+  return {
+    ...options,
+    ...(laneConcurrency === undefined ? {} : { laneConcurrency }),
+  };
 }
 
 function validatedMaxRounds(value: number | undefined): number {
@@ -625,7 +653,7 @@ export async function createControllerRun(
 }
 
 export async function runControllerLoop(options: ControllerLoopOptions): Promise<CueLineResult> {
-  validatedLimits(options);
+  options = validatedRuntimeOptions(options);
   const store = await createControllerRunStore(options);
   const now = options.now ?? (() => new Date());
   const id = store.runId;
@@ -676,7 +704,7 @@ export async function runControllerLoop(options: ControllerLoopOptions): Promise
 export async function continueControllerLoop(
   options: ContinueControllerLoopOptions,
 ): Promise<CueLineResult> {
-  validatedLimits(options);
+  options = validatedRuntimeOptions(options);
   const now = options.now ?? (() => new Date());
   const home = options.home ?? defaultCueLineHome();
   const initialStore = await RunStore.load({
