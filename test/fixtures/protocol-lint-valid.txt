@@ -1,0 +1,10 @@
+<CueLineControl>
+{
+  "protocol": "cueline/0.1",
+  "run_id": "run_protocol_lint_smoke",
+  "round": 1,
+  "request_id": "msg_protocol_lint_smoke",
+  "action": "wait",
+  "wait_ms": 1000
+}
+</CueLineControl>

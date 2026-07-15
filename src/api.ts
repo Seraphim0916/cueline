@@ -419,6 +419,7 @@ export {
 } from "./diagnostics/run-doctor.js";
 export { createCodexIabAdapter };
 export { waitForCueLineRunChange } from "./observation/run-watch.js";
+export { lintControllerCommandText } from "./protocol/lint-command.js";
 export { CUELINE_VERSION } from "./version.js";
 export type {
   ContinueCueLineRunOptions,
@@ -448,6 +449,13 @@ export type {
   CueLineRunWatchOptions,
   CueLineRunWatchResult,
 } from "./observation/run-watch.js";
+export type {
+  CueLineProtocolLintIssue,
+  CueLineProtocolLintOptions,
+  CueLineProtocolLintResult,
+  CueLineProtocolLintRouting,
+  CueLineProtocolLintSeverity,
+} from "./protocol/lint-command.js";
 export type {
   BrowserAdapter,
   CueLineResult,

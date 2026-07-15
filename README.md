@@ -187,6 +187,9 @@ default	codex-default	available
 $ cueline jobs
 No jobs.
 
+$ cueline protocol lint response.txt --run-id run_... --round 3 --request-id msg_... --json
+{"valid":false,"issues":[{"code":"LEGACY_RUNNER_ID_FIELD",...}]}
+
 $ cueline run status run_... --json
 {"status":"running","executor":"caller","phase":"caller_jobs_pending","runtime":{"ownership":"missing"},...}
 
@@ -221,6 +224,10 @@ See [`docs/experiments/run-doctor.md`](docs/experiments/run-doctor.md).
 The experimental `run watch` command performs a bounded, lease-free observation
 using the durable event sequence as its cursor. See
 [`docs/experiments/run-watch.md`](docs/experiments/run-watch.md).
+
+The experimental `protocol lint` command validates a Pro envelope offline and
+reports all known contract corrections in one pass. See
+[`docs/experiments/protocol-lint.md`](docs/experiments/protocol-lint.md).
 
 Use `run takeover` only when `run status` reports an exact stale owner. It refuses a fresh active heartbeat and returns `next: continue` or `next: reconcile_runtime`; follow that value instead of guessing.
 

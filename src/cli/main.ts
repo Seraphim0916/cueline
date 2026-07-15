@@ -11,6 +11,7 @@ import {
   confirmManualControllerSubmission,
   diagnoseCueLineRun,
   loadCueLineRunStatus,
+  lintControllerCommandText,
   reconcileCueLineRuntime,
   routingConfigPath,
   takeoverCueLineRuntime,
@@ -38,7 +39,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run doctor|run watch|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|jobs|protocol lint|run status|run doctor|run watch|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -53,6 +54,7 @@ function help(): string {
     "  doctor         report Node, caller readiness, state home, and process lanes",
     "  routing        list every lane and the candidate that would be selected",
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
+    "  protocol lint  validate a Pro control envelope offline and explain corrections",
     "  run status     summarize one persisted run for safe cross-session handoff",
     "  run doctor     explain why a run is waiting or blocked and name the safe next action",
     "  run watch      wait briefly for a newer durable event without owning the run",
@@ -73,6 +75,7 @@ function help(): string {
     "  cueline doctor",
     "  cueline routing",
     "  cueline jobs [--json]",
+    "  cueline protocol lint <file> --run-id <id> --round <n> --request-id <id> [--json]",
     "  cueline run status <run-id> [--json]",
     "  cueline run doctor <run-id> [--json]",
     "  cueline run watch <run-id> --after <sequence> [--timeout-ms <0..30000>] [--json]",
@@ -101,7 +104,7 @@ function help(): string {
     "  2  the arguments were not understood",
     "",
     "state effects:",
-    "  Read-only: doctor, routing, jobs, run status, run doctor, run watch, api path, config path, help, version.",
+    "  Read-only: doctor, routing, jobs, protocol lint, run status, run doctor, run watch, api path, config path, help, version.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
@@ -315,6 +318,47 @@ async function jobsCommand(
   return 0;
 }
 
+async function protocolLintCommand(
+  file: string,
+  expected: { runId: string; round: number; requestId: string },
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const config = await loadRoutingConfig(routingConfigPath(environment));
+  const runnerLanes: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const [lane, laneConfig] of Object.entries(config.lanes)) {
+    if (!laneConfig.enabled) continue;
+    for (const candidate of laneConfig.candidates) {
+      if (candidate.enabled === false || runnerLanes[candidate.id] !== undefined) continue;
+      runnerLanes[candidate.id] = lane;
+    }
+  }
+  const text = await readFile(file, "utf8");
+  const report = lintControllerCommandText(text, {
+    expected,
+    routing: {
+      lanes: Object.entries(config.lanes)
+        .filter(([, lane]) => lane.enabled)
+        .map(([lane]) => lane),
+      runnerLanes,
+    },
+  });
+  if (json) {
+    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...report }, null, 2));
+  } else {
+    io.stdout(`valid\t${report.valid ? "yes" : "no"}`);
+    io.stdout(`format\t${report.format}`);
+    for (const issue of report.issues) {
+      io.stdout(
+        `issue\t${issue.severity}\t${issue.code}\t${issue.path ?? "-"}\t${issue.message}\tsuggestion=${issue.suggestion ?? "-"}`,
+      );
+    }
+    if (report.command !== undefined) io.stdout(`action\t${report.command.action}`);
+  }
+  return report.valid ? 0 : 1;
+}
+
 async function runStatusCommand(
   runId: string,
   json: boolean,
@@ -498,6 +542,62 @@ export async function main(
       (args.length === 1 || (args.length === 2 && args[1] === "--json"))
     ) {
       return jobsCommand(args[1] === "--json", environment, io);
+    }
+    if (
+      args[0] === "protocol" &&
+      args[1] === "lint" &&
+      typeof args[2] === "string"
+    ) {
+      let runId: string | undefined;
+      let round: number | undefined;
+      let requestId: string | undefined;
+      let json = false;
+      let valid = true;
+      for (let index = 3; index < args.length; index += 1) {
+        const argument = args[index];
+        if (argument === "--run-id" && runId === undefined && typeof args[index + 1] === "string") {
+          runId = args[index + 1];
+          index += 1;
+        } else if (
+          argument === "--round" &&
+          round === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          round = Number(args[index + 1]);
+          index += 1;
+        } else if (
+          argument === "--request-id" &&
+          requestId === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          requestId = args[index + 1];
+          index += 1;
+        } else if (argument === "--json" && !json) {
+          json = true;
+        } else {
+          valid = false;
+        }
+      }
+      if (
+        !valid ||
+        !runId ||
+        !requestId ||
+        round === undefined ||
+        !Number.isSafeInteger(round) ||
+        round < 1
+      ) {
+        throw new CueLineError(
+          "CLI_ARGUMENTS_INVALID",
+          "usage: cueline protocol lint <file> --run-id <id> --round <n> --request-id <id> [--json]",
+        );
+      }
+      return protocolLintCommand(
+        args[2],
+        { runId, round, requestId },
+        json,
+        environment,
+        io,
+      );
     }
     if (
       args[0] === "run" &&
