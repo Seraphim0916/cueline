@@ -193,6 +193,9 @@ $ cueline run status run_... --json
 $ cueline run doctor run_... --json
 {"outcome":"action_required","phase":"caller_jobs_pending","nextAction":"execute_caller_jobs",...}
 
+$ cueline run watch run_... --after 42 --timeout-ms 5000 --json
+{"outcome":"changed","previousSequence":42,"currentSequence":43,...}
+
 $ cueline run takeover stale_run_... --json
 {"runId":"stale_run_...","outcome":"taken_over","next":"continue",...}
 
@@ -214,6 +217,10 @@ CueLine skill removed: /Users/you/.codex/skills/cueline
 The experimental `run doctor` command converts a run snapshot into stable
 finding codes, bounded evidence, and a safe next action without writing state.
 See [`docs/experiments/run-doctor.md`](docs/experiments/run-doctor.md).
+
+The experimental `run watch` command performs a bounded, lease-free observation
+using the durable event sequence as its cursor. See
+[`docs/experiments/run-watch.md`](docs/experiments/run-watch.md).
 
 Use `run takeover` only when `run status` reports an exact stale owner. It refuses a fresh active heartbeat and returns `next: continue` or `next: reconcile_runtime`; follow that value instead of guessing.
 

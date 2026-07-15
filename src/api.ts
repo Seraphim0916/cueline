@@ -418,6 +418,7 @@ export {
   diagnoseCueLineRunStatus,
 } from "./diagnostics/run-doctor.js";
 export { createCodexIabAdapter };
+export { waitForCueLineRunChange } from "./observation/run-watch.js";
 export { CUELINE_VERSION } from "./version.js";
 export type {
   ContinueCueLineRunOptions,
@@ -443,6 +444,10 @@ export type {
   CueLineRunDiagnosticFinding,
   CueLineRunDiagnosticOutcome,
 } from "./diagnostics/run-doctor.js";
+export type {
+  CueLineRunWatchOptions,
+  CueLineRunWatchResult,
+} from "./observation/run-watch.js";
 export type {
   BrowserAdapter,
   CueLineResult,
