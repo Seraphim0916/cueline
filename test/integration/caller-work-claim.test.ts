@@ -660,6 +660,83 @@ test("caller result default timestamps are validated before durable submission i
   assert.equal((await new JobStatusStore(home).read(job.jobId))?.status, "running");
 });
 
+test("successful caller output stays complete in job status but bounded in run events", async () => {
+  const runId = "run_caller_success_event_output_bound";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-large-success-owner",
+  });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home });
+  const stdout = `CALLER_STDOUT_SUMMARY\n${"S".repeat(30_000)}`;
+  const stderr = `CALLER_STDERR_TRACE_SENTINEL\n${"T".repeat(150_000)}`;
+
+  await submitCueLineCallerJobResult(
+    runId,
+    job.jobId,
+    { status: "succeeded", stdout, stderr },
+    { home, claim: proof(claim) },
+  );
+
+  const persisted = await new JobStatusStore(home).read(job.jobId);
+  assert.equal(persisted?.result?.stdout, stdout);
+  assert.equal(persisted?.result?.stderr, stderr);
+  const terminalEvent = (await readEvents(runPaths(home, runId).events)).findLast(
+    (entry) =>
+      entry.type === "job_status" &&
+      typeof entry.payload === "object" &&
+      entry.payload !== null &&
+      !Array.isArray(entry.payload) &&
+      (entry.payload as Record<string, unknown>).status === "succeeded",
+  );
+  const payload = terminalEvent?.payload as Record<string, unknown>;
+  assert.equal(typeof payload.output, "string");
+  assert.match(payload.output as string, /CALLER_STDOUT_SUMMARY/);
+  assert.match(payload.output as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.doesNotMatch(payload.output as string, /CALLER_STDERR_TRACE_SENTINEL/);
+  assert.ok((payload.output as string).length < 20_000);
+});
+
+test("failed caller output and error stay complete in job status but bounded in run events", async () => {
+  const runId = "run_caller_failure_event_output_bound";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-large-failure-owner",
+  });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home });
+  const stdout = `PARTIAL_WORK\n${"P".repeat(30_000)}`;
+  const stderr = `FAILURE_TRACE\n${"F".repeat(150_000)}`;
+  const error = `FAILURE_REASON\n${"E".repeat(40_000)}`;
+
+  await submitCueLineCallerJobResult(
+    runId,
+    job.jobId,
+    { status: "failed", stdout, stderr, error, exitCode: 1 },
+    { home, claim: proof(claim) },
+  );
+
+  const persisted = await new JobStatusStore(home).read(job.jobId);
+  assert.equal(persisted?.result?.stdout, stdout);
+  assert.equal(persisted?.result?.stderr, stderr);
+  assert.equal(persisted?.error, error);
+  const terminalEvent = (await readEvents(runPaths(home, runId).events)).findLast(
+    (entry) =>
+      entry.type === "job_status" &&
+      typeof entry.payload === "object" &&
+      entry.payload !== null &&
+      !Array.isArray(entry.payload) &&
+      (entry.payload as Record<string, unknown>).status === "ambiguous",
+  );
+  const payload = terminalEvent?.payload as Record<string, unknown>;
+  assert.equal(typeof payload.output, "string");
+  assert.equal(typeof payload.error, "string");
+  assert.match(payload.output as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.match(payload.error as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.ok((payload.output as string).length < 20_000);
+  assert.ok((payload.error as string).length < 20_000);
+});
+
 test("a non-success result after caller work starts is terminally ambiguous", async () => {
   const runId = "run_caller_failed_work_is_ambiguous";
   const { home, job } = await fixture(runId);

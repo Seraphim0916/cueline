@@ -5,9 +5,10 @@ import type { ControllerCommand, ControllerJobSpec } from "../protocol/types.js"
 import { RunStore } from "../state/store.js";
 import { throwIfCancelled } from "./controller-abort.js";
 import {
+  boundedControllerEventEvidence,
   controllerEvidenceContentHash,
-  controllerResultOutput,
   preferredControllerEvidence,
+  truncate,
 } from "./controller-turn.js";
 import type { ControllerRuntimeOptions, JobSupervisorLike } from "./controller-types.js";
 import { asCueLineError, CueLineError } from "./errors.js";
@@ -15,7 +16,6 @@ import { jobId } from "./ids.js";
 import { jobObservations, type CueLineRunState, type StoredJob } from "./state-machine.js";
 
 export function statusPayload(status: JobStatus): Record<string, unknown> {
-  const output = controllerResultOutput(status);
   return {
     job_id: status.jobId,
     status: status.status,
@@ -27,8 +27,7 @@ export function statusPayload(status: JobStatus): Record<string, unknown> {
     ...(status.lastProgressAt === undefined
       ? {}
       : { last_progress_at: status.lastProgressAt }),
-    ...(output === undefined ? {} : { output }),
-    ...(status.error === undefined ? {} : { error: status.error }),
+    ...boundedControllerEventEvidence(status),
   };
 }
 
@@ -36,6 +35,7 @@ export function validateCommandBeforeAcceptance(
   store: RunStore<CueLineRunState>,
   command: ControllerCommand,
   options: ControllerRuntimeOptions,
+  evidenceJobs = jobObservations(store.state),
 ): void {
   if (
     (command.action === "wait" || command.action === "inspect") &&
@@ -64,7 +64,7 @@ export function validateCommandBeforeAcceptance(
   }
   if (command.action === "inspect" && command.evidence_offset !== undefined) {
     const selectedId = command.job_ids?.[0];
-    const selected = jobObservations(store.state).find((job) => job.job_id === selectedId);
+    const selected = evidenceJobs.find((job) => job.job_id === selectedId);
     if (selected === undefined) {
       throw new CueLineError(
         "CONTROL_INSPECT_JOB_UNKNOWN",
@@ -129,7 +129,12 @@ async function updateRunningJobs(
     selected.map((job) => supervisor.waitForCompletion(job.jobId)),
   );
   for (const status of statuses) {
-    await store.append("job_status", statusPayload(status));
+    const job = store.state.jobs[status.jobId];
+    const durableStatus =
+      job === undefined
+        ? status
+        : await persistControllerTerminalStatus(store, job, status);
+    await store.append("job_status", statusPayload(durableStatus));
   }
 }
 
@@ -137,6 +142,33 @@ interface StartedDispatchedJob {
   jobId: string;
   backgroundAdvice: boolean;
   completion: Promise<Record<string, unknown>>;
+}
+
+async function persistControllerTerminalStatus(
+  store: RunStore<CueLineRunState>,
+  job: StoredJob,
+  status: JobStatus,
+): Promise<JobStatus> {
+  if (status.status === "pending" || status.status === "running") return status;
+  const statusStore = new JobStatusStore(store.paths.home);
+  const existing = await statusStore.read(job.jobId);
+  if (
+    existing !== undefined &&
+    existing.status !== "pending" &&
+    existing.status !== "running"
+  ) {
+    return existing;
+  }
+  const terminal = {
+    ...status,
+    jobId: job.jobId,
+    runId: store.runId,
+    jobKey: job.jobKey,
+    lane: job.spec.lane,
+    mode: job.spec.mode,
+  } satisfies JobStatus;
+  await statusStore.write(terminal);
+  return terminal;
 }
 
 async function registerDispatchedJob(
@@ -208,19 +240,22 @@ async function startDispatchedJob(
         jobKey: spec.job_key,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       }).then(
-        async (status) =>
-          statusPayload(
+        async (status) => {
+          const completed =
             spec.mode === "work" &&
-              (status.status === "pending" || status.status === "running")
+            (status.status === "pending" || status.status === "running")
               ? await options.jobSupervisor.waitForCompletion(id)
-              : status,
-          ),
+              : status;
+          return statusPayload(
+            await persistControllerTerminalStatus(store, job, completed),
+          );
+        },
         (error: unknown) => {
           const failure = asCueLineError(error, "JOB_START_FAILED");
           return {
             job_id: id,
             status: "failed",
-            error: failure.message,
+            error: truncate(failure.message),
           };
         },
       ),
@@ -230,7 +265,7 @@ async function startDispatchedJob(
     await store.append("job_status", {
       job_id: id,
       status: "failed",
-      error: failure.message,
+      error: truncate(failure.message),
     });
     return undefined;
   }
@@ -269,7 +304,7 @@ async function executeProcessDispatch(
         return {
           job_id: job.jobId,
           status: "failed",
-          error: failure.message,
+          error: truncate(failure.message),
         };
       },
     ),
@@ -349,7 +384,7 @@ async function executeProcessDispatch(
           return {
             job_id: settled.entry.jobId,
             status: "failed",
-            error: failure.message,
+            error: truncate(failure.message),
           };
         });
       continue;
@@ -441,7 +476,8 @@ async function executeCommand(
     for (const job of selected) {
       try {
         const status = await options.jobSupervisor.inspect(job.jobId);
-        await store.append("job_status", statusPayload(status));
+        const durableStatus = await persistControllerTerminalStatus(store, job, status);
+        await store.append("job_status", statusPayload(durableStatus));
       } catch (error) {
         const failure = asCueLineError(error, "JOB_INSPECT_FAILED");
         await store.append("notice", {

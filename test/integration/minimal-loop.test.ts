@@ -4349,6 +4349,7 @@ test("controller feedback prefers successful stdout and bounds oversized worker 
   const status = terminalStatus(id, `FINAL_SUMMARY\n${"S".repeat(30_000)}`);
   status.result!.stderr = `TRACE_SENTINEL\n${"T".repeat(150_000)}`;
   status.result!.output = `${status.result!.stdout}\n${status.result!.stderr}`;
+  const runHome = await home();
   const browser = new FakeBrowserAdapter([
     reply(() => ({ action: "dispatch", jobs: [spec] })),
     reply((input) => {
@@ -4363,13 +4364,27 @@ test("controller feedback prefers successful stdout and bounds oversized worker 
   const result = await runControllerLoop({
     request: "Review compact evidence",
     runId,
-    home: await home(),
+    home: runHome,
     browser,
     jobSupervisor: new FakeJobSupervisor([status]),
     resolveRunnerSpec: resolver,
   });
 
   assert.equal(result.finalDeliveryText, "COMPACT");
+  const terminalEvent = (await readEvents(runPaths(runHome, runId).events)).findLast(
+    (entry) =>
+      entry.type === "job_status" &&
+      typeof entry.payload === "object" &&
+      entry.payload !== null &&
+      !Array.isArray(entry.payload) &&
+      (entry.payload as Record<string, unknown>).status === "succeeded",
+  );
+  const eventOutput = (terminalEvent?.payload as Record<string, unknown>)?.output;
+  assert.equal(typeof eventOutput, "string");
+  assert.match(eventOutput as string, /FINAL_SUMMARY/);
+  assert.match(eventOutput as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.doesNotMatch(eventOutput as string, /TRACE_SENTINEL/);
+  assert.ok((eventOutput as string).length < 20_000);
 });
 
 test("controller evidence budget is global across multiple large jobs", async () => {

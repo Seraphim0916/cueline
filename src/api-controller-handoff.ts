@@ -7,6 +7,7 @@ import type {
   ManualControllerSubmissionConfirmation,
 } from "./api-contracts.js";
 import { validateCallerWorkResultClaim } from "./api-caller-work.js";
+import { boundedControllerEventEvidence } from "./core/controller-turn.js";
 import { CueLineError } from "./core/errors.js";
 import { loadPersistedRunStore } from "./core/persisted-run.js";
 import { runtimeEnvironment } from "./core/runtime.js";
@@ -464,16 +465,10 @@ export async function submitCueLineCallerJobResult(
         });
       }
     }
-    const terminalResult = terminal.result;
-    const controllerOutput =
-      terminal.status === "succeeded" && terminalResult?.stdout.trim() !== ""
-        ? terminalResult?.stdout
-        : terminalResult?.output;
     await store.append("job_status", {
       job_id: jobId,
       status: terminal.status,
-      ...(controllerOutput === undefined ? {} : { output: controllerOutput }),
-      ...(terminal.error === undefined ? {} : { error: terminal.error }),
+      ...boundedControllerEventEvidence(terminal),
     });
     await store.snapshot();
     return { runId, jobId, outcome: "submitted" };

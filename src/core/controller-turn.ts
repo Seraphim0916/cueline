@@ -106,6 +106,16 @@ export function controllerEvidenceContentHash(
   return commandHash({ field: evidence.field, value: evidence.value });
 }
 
+export function boundedControllerEventEvidence(
+  status: JobStatus,
+): { output?: string; error?: string } {
+  const output = controllerResultOutput(status);
+  return {
+    ...(output === undefined ? {} : { output: truncate(output) }),
+    ...(status.error === undefined ? {} : { error: truncate(status.error) }),
+  };
+}
+
 function promptJson(value: unknown): string {
   return JSON.stringify(value, null, 2)
     .replaceAll("<", "\\u003c")
@@ -205,9 +215,9 @@ export function observationFor(
   state: CueLineRunState,
   round: number,
   requestId: string,
+  sourceJobs = jobObservations(state),
 ): ControllerObservation {
   const remaining = { value: MAX_CONTROLLER_EVIDENCE_CHARS, omittedChars: 0 };
-  const sourceJobs = jobObservations(state);
   const inspectedJobIds = new Set(state.inspectionJobIds ?? []);
   const persistedEvidenceOffset = state.inspectionEvidenceOffset ?? 0;
   const requestedEvidenceOffset =

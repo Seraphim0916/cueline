@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { JobStatusStore } from "../jobs/status.js";
 import {
   CancellationWatcher,
   readCancellationObservation,
@@ -16,6 +17,7 @@ import {
 } from "./controller-command-execution.js";
 import {
   assertConversationUrlCompatible,
+  controllerResultOutput,
   observationFor,
   requestControllerCommand,
   truncate,
@@ -201,7 +203,7 @@ async function settleCancelledJobs(
       await store.append("job_status", {
         job_id: job.jobId,
         status: "ambiguous",
-        error: failure.message,
+        error: truncate(failure.message),
       });
     }
   }
@@ -403,6 +405,37 @@ function durableRoundLimitReached(state: CueLineRunState, maxRounds: number): bo
   );
 }
 
+async function controllerEvidenceJobs(
+  store: RunStore<CueLineRunState>,
+): Promise<ReturnType<typeof jobObservations>> {
+  const observations = jobObservations(store.state);
+  const statusStore = new JobStatusStore(store.paths.home);
+  return Promise.all(
+    observations.map(async (observation) => {
+      const job = store.state.jobs[observation.job_id];
+      try {
+        const persisted = await statusStore.read(observation.job_id);
+        if (
+          persisted === undefined ||
+          persisted.status !== observation.status ||
+          (persisted.runId !== undefined && persisted.runId !== store.runId) ||
+          (persisted.jobKey !== undefined && persisted.jobKey !== job?.jobKey)
+        ) {
+          return observation;
+        }
+        const output = controllerResultOutput(persisted);
+        return {
+          ...observation,
+          ...(output === undefined ? {} : { output }),
+          ...(persisted.error === undefined ? {} : { error: persisted.error }),
+        };
+      } catch {
+        return observation;
+      }
+    }),
+  );
+}
+
 async function driveControllerLoop(
   store: RunStore<CueLineRunState>,
   options: ControllerRuntimeOptions,
@@ -416,11 +449,12 @@ async function driveControllerLoop(
       throw maxRoundsExceeded(maxRounds);
     }
     const round = state.round + 1;
+    const evidenceJobs = await controllerEvidenceJobs(store);
     const requestId = messageId(id, round, "observation", {
-      jobs: jobObservations(state),
+      jobs: evidenceJobs,
       notices: state.notices,
     });
-    const observation = observationFor(state, round, requestId);
+    const observation = observationFor(state, round, requestId, evidenceJobs);
     const command = await requestControllerCommand(
       store,
       options.browser,
@@ -429,7 +463,7 @@ async function driveControllerLoop(
       maxRepairAttempts,
       options.controllerInstructions ?? [],
       undefined,
-      (candidate) => validateCommandBeforeAcceptance(store, candidate, options),
+      (candidate) => validateCommandBeforeAcceptance(store, candidate, options, evidenceJobs),
       options.signal,
       undefined,
       options.returnAfterControllerSubmission === true,
@@ -535,7 +569,13 @@ async function reconcilePendingControllerTurn(
     );
   }
   const state = store.state;
-  const observation = observationFor(state, pending.round, pending.requestId);
+  const evidenceJobs = await controllerEvidenceJobs(store);
+  const observation = observationFor(
+    state,
+    pending.round,
+    pending.requestId,
+    evidenceJobs,
+  );
   const recoveryInput = {
     runId: state.runId,
     round: pending.round,
@@ -567,7 +607,7 @@ async function reconcilePendingControllerTurn(
       attempt: pending.repairAttempt,
       ...(pending.manualSendConfirmed ? { manualSendConfirmed: true } : {}),
     },
-    (candidate) => validateCommandBeforeAcceptance(store, candidate, options),
+    (candidate) => validateCommandBeforeAcceptance(store, candidate, options, evidenceJobs),
     options.signal,
     expectedConversationUrl,
     options.returnAfterControllerSubmission === true,
