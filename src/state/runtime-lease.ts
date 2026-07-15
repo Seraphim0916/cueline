@@ -328,6 +328,21 @@ function isNotFound(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+function isValidTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function isSafeRuntimeGeneration(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value)
+  );
+}
+
 function parseRetiredOwners(value: unknown): RuntimeOwnerRetirementEvidence[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("RUNTIME_LEASE_INVALID");
@@ -341,11 +356,10 @@ function parseRetiredOwners(value: unknown): RuntimeOwnerRetirementEvidence[] {
     }
     const record = candidate as Record<string, unknown>;
     if (
-      typeof record.owner_id !== "string" ||
-      record.owner_id === "" ||
+      !isNonEmptyString(record.owner_id) ||
       !Number.isSafeInteger(record.events_after_sequence) ||
       (record.events_after_sequence as number) < 0 ||
-      typeof record.retired_at !== "string"
+      !isValidTimestamp(record.retired_at)
     ) {
       throw new Error("RUNTIME_LEASE_INVALID");
     }
@@ -362,11 +376,13 @@ function parseLease(source: string, runId: string): RuntimeLeaseRecord {
   if (
     value.protocol !== LEASE_PROTOCOL ||
     value.run_id !== runId ||
-    typeof value.owner_id !== "string" ||
-    typeof value.pid !== "string" ||
+    !isNonEmptyString(value.owner_id) ||
+    !isNonEmptyString(value.pid) ||
     (value.state !== "active" && value.state !== "released") ||
-    typeof value.claimed_at !== "string" ||
-    typeof value.heartbeat_at !== "string"
+    !isValidTimestamp(value.claimed_at) ||
+    !isValidTimestamp(value.heartbeat_at) ||
+    (value.state === "active" && value.released_at !== undefined) ||
+    (value.state === "released" && !isValidTimestamp(value.released_at))
   ) {
     throw new Error("RUNTIME_LEASE_INVALID");
   }
@@ -383,9 +399,8 @@ function parseFence(source: string, runId: string): RuntimeFenceRecord {
   if (
     value.protocol !== FENCE_PROTOCOL ||
     value.run_id !== runId ||
-    typeof value.generation !== "string" ||
-    value.generation === "" ||
-    typeof value.created_at !== "string" ||
+    !isSafeRuntimeGeneration(value.generation) ||
+    !isValidTimestamp(value.created_at) ||
     (value.lease_source !== undefined &&
       value.lease_source !== "legacy" &&
       value.lease_source !== "epoch")
