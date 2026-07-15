@@ -136,7 +136,7 @@ cueline run reconcile RUN_ID \
   --conversation-url https://chatgpt.com/c/EXACT_CONVERSATION
 ```
 
-The command accepts the first exact ChatGPT conversation URL created by that manual send, binds it in `controller_conversation_bound`, and writes `controller_turn_manual_submission_confirmed` under the same lease. Then continue with that request ID. CueLine accepts the response only if its Pro evidence and full envelope identity match; a mismatch is rejected without resend or dispatch.
+The command accepts the first exact ChatGPT conversation URL created by that manual send, binds it in `controller_conversation_bound`, and writes `controller_turn_manual_submission_confirmed` under the same lease. Then continue with that request ID. Before the public continuation API records the same confirmation, it validates nested-routing safety, runtime limits, executor authorization, conversation identity, routing configuration, and Browser construction. A deterministic preflight failure therefore leaves the pending turn unchanged instead of returning an error after mutating it. CueLine accepts the response only if its Pro evidence and full envelope identity match; a mismatch is rejected without resend or dispatch.
 
 Continuation cannot reconstruct an expired ChatGPT login, a deleted conversation, an unavailable registered executable, or an in-memory child process that disappeared with the host process. In those cases CueLine reports the concrete failure; it does not fabricate completion.
 

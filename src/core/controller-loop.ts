@@ -307,7 +307,16 @@ function watchOwnedCancellation(
   };
 }
 
-function validatedLimits(options: ControllerRuntimeOptions): {
+type ControllerRuntimeLimitOptions = Pick<
+  ControllerRuntimeOptions,
+  | "maxRounds"
+  | "maxRepairAttempts"
+  | "runTimeoutMs"
+  | "maxConcurrency"
+  | "laneConcurrency"
+>;
+
+export function validateControllerRuntimeOptions(options: ControllerRuntimeLimitOptions): {
   maxRounds: number;
   maxRepairAttempts: number;
 } {
@@ -383,7 +392,7 @@ async function driveControllerLoop(
   store: RunStore<CueLineRunState>,
   options: ControllerRuntimeOptions,
 ): Promise<CueLineResult> {
-  const { maxRounds, maxRepairAttempts } = validatedLimits(options);
+  const { maxRounds, maxRepairAttempts } = validateControllerRuntimeOptions(options);
   const id = store.runId;
   for (;;) {
     throwIfCancelled(options.signal);
@@ -625,7 +634,7 @@ export async function createControllerRun(
 }
 
 export async function runControllerLoop(options: ControllerLoopOptions): Promise<CueLineResult> {
-  validatedLimits(options);
+  validateControllerRuntimeOptions(options);
   const store = await createControllerRunStore(options);
   const now = options.now ?? (() => new Date());
   const id = store.runId;
@@ -676,7 +685,7 @@ export async function runControllerLoop(options: ControllerLoopOptions): Promise
 export async function continueControllerLoop(
   options: ContinueControllerLoopOptions,
 ): Promise<CueLineResult> {
-  validatedLimits(options);
+  validateControllerRuntimeOptions(options);
   const now = options.now ?? (() => new Date());
   const home = options.home ?? defaultCueLineHome();
   const initialStore = await RunStore.load({
