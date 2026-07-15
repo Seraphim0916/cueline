@@ -37,6 +37,31 @@ export function validateCommandBeforeAcceptance(
   command: ControllerCommand,
   options: ControllerRuntimeOptions,
 ): void {
+  if (
+    (command.action === "wait" || command.action === "inspect") &&
+    command.job_ids !== undefined
+  ) {
+    const known = new Set(Object.keys(store.state.jobs));
+    const unknown = [...new Set(command.job_ids.filter((id) => !known.has(id)))];
+    if (unknown.length > 0) {
+      const preview = unknown
+        .slice(0, 3)
+        .map((id) => JSON.stringify(id.slice(0, 128)))
+        .join(", ");
+      const remainder = unknown.length > 3 ? ` (+${unknown.length - 3} more)` : "";
+      throw new CueLineError(
+        "CONTROL_JOB_TARGET_UNKNOWN",
+        `Controller ${command.action} references unknown job ID${unknown.length === 1 ? "" : "s"}: ${preview}${remainder}. Use exact job_id values from the current observation.`,
+        {
+          details: {
+            action: command.action,
+            unknown_job_ids: unknown.slice(0, 20),
+            unknown_job_count: unknown.length,
+          },
+        },
+      );
+    }
+  }
   if (command.action === "inspect" && command.evidence_offset !== undefined) {
     const selectedId = command.job_ids?.[0];
     const selected = jobObservations(store.state).find((job) => job.job_id === selectedId);
@@ -59,7 +84,6 @@ export function validateCommandBeforeAcceptance(
         "Paginated inspect evidence changed or the cursor hash was not copied exactly. Inspect the current window from offset 0.",
       );
     }
-    return;
   }
   if (command.action !== "dispatch") return;
   for (const spec of command.jobs) {

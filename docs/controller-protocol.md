@@ -99,11 +99,11 @@ The `process` executor requires both `executor: "process"` and `allowProcessExec
 
 ### `wait`
 
-Waits for selected running jobs (`job_ids`) or all current running jobs when omitted. When present, `job_ids` must be a non-empty, unique list of valid job IDs. `wait_ms` is part of the v0.1 schema but does not override the supervisor's job timeout.
+Waits for selected running jobs (`job_ids`) or all current running jobs when omitted. When present, `job_ids` must be a non-empty, unique list of valid IDs that exactly match jobs in the current run. One unknown target rejects the whole command with `CONTROL_JOB_TARGET_UNKNOWN` before any wait begins. `wait_ms` is part of the v0.1 schema but does not override the supervisor's job timeout.
 
 ### `inspect`
 
-Asks CueLine to present the currently persisted job state on the next round. Named `job_ids` must form a non-empty, unique list and receive the bounded evidence budget before unrelated jobs, so a completed result is not reduced to status merely because earlier jobs consumed the prompt budget. To read a truncated tail, select exactly one job and copy its non-null `evidence_window.next_offset` verbatim:
+Asks CueLine to present the currently persisted job state on the next round. Named `job_ids` must form a non-empty, unique list that exactly matches jobs in the current run and receives the bounded evidence budget before unrelated jobs. One unknown target rejects the entire command before any selected job is inspected. To read a truncated tail, select exactly one job and copy its non-null `evidence_window.next_offset` verbatim:
 
 ```json
 {
