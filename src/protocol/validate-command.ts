@@ -3,6 +3,7 @@ import {
   CUELINE_PROTOCOL,
   type BlockedCommand,
   type CompleteCommand,
+  type ControllerAction,
   type ControllerCommand,
   type ControllerJobSpec,
   type DispatchCommand,
@@ -13,6 +14,18 @@ import {
 
 const JOB_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const LANE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const JOB_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const COMMON_COMMAND_FIELDS = ["protocol", "run_id", "round", "request_id", "action"] as const;
+const ACTION_COMMAND_FIELDS = new Map<ControllerAction, ReadonlySet<string>>([
+  ["dispatch", new Set([...COMMON_COMMAND_FIELDS, "jobs"])],
+  ["wait", new Set([...COMMON_COMMAND_FIELDS, "job_ids", "wait_ms"])],
+  ["inspect", new Set([...COMMON_COMMAND_FIELDS, "job_ids"])],
+  ["complete", new Set([...COMMON_COMMAND_FIELDS, "final_delivery_text"])],
+  ["blocked", new Set([...COMMON_COMMAND_FIELDS, "reason", "final_delivery_text"])],
+]);
+const ALL_COMMAND_FIELDS = new Set(
+  [...ACTION_COMMAND_FIELDS.values()].flatMap((fields) => [...fields]),
+);
 const JOB_FIELDS = new Set([
   "job_key",
   "lane",
@@ -31,6 +44,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function fail(message: string, details?: unknown): never {
   throw new CueLineError("CONTROL_COMMAND_INVALID", message, { details });
+}
+
+function isControllerAction(value: string): value is ControllerAction {
+  return ACTION_COMMAND_FIELDS.has(value as ControllerAction);
+}
+
+function assertCommandFields(record: Record<string, unknown>, action: ControllerAction): void {
+  const unknownField = Object.keys(record).find((key) => !ALL_COMMAND_FIELDS.has(key));
+  if (unknownField !== undefined) {
+    throw new CueLineError(
+      "CONTROL_COMMAND_FIELD_UNKNOWN",
+      `Unsupported controller command field '${unknownField}'.`,
+      { details: { field: unknownField, action } },
+    );
+  }
+  const allowed = ACTION_COMMAND_FIELDS.get(action)!;
+  const invalidField = Object.keys(record).find((key) => !allowed.has(key));
+  if (invalidField !== undefined) {
+    throw new CueLineError(
+      "CONTROL_COMMAND_FIELD_INVALID_FOR_ACTION",
+      `Controller command field '${invalidField}' is not valid for action '${action}'.`,
+      { details: { field: invalidField, action } },
+    );
+  }
 }
 
 function requiredString(record: Record<string, unknown>, key: string): string {
@@ -83,8 +120,13 @@ function optionalStringArray(record: Record<string, unknown>, key: string): stri
   if (value === undefined) {
     return undefined;
   }
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item === "")) {
-    return fail(`'${key}' must be an array of non-empty strings.`, { key });
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.some((item) => typeof item !== "string" || !JOB_ID_PATTERN.test(item)) ||
+    new Set(value).size !== value.length
+  ) {
+    return fail(`'${key}' must be a non-empty array of unique job IDs.`, { key });
   }
   return [...value] as string[];
 }
@@ -99,7 +141,9 @@ function validateJob(value: unknown): ControllerJobSpec {
     const correction =
       unknownField === "runner_id"
         ? " Use 'runner'; 'runner_id' is not part of the CueLine controller contract."
-        : "";
+        : unknownField === "prompt"
+          ? " Use 'task'; 'prompt' is not part of a CueLine dispatch job."
+          : "";
     throw new CueLineError(
       "CONTROL_JOB_FIELD_UNKNOWN",
       `Unsupported dispatch job field '${unknownField}'.${correction}`,
@@ -180,6 +224,10 @@ export function validateControllerCommand(
   validateIdentity(value, expected);
 
   const action = requiredString(value, "action");
+  if (!isControllerAction(action)) {
+    return fail(`Unsupported controller action '${action}'.`, { action });
+  }
+  assertCommandFields(value, action);
   const base = {
     protocol: CUELINE_PROTOCOL,
     run_id: expected.runId,

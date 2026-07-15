@@ -30,7 +30,12 @@
         }
       }
     },
-    "job_ids": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "job_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$" }
+    },
     "wait_ms": { "type": "integer", "minimum": 1, "maximum": 300000 },
     "final_delivery_text": { "type": "string", "minLength": 1 },
     "reason": { "type": "string", "minLength": 1 }
@@ -38,15 +43,69 @@
   "allOf": [
     {
       "if": { "properties": { "action": { "const": "dispatch" } } },
-      "then": { "required": ["jobs"] }
+      "then": {
+        "required": ["jobs"],
+        "not": {
+          "anyOf": [
+            { "required": ["job_ids"] },
+            { "required": ["wait_ms"] },
+            { "required": ["final_delivery_text"] },
+            { "required": ["reason"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": { "properties": { "action": { "const": "wait" } } },
+      "then": {
+        "not": {
+          "anyOf": [
+            { "required": ["jobs"] },
+            { "required": ["final_delivery_text"] },
+            { "required": ["reason"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": { "properties": { "action": { "const": "inspect" } } },
+      "then": {
+        "not": {
+          "anyOf": [
+            { "required": ["jobs"] },
+            { "required": ["wait_ms"] },
+            { "required": ["final_delivery_text"] },
+            { "required": ["reason"] }
+          ]
+        }
+      }
     },
     {
       "if": { "properties": { "action": { "const": "complete" } } },
-      "then": { "required": ["final_delivery_text"] }
+      "then": {
+        "required": ["final_delivery_text"],
+        "not": {
+          "anyOf": [
+            { "required": ["jobs"] },
+            { "required": ["job_ids"] },
+            { "required": ["wait_ms"] },
+            { "required": ["reason"] }
+          ]
+        }
+      }
     },
     {
       "if": { "properties": { "action": { "const": "blocked" } } },
-      "then": { "required": ["reason"] }
+      "then": {
+        "required": ["reason"],
+        "not": {
+          "anyOf": [
+            { "required": ["jobs"] },
+            { "required": ["job_ids"] },
+            { "required": ["wait_ms"] }
+          ]
+        }
+      }
     }
   ],
   "additionalProperties": false

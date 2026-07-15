@@ -2127,6 +2127,54 @@ test("repairs invalid controller output at most twice", async () => {
   assert.deepEqual(browser.calls.map((call) => call.repairAttempt), [undefined, 1, 2]);
 });
 
+test("an action-incompatible field is rejected and repaired before command acceptance", async () => {
+  const runId = "run_strict_action_fields";
+  const stateHome = await home();
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "wait",
+      jobs: [
+        {
+          job_key: "must_not_register",
+          lane: "default",
+          mode: "advise",
+          task: "This field is invalid for wait.",
+        },
+      ],
+    })),
+    reply((input) => {
+      assert.equal(input.repairAttempt, 1);
+      assert.match(input.prompt, /CONTROL_COMMAND_FIELD_INVALID_FOR_ACTION/);
+      assert.match(input.prompt, /field 'jobs'.*action 'wait'/);
+      return { action: "complete", final_delivery_text: "STRICT_FIELDS_OK" };
+    }),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Reject a contradictory controller command",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "STRICT_FIELDS_OK");
+  assert.deepEqual(Object.keys(result.state.jobs), []);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_response_rejected" &&
+        (event.payload as Record<string, unknown>).code ===
+          "CONTROL_COMMAND_FIELD_INVALID_FOR_ACTION",
+    ).length,
+    1,
+  );
+  assert.equal(events.filter((event) => event.type === "controller_command_accepted").length, 1);
+});
+
 test("a repeated deterministic dispatch never spawns a duplicate job", async () => {
   const runId = "run_duplicate";
   const spec = {
