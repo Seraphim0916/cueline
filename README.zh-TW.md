@@ -193,6 +193,9 @@ $ cueline api path
 $ cueline routing
 default	codex-default	available
 
+$ cueline routing --json
+{"version":"0.1.6","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
+
 $ cueline jobs
 No jobs.
 

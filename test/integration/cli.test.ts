@@ -247,6 +247,152 @@ test("protocol lint catches legacy Pro fields without touching run state", async
   assert.ok(report.issues.some((issue) => issue.code === "RUNNER_USED_AS_LANE"));
 });
 
+test("routing exposes a stable JSON report without runner argv", async () => {
+  const context = await fixture();
+  await writeFile(
+    context.config,
+    `${JSON.stringify({
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [
+            {
+              id: "node",
+              argv: [process.execPath, "--PRIVATE_ARG_SENTINEL"],
+              task_input: "stdin",
+            },
+          ],
+        },
+        missing: {
+          enabled: true,
+          candidates: [
+            {
+              id: "missing-runner",
+              argv: ["definitely-missing-cueline-runner"],
+              task_input: "stdin",
+            },
+          ],
+        },
+        disabled: {
+          enabled: false,
+          candidates: [
+            {
+              id: "disabled-runner",
+              argv: [process.execPath],
+              task_input: "stdin",
+            },
+          ],
+        },
+      },
+    })}\n`,
+    "utf8",
+  );
+
+  const result = invoke(["routing", "--json"], context.environment);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    version: await packageVersion(),
+    config: {
+      path: context.config,
+      valid: true,
+    },
+    availableLanes: 1,
+    lanes: [
+      {
+        name: "default",
+        enabled: true,
+        status: "available",
+        selectedRunnerId: "node",
+      },
+      {
+        name: "missing",
+        enabled: true,
+        status: "unavailable",
+        selectedRunnerId: null,
+        errorCode: "ROUTE_NO_CANDIDATE",
+      },
+      {
+        name: "disabled",
+        enabled: false,
+        status: "disabled",
+        selectedRunnerId: null,
+      },
+    ],
+    findings: [],
+  });
+  assert.doesNotMatch(result.stdout, /PRIVATE_ARG_SENTINEL|definitely-missing/);
+});
+
+test("routing JSON remains parseable and redacted for an invalid config", async () => {
+  const context = await fixture();
+  await writeFile(context.config, "{PRIVATE_ROUTING_SENTINEL", "utf8");
+
+  const result = invoke(["routing", "--json"], context.environment);
+
+  assert.equal(result.status, 1, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    version: await packageVersion(),
+    config: {
+      path: context.config,
+      valid: false,
+      errorCode: "ROUTING_CONFIG_INVALID",
+    },
+    availableLanes: 0,
+    lanes: [],
+    findings: [
+      {
+        code: "ROUTING_CONFIG_INVALID",
+        message: "Routing configuration could not be loaded.",
+      },
+    ],
+  });
+  assert.equal(result.stderr, "");
+  assert.doesNotMatch(result.stdout, /PRIVATE_ROUTING_SENTINEL/);
+});
+
+test("routing JSON exits unavailable when no enabled lane resolves", async () => {
+  const context = await fixture();
+  await writeFile(
+    context.config,
+    `${JSON.stringify({
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [
+            {
+              id: "missing-only",
+              argv: ["definitely-missing-cueline-runner"],
+              task_input: "stdin",
+            },
+          ],
+        },
+      },
+    })}\n`,
+    "utf8",
+  );
+
+  const result = invoke(["routing", "--json"], context.environment);
+
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout) as {
+    availableLanes: number;
+    lanes: Array<{ status: string; errorCode?: string }>;
+  };
+  assert.equal(report.availableLanes, 0);
+  assert.deepEqual(report.lanes, [
+    {
+      name: "default",
+      enabled: true,
+      status: "unavailable",
+      selectedRunnerId: null,
+      errorCode: "ROUTE_NO_CANDIDATE",
+    },
+  ]);
+});
+
 test("doctor reports caller and process readiness separately", async () => {
   const context = await fixture();
   const result = invoke(["doctor"], context.environment);
@@ -1271,6 +1417,7 @@ test("help lists every command, the environment, and the exit codes", async () =
     assert.match(result.stdout, /exit codes:/);
     for (const syntax of [
       "doctor [--json]",
+      "routing [--json]",
       "jobs [--json]",
       "run status <run-id> [--json]",
       "run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
@@ -1292,6 +1439,7 @@ test("nested command help never treats --help as a run or job id", async () => {
   const context = await fixture();
   for (const args of [
     ["doctor", "--help"],
+    ["routing", "--help"],
     ["run", "--help"],
     ["run", "status", "--help"],
     ["run", "reconcile", "--help"],

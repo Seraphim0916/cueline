@@ -17,13 +17,12 @@ import {
 } from "../api.js";
 import { CueLineError } from "../core/errors.js";
 import type { JobStatus } from "../jobs/status.js";
-import { executableAvailability } from "../router/availability.js";
 import { loadRoutingConfig } from "../router/config-loader.js";
-import { resolveRoute } from "../router/resolver.js";
 import { defaultCueLineHome } from "../state/paths.js";
 import { readRuntimeLease } from "../state/runtime-lease.js";
 import { readAuthoritativeRunEvents } from "../state/store.js";
 import { CUELINE_VERSION } from "../version.js";
+import { handleHealthCommand } from "./health-commands.js";
 import type { CliIo } from "./io.js";
 import { handleObservationCommand } from "./observation-commands.js";
 import { installSkill, uninstallSkill } from "./skill-links.js";
@@ -72,7 +71,7 @@ function help(): string {
     "  cueline install",
     "  cueline uninstall",
     "  cueline doctor [--json]",
-    "  cueline routing",
+    "  cueline routing [--json]",
     "  cueline jobs [--json]",
     "  cueline protocol lint <file> --run-id <id> --round <n> --request-id <id> [--json]",
     "  cueline runs [--json]",
@@ -120,26 +119,6 @@ function help(): string {
 function errorMessage(error: unknown): string {
   if (error instanceof CueLineError) return `${error.code}: ${error.message}`;
   return error instanceof Error ? error.message : String(error);
-}
-
-async function routingCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promise<number> {
-  const config = await loadRoutingConfig(routingConfigPath(environment));
-  const availability = executableAvailability(environment);
-  let available = 0;
-  for (const [lane, laneConfig] of Object.entries(config.lanes)) {
-    if (!laneConfig.enabled) {
-      io.stdout(`${lane}\t-\tdisabled`);
-      continue;
-    }
-    try {
-      const route = resolveRoute(lane, config, availability);
-      available += 1;
-      io.stdout(`${lane}\t${route.candidate.id}\tavailable`);
-    } catch (error) {
-      io.stdout(`${lane}\t-\tunavailable (${errorMessage(error)})`);
-    }
-  }
-  return available > 0 ? 0 : 1;
 }
 
 type ObservedJobStatus = JobStatus["status"] | "orphaned" | "unverified" | "conflict";
@@ -412,130 +391,6 @@ async function runStatusCommand(
   return 0;
 }
 
-interface DoctorFinding {
-  code: string;
-  surface: "node" | "config" | "caller";
-  message: string;
-}
-
-interface DoctorReport {
-  version: string;
-  status: "ok" | "degraded";
-  node: {
-    version: string;
-    ok: boolean;
-    requirement: ">=22";
-  };
-  config:
-    | { path: string; valid: true }
-    | { path: string; valid: false; errorCode: "ROUTING_CONFIG_INVALID" };
-  home: string;
-  caller: {
-    ready: boolean;
-    enabledLanes: number;
-  };
-  process: {
-    availableLanes: number;
-  };
-  findings: DoctorFinding[];
-}
-
-async function collectDoctorReport(environment: NodeJS.ProcessEnv): Promise<DoctorReport> {
-  const configPath = routingConfigPath(environment);
-  const home = defaultCueLineHome(environment);
-  const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
-  const nodeOk = major >= 22;
-  const availability = executableAvailability(environment);
-  const findings: DoctorFinding[] = [];
-  let callerLanes = 0;
-  let processAvailableLanes = 0;
-  let config: Awaited<ReturnType<typeof loadRoutingConfig>> | undefined;
-  try {
-    config = await loadRoutingConfig(configPath);
-  } catch {
-    findings.push({
-      code: "ROUTING_CONFIG_INVALID",
-      surface: "config",
-      message: "Routing configuration could not be loaded.",
-    });
-  }
-  if (config !== undefined) {
-    for (const [lane, laneConfig] of Object.entries(config.lanes)) {
-      if (!laneConfig.enabled) continue;
-      callerLanes += 1;
-      try {
-        resolveRoute(lane, config, availability);
-        processAvailableLanes += 1;
-      } catch {
-        // Doctor reports the aggregate below; `cueline routing` shows lane details.
-      }
-    }
-  }
-  if (!nodeOk) {
-    findings.push({
-      code: "NODE_VERSION_UNSUPPORTED",
-      surface: "node",
-      message: "Node.js 22 or newer is required.",
-    });
-  }
-  if (config !== undefined && callerLanes === 0) {
-    findings.push({
-      code: "CALLER_LANES_UNAVAILABLE",
-      surface: "caller",
-      message: "No enabled caller lane is configured.",
-    });
-  }
-  const callerReady = nodeOk && config !== undefined && callerLanes > 0;
-  return {
-    version: CUELINE_VERSION,
-    status: callerReady ? "ok" : "degraded",
-    node: {
-      version: process.versions.node,
-      ok: nodeOk,
-      requirement: ">=22",
-    },
-    config:
-      config === undefined
-        ? { path: configPath, valid: false, errorCode: "ROUTING_CONFIG_INVALID" }
-        : { path: configPath, valid: true },
-    home,
-    caller: {
-      ready: callerReady,
-      enabledLanes: callerLanes,
-    },
-    process: {
-      availableLanes: processAvailableLanes,
-    },
-    findings,
-  };
-}
-
-async function doctorCommand(
-  json: boolean,
-  environment: NodeJS.ProcessEnv,
-  io: CliIo,
-): Promise<number> {
-  const report = await collectDoctorReport(environment);
-  if (json) {
-    io.stdout(JSON.stringify(report, null, 2));
-  } else {
-    io.stdout(`CueLine ${report.version}`);
-    io.stdout(`status\t${report.status}`);
-    io.stdout(
-      `node\t${report.node.version}\t${report.node.ok ? "ok" : `requires ${report.node.requirement}`}`,
-    );
-    io.stdout(`config\t${report.config.path}\t${report.config.valid ? "valid" : "invalid"}`);
-    io.stdout(`home\t${report.home}`);
-    io.stdout(`caller_ready\t${report.caller.ready ? "yes" : "no"}`);
-    io.stdout(`caller_lanes\t${report.caller.enabledLanes}`);
-    io.stdout(`process_available_lanes\t${report.process.availableLanes}`);
-    for (const item of report.findings) {
-      io.stdout(`finding\t${item.code}\t${item.surface}\t${item.message}`);
-    }
-  }
-  return report.status === "ok" ? 0 : 1;
-}
-
 export async function main(
   args: readonly string[] = process.argv.slice(2),
   environment: NodeJS.ProcessEnv = process.env,
@@ -577,9 +432,8 @@ export async function main(
       io.stdout(await uninstallSkill(environment));
       return 0;
     }
-    if (args[0] === "routing" && args.length === 1) {
-      return routingCommand(environment, io);
-    }
+    const healthResult = await handleHealthCommand(args, environment, io);
+    if (healthResult !== undefined) return healthResult;
     if (
       args[0] === "jobs" &&
       (args.length === 1 || (args.length === 2 && args[1] === "--json"))
@@ -758,12 +612,6 @@ export async function main(
       if (args[4] === "--json") io.stdout(JSON.stringify(result, null, 2));
       else io.stdout(`${result.runId}\t${result.jobId}\t${result.outcome}`);
       return 0;
-    }
-    if (
-      args[0] === "doctor" &&
-      (args.length === 1 || (args.length === 2 && args[1] === "--json"))
-    ) {
-      return doctorCommand(args[1] === "--json", environment, io);
     }
     io.stderr(`cueline: unrecognized command: ${args.join(" ")}`);
     io.stderr(usage());
