@@ -2,9 +2,21 @@
 
 ## Caller execution is the default
 
-`startCueLineRun` and `runCueLine` default to `executor: "caller"`. With the built-in browser, one durable submission returns `awaiting_controller`; later continuations observe the same URL/request once without resending. A validated dispatch then persists pending jobs and returns them to the current Codex; it does not spawn `codex exec`. The caller executes each exact `advise` task with its own permitted local tools, submits one terminal result through `submitCueLineCallerJobResult`, and continues the same run. Duplicate terminal submissions return `already_terminal`.
+`startCueLineRun` and `runCueLine` default to `executor: "caller"`. With the built-in browser, one durable submission returns `awaiting_controller`; later continuations observe the same URL/request once without resending. A validated dispatch persists pending jobs and returns them to the current Codex; it does not spawn `codex exec`. The caller executes each exact `advise` task and submits one terminal result. A caller `work` job instead remains unstarted until it is explicitly claimed and started. Duplicate terminal submissions return `already_terminal`.
 
-The ChatGPT web controller only emits a text command. It does not inspect the repository, call tools, run the job itself, or know local paths by default. Caller results therefore provide absolute paths, relevant code excerpts, and exact code/error identifiers, distinguish unknowns, and ask whether the controller needs more local evidence. While Pro is answering, CueLine only observes; operators must not use `Answer now`, `Respond now`, `Stop`, or an equivalent interruption control. Caller execution rejects `work` with `CALLER_WORK_REQUIRES_CLAIM`; use caller `advise`, or explicitly opt into the process executor after the user has authorized local mutation.
+The ChatGPT web controller only emits a text command. It does not inspect the repository, call tools, run the job itself, or know local paths by default. Caller results therefore provide absolute paths, relevant code excerpts, and exact code/error identifiers, distinguish unknowns, and ask whether the controller needs more local evidence. While Pro is answering, CueLine only observes; operators must not use `Answer now`, `Respond now`, `Stop`, or an equivalent interruption control. A Pro `dispatch` is a proposal and does not prove that local work started.
+
+## Caller work claim
+
+Caller work requires an absolute workdir and follows one fenced lifecycle:
+
+1. `claimCueLineCallerJob` atomically binds `runId + jobId + taskHash + workdir + callerId + fencingToken`. The same caller may recover the same active proof after losing an API response; a different caller is rejected.
+2. Before start, the caller may heartbeat or release the claim. An expired unstarted claim is formally released and can be reclaimed with a higher fencing token.
+3. `startCueLineCallerJob` must succeed immediately before the first mutation. The exact owner heartbeats long work with `heartbeatCueLineCallerJob`.
+4. `submitCueLineCallerJobResult` requires the exact active proof. Wrong or old proof is rejected; a terminal job cannot be executed or overwritten again.
+5. Once started, release is forbidden. A crash or expiry becomes `ambiguous`, and CueLine never automatically retries that work.
+
+Claim, start, heartbeat, release, result, and ambiguity transitions are append-only. Run status exposes safe claim metadata but never the claim ID or fencing token.
 
 ## Process routing happens before spawn
 
@@ -19,6 +31,7 @@ Every process uses a `RunnerSpec`:
 ```ts
 interface RunnerSpec {
   jobId: string;
+  runnerId?: string;
   runId?: string;
   jobKey?: string;
   argv: readonly string[];
@@ -50,21 +63,21 @@ interface RunnerSpec {
 - Empty output is explicitly recorded instead of being replaced with invented content.
 - Results are never marked retryable by the process runner.
 
-For an unsuccessful `work` job, `ambiguousSideEffects` is true because CueLine cannot prove how much mutation occurred before failure. That flag is preserved in the job result. Such work must be inspected and explicitly decided by the web controller; it must not be auto-retried.
+For an unsuccessful process `work` job, `ambiguousSideEffects` is true because CueLine cannot prove how much mutation occurred before failure. That flag is preserved in the job result. For caller work, every non-success result after durable start is normalized to terminal `ambiguous`, so the controller cannot mistake `failed`, `timed_out`, or `cancelled` for proof of no side effects. Such work must be inspected and explicitly decided by the web controller; it must not be auto-retried.
 
 ## Foreground and background
 
-A foreground `start` waits for the single execution and persists its terminal status. A background `start` persists and returns `running` immediately while the same completion promise continues. `waitForCompletion(jobId)` returns that completion or the last persisted status. The supervisor persists run ID, job key, lane, mode, and child PID after spawn. PID is observability, not stand-alone cancellation authority.
+A foreground `start` waits for the single execution and persists its terminal status. A background `start` persists and returns `running` immediately while the same completion promise continues. `waitForCompletion(jobId)` returns that completion or the last persisted status. The supervisor persists run ID, job key, lane, mode, resolved runner, child PID, phase, last progress time, and safely observed model/provider metadata. PID is observability, not stand-alone cancellation authority.
 
 `cancel(jobId)` and `cancelAll()` operate only on executions owned by the current supervisor. Cross-session CLI cancellation is a durable request consumed by that owner. CueLine does not kill an unverified process merely because a stale status file contains a PID.
 
 The controller loop derives deterministic job IDs from the run, `job_key`, and job specification. A duplicate dispatch already present in run state is recorded as a notice and skipped. Caller result submission and continuation are runtime-lease serialized, so the first terminal evidence committed for a job wins and later submissions return `already_terminal`.
 
-That lease is **not** an execution claim. Two sessions can both perform the same caller `advise` task before either one submits a result. Coordinate a single caller executor when resuming a handoff. This is why caller mode is restricted to non-mutating `advise`; `work` is rejected until CueLine has a duplicate-safe execution claim.
+That run lease is **not** an execution claim. Two sessions can both perform the same caller `advise` task before either submits a result, so coordinate one advice executor. Caller `work` is different: its dedicated immutable claim and fencing token prevent two sessions from validly starting the same mutation.
 
 ## Process concurrency
 
-Explicit process execution defaults to at most two active jobs globally and two active jobs per lane. `maxConcurrency` and `laneConcurrency` may reduce or increase those limits. An all-`advise` batch uses the bounded scheduler; a batch containing any `work` job is always serial in command order.
+Explicit process execution requires both `executor: "process"` and `allowProcessExecution: true`, including the second authorization on non-terminal continuation. It defaults to at most two active jobs globally and two active jobs per lane. `maxConcurrency` and `laneConcurrency` may reduce or increase those limits. An all-`advise` batch uses the bounded scheduler; a batch containing any `work` job is always serial in command order.
 
 ## Availability
 
@@ -78,4 +91,4 @@ The controller chooses the intent; Codex and local runtime policy remain respons
 
 ## Bundled process route
 
-When `executor: "process"` is selected, the `default` lane contains one candidate, `codex-default`. It runs `codex exec` without a shell, sends the task over stdin, uses the requested work directory, and maps `advise` to `read-only` and `work` to `workspace-write`. The route is unavailable when the `codex` executable is not on `PATH`; CueLine reports that fact instead of selecting an unrelated worker.
+When `executor: "process"` is selected, the `default` lane contains one candidate, `codex-default`. It runs `codex exec --ignore-user-config` without a shell, sends the task over stdin, uses the requested work directory, and maps `advise` to `read-only` and `work` to `workspace-write`. Authentication still follows `CODEX_HOME`, but user-configured MCP servers and their command arguments are not loaded into the hidden worker. The route is unavailable when the `codex` executable is not on `PATH`; CueLine reports that fact instead of selecting an unrelated worker.

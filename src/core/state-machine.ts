@@ -4,6 +4,7 @@ import type {
   JobObservation,
 } from "../protocol/types.js";
 import type { RunEvent } from "../state/event-log.js";
+import { jobSpecHash } from "./ids.js";
 
 export type CueLineRunStatus = "running" | "complete" | "blocked" | "cancelled" | "failed";
 export type CueLineExecutor = "caller" | "process";
@@ -55,6 +56,24 @@ export interface RunFailureEvidence {
   conversationUrl: string | null;
 }
 
+export interface CallerWorkClaim {
+  claimId: string;
+  callerId: string;
+  taskHash: string;
+  workdir: string;
+  fencingToken: number;
+  claimedAt: string;
+  heartbeatAt: string;
+  expiresAt: string;
+  ttlMs: number;
+  startedAt: string | null;
+}
+
+export interface CallerWorkState {
+  claim: CallerWorkClaim | null;
+  nextFencingToken: number;
+}
+
 export interface StoredJob {
   jobId: string;
   jobKey: string;
@@ -63,6 +82,15 @@ export interface StoredJob {
   status: StoredJobStatus;
   output: string | null;
   error: string | null;
+  callerWork?: CallerWorkState;
+  runtime?: {
+    runnerId?: string;
+    pid?: number;
+    model?: string;
+    provider?: string;
+    phase?: string;
+    lastProgressAt?: string;
+  };
 }
 
 export interface PendingCommandExecution {
@@ -74,6 +102,7 @@ export interface CueLineRunState {
   runId: string;
   request: string;
   executor: CueLineExecutor;
+  allowProcessExecution: boolean;
   maxRounds: number;
   status: CueLineRunStatus;
   round: number;
@@ -82,12 +111,44 @@ export interface CueLineRunState {
   abandonedControllerTurns: PendingControllerTurn[];
   lastFailure: RunFailureEvidence | null;
   jobs: Record<string, StoredJob>;
+  /** Job IDs explicitly requested by the most recently accepted inspect command. */
+  inspectionJobIds: string[];
   notices: string[];
   commandHashes: string[];
   pendingCommandExecution: PendingCommandExecution | null;
   finalDeliveryText: string | null;
   blockedReason: string | null;
   cancelledReason: string | null;
+}
+
+function validCallerId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim() !== "" &&
+    value.length <= 256 &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+  );
+}
+
+function validIsoTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function validClaimWindow(
+  heartbeatAt: unknown,
+  expiresAt: unknown,
+  ttlMs: unknown,
+): boolean {
+  if (
+    !validIsoTimestamp(heartbeatAt) ||
+    !validIsoTimestamp(expiresAt) ||
+    !Number.isSafeInteger(ttlMs) ||
+    (ttlMs as number) < 1_000 ||
+    (ttlMs as number) > 86_400_000
+  ) {
+    return false;
+  }
+  return Date.parse(expiresAt) - Date.parse(heartbeatAt) === ttlMs;
 }
 
 function recordPayload(event: RunEvent): Record<string, unknown> {
@@ -123,13 +184,15 @@ function preserveCanonicalConversationUrl(
 export function initialRunState(
   runId: string,
   request: string,
-  executor: CueLineExecutor = "process",
+  executor: CueLineExecutor = "caller",
   maxRounds = DEFAULT_MAX_ROUNDS,
+  allowProcessExecution = false,
 ): CueLineRunState {
   return {
     runId,
     request,
     executor,
+    allowProcessExecution,
     maxRounds,
     status: "running",
     round: 0,
@@ -138,6 +201,7 @@ export function initialRunState(
     abandonedControllerTurns: [],
     lastFailure: null,
     jobs: {},
+    inspectionJobIds: [],
     notices: [],
     commandHashes: [],
     pendingCommandExecution: null,
@@ -165,7 +229,12 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     return {
       ...state,
       request: payload.request,
-      executor: payload.executor === "caller" ? "caller" : state.executor ?? "process",
+      executor:
+        payload.executor === "caller" || payload.executor === "process"
+          ? payload.executor
+          : state.executor ?? "caller",
+      allowProcessExecution:
+        payload.allow_process_execution === true || state.allowProcessExecution === true,
       maxRounds:
         typeof payload.max_rounds === "number" &&
         Number.isSafeInteger(payload.max_rounds) &&
@@ -374,8 +443,15 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
         : {};
     const requestId =
       typeof command.request_id === "string" ? command.request_id : undefined;
+    const inspectionJobIds =
+      command.action === "inspect"
+        ? Array.isArray(command.job_ids)
+          ? command.job_ids.filter((value): value is string => typeof value === "string")
+          : Object.keys(state.jobs)
+        : [];
     return {
       ...state,
+      inspectionJobIds,
       commandHashes: [...state.commandHashes, payload.command_hash],
       pendingCommandExecution:
         typeof payload.command === "object" &&
@@ -414,6 +490,179 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     if (!job) return state;
     return { ...state, jobs: { ...state.jobs, [job.jobId]: structuredClone(job) } };
   }
+  if (event.type === "caller_work_claimed") {
+    const existing = typeof payload.job_id === "string" ? state.jobs[payload.job_id] : undefined;
+    const claim = payload.claim;
+    if (
+      state.executor !== "caller" ||
+      !existing ||
+      existing.spec.mode !== "work" ||
+      existing.status !== "pending" ||
+      existing.callerWork?.claim != null ||
+      typeof claim !== "object" ||
+      claim === null ||
+      Array.isArray(claim)
+    ) {
+      return state;
+    }
+    const record = claim as Record<string, unknown>;
+    if (
+      typeof record.claimId !== "string" ||
+      !/^claim_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        record.claimId,
+      ) ||
+      !validCallerId(record.callerId) ||
+      typeof record.taskHash !== "string" ||
+      record.taskHash !== jobSpecHash(existing.spec) ||
+      typeof record.workdir !== "string" ||
+      record.workdir !== existing.spec.workdir ||
+      !Number.isSafeInteger(record.fencingToken) ||
+      record.fencingToken !== (existing.callerWork?.nextFencingToken ?? 0) + 1 ||
+      !validIsoTimestamp(record.claimedAt) ||
+      record.heartbeatAt !== record.claimedAt ||
+      !validClaimWindow(record.heartbeatAt, record.expiresAt, record.ttlMs) ||
+      record.startedAt !== null
+    ) {
+      return state;
+    }
+    const acceptedClaim = structuredClone(claim) as CallerWorkClaim;
+    return {
+      ...state,
+      jobs: {
+        ...state.jobs,
+        [existing.jobId]: {
+          ...existing,
+          callerWork: {
+            claim: acceptedClaim,
+            nextFencingToken: acceptedClaim.fencingToken,
+          },
+        },
+      },
+    };
+  }
+  if (
+    (event.type === "caller_work_started" || event.type === "caller_work_heartbeat") &&
+    typeof payload.job_id === "string" &&
+    typeof payload.claim_id === "string" &&
+    Number.isSafeInteger(payload.fencing_token)
+  ) {
+    const existing = state.jobs[payload.job_id];
+    const claim = existing?.callerWork?.claim;
+    if (
+      !existing ||
+      !claim ||
+      (event.type === "caller_work_started"
+        ? existing.status !== "pending" || claim.startedAt !== null
+        : (existing.status !== "pending" && existing.status !== "running")) ||
+      claim.claimId !== payload.claim_id ||
+      claim.fencingToken !== payload.fencing_token ||
+      payload.caller_id !== claim.callerId ||
+      (event.type === "caller_work_started" &&
+        (payload.task_hash !== claim.taskHash || payload.workdir !== claim.workdir))
+    ) {
+      return state;
+    }
+    const timestamp =
+      event.type === "caller_work_started"
+        ? payload.started_at
+        : payload.heartbeat_at;
+    const expiresAt = payload.expires_at;
+    if (
+      !validIsoTimestamp(timestamp) ||
+      !validIsoTimestamp(expiresAt) ||
+      !validClaimWindow(timestamp, expiresAt, claim.ttlMs) ||
+      Date.parse(timestamp) < Date.parse(claim.heartbeatAt)
+    ) {
+      return state;
+    }
+    const updatedClaim: CallerWorkClaim = {
+      ...claim,
+      heartbeatAt: timestamp,
+      expiresAt,
+      ...(event.type === "caller_work_started" ? { startedAt: timestamp } : {}),
+    };
+    return {
+      ...state,
+      jobs: {
+        ...state.jobs,
+        [existing.jobId]: {
+          ...existing,
+          status: event.type === "caller_work_started" ? "running" : existing.status,
+          callerWork: {
+            claim: updatedClaim,
+            nextFencingToken: existing.callerWork?.nextFencingToken ?? claim.fencingToken,
+          },
+        },
+      },
+    };
+  }
+  if (
+    event.type === "caller_work_claim_released" &&
+    typeof payload.job_id === "string" &&
+    typeof payload.claim_id === "string" &&
+    Number.isSafeInteger(payload.fencing_token)
+  ) {
+    const existing = state.jobs[payload.job_id];
+    const claim = existing?.callerWork?.claim;
+    if (
+      !existing ||
+      !claim ||
+      existing.status !== "pending" ||
+      claim.startedAt !== null ||
+      claim.claimId !== payload.claim_id ||
+      claim.fencingToken !== payload.fencing_token ||
+      payload.caller_id !== claim.callerId
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      jobs: {
+        ...state.jobs,
+        [existing.jobId]: {
+          ...existing,
+          callerWork: {
+            claim: null,
+            nextFencingToken: existing.callerWork?.nextFencingToken ?? claim.fencingToken,
+          },
+        },
+      },
+    };
+  }
+  if (
+    event.type === "caller_work_became_ambiguous" &&
+    typeof payload.job_id === "string" &&
+    typeof payload.claim_id === "string" &&
+    Number.isSafeInteger(payload.fencing_token)
+  ) {
+    const existing = state.jobs[payload.job_id];
+    const claim = existing?.callerWork?.claim;
+    if (
+      !existing ||
+      !claim ||
+      existing.status !== "running" ||
+      claim.startedAt === null ||
+      claim.claimId !== payload.claim_id ||
+      claim.fencingToken !== payload.fencing_token ||
+      payload.caller_id !== claim.callerId
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      jobs: {
+        ...state.jobs,
+        [existing.jobId]: {
+          ...existing,
+          status: "ambiguous",
+          error:
+            typeof payload.reason === "string"
+              ? payload.reason
+              : "Caller work ownership expired after local work started.",
+        },
+      },
+    };
+  }
   if (event.type === "job_status" && typeof payload.job_id === "string") {
     const existing = state.jobs[payload.job_id];
     if (
@@ -436,6 +685,21 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           status,
           output: typeof payload.output === "string" ? payload.output : existing.output,
           error: typeof payload.error === "string" ? payload.error : existing.error,
+          runtime: {
+            ...(existing.runtime ?? {}),
+            ...(typeof payload.runner_id === "string"
+              ? { runnerId: payload.runner_id }
+              : {}),
+            ...(typeof payload.pid === "number" && Number.isSafeInteger(payload.pid)
+              ? { pid: payload.pid }
+              : {}),
+            ...(typeof payload.model === "string" ? { model: payload.model } : {}),
+            ...(typeof payload.provider === "string" ? { provider: payload.provider } : {}),
+            ...(typeof payload.phase === "string" ? { phase: payload.phase } : {}),
+            ...(typeof payload.last_progress_at === "string"
+              ? { lastProgressAt: payload.last_progress_at }
+              : {}),
+          },
         },
       },
     };

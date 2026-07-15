@@ -10,6 +10,7 @@
           "argv": [
             "codex",
             "exec",
+            "--ignore-user-config",
             "--skip-git-repo-check",
             "--ephemeral",
             "--color",

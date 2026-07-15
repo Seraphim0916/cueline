@@ -30,15 +30,19 @@ export class JobSupervisor {
 
   async start(spec: RunnerSpec): Promise<JobStatus> {
     const lock = this.#locks.acquire(spec.jobId);
+    const startedAt = new Date().toISOString();
     const running = { current: {
       jobId: spec.jobId,
       ...(spec.runId === undefined ? {} : { runId: spec.runId }),
       ...(spec.jobKey === undefined ? {} : { jobKey: spec.jobKey }),
       ...(spec.lane === undefined ? {} : { lane: spec.lane }),
+      ...(spec.runnerId === undefined ? {} : { runnerId: spec.runnerId }),
       mode: spec.mode,
       execution: executionFor(spec),
       status: "running",
-      startedAt: new Date().toISOString(),
+      phase: "starting",
+      lastProgressAt: startedAt,
+      startedAt,
     } satisfies JobStatus };
     const cancellation = new AbortController();
     this.#cancellations.set(spec.jobId, cancellation);
@@ -107,22 +111,46 @@ export class JobSupervisor {
     release: () => void,
   ): Promise<JobStatus> {
     let terminal: JobStatus;
+    let progressWrites = Promise.resolve();
+    const persistProgress = (
+      update: Partial<Pick<JobStatus, "pid" | "model" | "provider" | "phase" | "lastProgressAt">>,
+    ): Promise<void> => {
+      progressWrites = progressWrites.then(async () => {
+        running.current = { ...running.current, ...update };
+        await this.options.statusStore.write(running.current);
+      });
+      return progressWrites;
+    };
     try {
       const result = await this.runner.run(spec, {
-        onSpawn: async (pid) => {
-          running.current = { ...running.current, pid };
-          await this.options.statusStore.write(running.current);
-        },
+        onSpawn: (pid) =>
+          persistProgress({
+            pid,
+            phase: "running",
+            lastProgressAt: new Date().toISOString(),
+          }),
+        onProgress: (progress) =>
+          persistProgress({
+            phase: progress.phase,
+            lastProgressAt: progress.at,
+            ...(progress.model === undefined ? {} : { model: progress.model }),
+            ...(progress.provider === undefined ? {} : { provider: progress.provider }),
+          }),
       });
+      await progressWrites;
       terminal = this.withResult(running.current, result);
     } catch (error) {
+      await progressWrites.catch(() => undefined);
+      const finishedAt = new Date().toISOString();
       terminal = {
         ...running.current,
         status:
           running.current.pid !== undefined && spec.mode === "work"
             ? "ambiguous"
             : "failed",
-        finishedAt: new Date().toISOString(),
+        phase: "failed",
+        lastProgressAt: finishedAt,
+        finishedAt,
         error: errorText(error),
       };
     }
@@ -141,6 +169,8 @@ export class JobSupervisor {
     return {
       ...running,
       status: result.status,
+      phase: result.status === "succeeded" ? "completed" : result.status,
+      lastProgressAt: result.finishedAt,
       finishedAt: result.finishedAt,
       result,
     };

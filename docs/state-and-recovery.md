@@ -32,6 +32,7 @@ Important transitions include:
 - run creation and resumption
 - controller turn intent, submission checkpoints, response, reconciliation, rejection, and accepted command
 - job registration and status changes
+- caller work claim, start, heartbeat, release, result, and ambiguous terminalization
 - notices
 - complete, blocked, cancelled, and failed terminal records
 
@@ -47,7 +48,7 @@ The snapshot is therefore disposable. Do not edit the event log by hand; invalid
 
 ## Job status
 
-The supervisor atomically replaces one JSON status file per job. Status records include run ID, job key, lane, mode, and—when a process exists—its child PID. The task remains in the authoritative run's `job_registered` event; `cueline jobs` joins that event metadata with the status file so the task is still visible. Caller jobs are visible as `pending` before the current Codex submits a terminal result. PID is diagnostic evidence only; CueLine never treats a PID alone as authority to kill a process. Foreground process work returns its terminal status directly. Background process work first persists `running`; later `wait` reads the same in-process completion or the last persisted status.
+The supervisor atomically replaces one JSON status file per job. Status records include run ID, job key, lane, mode, resolved runner, PID, model/provider when safely observed, phase, and last progress time when available. The task remains in the authoritative run's `job_registered` event; `cueline jobs` joins that event metadata with the status file so the task is still visible. Caller jobs are visible as `pending` before the current Codex submits a terminal result. PID is diagnostic evidence only; CueLine never treats a PID alone as authority to kill a process. Foreground process work returns its terminal status directly. Background process work first persists `running`; later `wait` reads the same in-process completion or the last persisted status.
 
 The run event log still records the controller-visible job transitions. A status file is execution evidence, not a substitute for the run history. `cueline jobs --json` includes run ID, job key, lane, mode, task, and PID when known. For process runs it adds a derived observed status: `running` requires active runtime ownership, `orphaned` means persisted process work says active but no owner is proven, `unverified` covers legacy records without a run ID, and `conflict` means a status file disagrees with authoritative run events. A conflict reports the authoritative `status`, exposes the file's value as `persistedStatus`, and omits the untrusted late result. Pending caller jobs remain pending during their intentional ownerless handoff.
 
@@ -61,9 +62,11 @@ The run event log still records the controller-visible job transitions. A status
 - `phase: jobs_running` plus `runtime.ownership: active` means local jobs are executing under the original loop.
 - `executor: caller`, `phase: caller_jobs_pending`, `runtime.ownership: missing`, and `safeNextAction: execute_caller_jobs` is a healthy durable pause. The current Codex should execute the listed `advise` tasks and submit their results; it must not claim that ChatGPT used local tools.
 - Caller handoff has no execution claim. Coordinate one session before doing the local advice; if two sessions execute it, the first terminal evidence submitted wins and the later submission returns `already_terminal`.
-- `runtime_ownership_unknown` means persisted `running` is not proof of a live process. `runtime_stale` requires explicit `cueline run takeover <run-id>` confirmation before the exact stale heartbeat can be retired. Active-looking process jobs are reported as `orphaned`.
+- `caller_work_pending` / `claim_caller_work` means no local mutation has begun. `caller_work_claimed` / `start_caller_work` means the immutable claim exists but still has `started=false`. `caller_work_running` / `continue_caller_work` authorizes only the exact claim owner to continue and heartbeat the started work. Claim IDs and fencing tokens are intentionally omitted from run status.
+- One stale caller observer is automatically recoverable only when it owns exactly one normally submitted, non-manual turn with an exact matching ChatGPT URL, no active jobs, no pending command, and no cancellation. Status remains `controller_response_pending` / `observe`; continuation atomically fences the stale owner and performs read-only observation without resend. Every other stale state requires explicit takeover/reconciliation.
+- `runtime_ownership_unknown` means persisted `running` is not proof of a live process. Except for the strict side-effect-free caller observer described above, `runtime_stale` requires explicit `cueline run takeover <run-id>` confirmation before the exact stale heartbeat can be retired. Active-looking process jobs are reported as `orphaned`.
 - `runtime_active` means a live owner is still settling a failed state; another session must observe rather than continue.
-- `continueAllowed: false` is a hard stop. Another session must not send, resume, or claim completion.
+- `continueAllowed: false` forbids `continueCueLineRun`. A caller-work state may separately authorize only the exact claim/start/continue API action named by `safeNextAction`; it never authorizes a browser resend.
 
 ## Continue behavior
 
@@ -82,11 +85,13 @@ Always run `cueline run status <run-id> --json` before continuation. `continueCu
 - when more than one legacy turn is pending, CueLine stops with `MULTIPLE_CONTROLLER_TURNS_PENDING` rather than guessing
 - deterministic job IDs suppress a repeated dispatch already present in state
 - caller jobs are returned as `awaiting_caller`; after local execution, `submitCueLineCallerJobResult` persists the full result and continuation sends bounded evidence to the same controller
+- caller `work` is returned as `awaiting_caller_work`; claim/start/heartbeat/result events are append-only, duplicate claims are fenced, an expired unstarted claim is releasable, and continuation settles an expired started claim as `ambiguous` before another controller turn
+- `caller_work_result_submission_started` is persisted before the terminal status; an exact matching intent lets a post-crash retry import that durable terminal result even if the claim TTL elapsed between the two writes. A started caller work result other than `succeeded` is normalized to `ambiguous`
 - `complete` and `blocked` are rejected while any required or optional job is pending/running, so a terminal command cannot orphan background work
 - any non-normal process-loop exit cancels and settles its owned active jobs before releasing the runtime lease, including round-limit and controller-validation failures
 - process jobs can be observed or waited through their persisted status
 
-Caller mode accepts `advise` only. Explicit process execution defaults to at most two concurrent jobs globally and two per lane; a dispatch containing any `work` job is serialized in command order to avoid overlapping mutations.
+Caller advice remains coordination-only; caller work requires its durable claim lifecycle. Explicit process execution is gated by both executor selection and `allowProcessExecution: true`, defaults to at most two concurrent jobs globally and two per lane, and serializes a dispatch containing any `work` job.
 
 ## Cancellation and deadlines
 
@@ -141,10 +146,10 @@ Continuation cannot reconstruct an expired ChatGPT login, a deleted conversation
 2. Record the `runId` from the earlier result or directory name.
 3. Restore access to the same ChatGPT conversation in Codex's built-in Browser.
 4. Restore any locally required executable/configuration without copying browser credentials.
-5. Run `cueline run status <run-id> --json`. If the owner is active, observe or cancel; do not continue. If it is stale, use `cueline run takeover <run-id> --json` once and follow its exact `next` field. `controller_response_pending` means observe the same submitted turn; an accepted response plus jobs means do not call that accepted round “waiting for ChatGPT.”
+5. Run `cueline run status <run-id> --json`. If the owner is active, observe or cancel; do not continue. The strict read-only stale-observer case reports `controller_response_pending` / `observe` and can continue without resend. For every other stale owner, use `cueline run takeover <run-id> --json` once and follow its exact `next` field. An accepted response plus jobs must never be described as “waiting for ChatGPT.”
 6. Inspect `loadCueLineRunState(runId, ...)` only when status says recovery is needed. If multiple `pendingControllerTurns` exist, match the visible page prompt and select its exact `requestId`.
 7. For `controller_response_pending`, wait a bounded interval and call `continueCueLineRun` once; unfinished Pro output returns `awaiting_controller` without resend.
-8. For `caller_jobs_pending`, execute only the listed `advise` jobs locally, submit each terminal result, then call `continueCueLineRun`; no browser resend is involved.
+8. For `caller_jobs_pending`, execute only the listed `advise` jobs locally and submit each terminal result. For caller-work phases, follow only the exact claim/start/continue action, mutate only after start, heartbeat before claim expiry, and submit with the exact proof. Then call `continueCueLineRun`; no browser resend is involved.
 9. Otherwise call `continueCueLineRun({ runId, conversationUrl, ... })` only when continuation is allowed. Add `reconcileRequestId` and `abandonOtherPendingTurns: true` only for an explicitly resolved multi-pending case. For a manually sent attachment, first use the formal reconcile command above.
 10. If reconciliation fails, do not resend. Preserve the page and report the exact `CONTROLLER_RECONCILIATION_*`, `IAB_RECONCILIATION_FAILED`, or `TAB_RECOVERY_UNSAFE` error. Post-creation errors expose `details.run_id` for this recovery.
 11. Treat the new terminal result as valid only after its event and job evidence is present.

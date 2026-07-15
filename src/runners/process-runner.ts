@@ -28,6 +28,32 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function safeHeaderValue(value: string): string | undefined {
+  const normalized = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$/.test(normalized)
+    ? normalized
+    : undefined;
+}
+
+function processMetadata(header: string): { model?: string; provider?: string } {
+  let model: string | undefined;
+  let provider: string | undefined;
+  for (const line of header.split(/\r?\n/)) {
+    const modelMatch = /^model:\s*(.+)$/i.exec(line);
+    if (model === undefined && modelMatch?.[1] !== undefined) {
+      model = safeHeaderValue(modelMatch[1]);
+    }
+    const providerMatch = /^provider:\s*(.+)$/i.exec(line);
+    if (provider === undefined && providerMatch?.[1] !== undefined) {
+      provider = safeHeaderValue(providerMatch[1]);
+    }
+  }
+  return {
+    ...(model === undefined ? {} : { model }),
+    ...(provider === undefined ? {} : { provider }),
+  };
+}
+
 function nativeProcess(): NodeJS.Process | undefined {
   return typeof process === "undefined" ? undefined : process;
 }
@@ -123,6 +149,25 @@ export class ProcessRunner implements RunnerAdapter {
 
     let spawnedPid: number | undefined;
     let cancelSpawned: (() => void) | undefined;
+    let observedModel: string | undefined;
+    let observedProvider: string | undefined;
+    const emitProgress = (
+      phase: string,
+      metadata: { model?: string; provider?: string } = {},
+    ): void => {
+      try {
+        void Promise.resolve(
+          hooks.onProgress?.({
+            phase,
+            at: new Date().toISOString(),
+            ...(metadata.model === undefined ? {} : { model: metadata.model }),
+            ...(metadata.provider === undefined ? {} : { provider: metadata.provider }),
+          }),
+        ).catch(() => undefined);
+      } catch {
+        // Progress is diagnostic only and must never break process supervision.
+      }
+    };
     const completion = new Promise<JobResult>((resolve) => {
       const environment: NodeJS.ProcessEnv = {
         ...this.#environment,
@@ -215,10 +260,26 @@ export class ProcessRunner implements RunnerAdapter {
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string | Buffer) => {
         stdout += chunk.toString();
+        emitProgress("producing_output", {
+          ...(observedModel === undefined ? {} : { model: observedModel }),
+          ...(observedProvider === undefined ? {} : { provider: observedProvider }),
+        });
       });
       child.stderr?.setEncoding("utf8");
       child.stderr?.on("data", (chunk: string | Buffer) => {
         stderr += chunk.toString();
+        const metadata = processMetadata(stderr.slice(0, 16_384));
+        const changed =
+          (metadata.model !== undefined && metadata.model !== observedModel) ||
+          (metadata.provider !== undefined && metadata.provider !== observedProvider);
+        observedModel = metadata.model ?? observedModel;
+        observedProvider = metadata.provider ?? observedProvider;
+        if (changed) {
+          emitProgress("waiting_for_model", {
+            ...(observedModel === undefined ? {} : { model: observedModel }),
+            ...(observedProvider === undefined ? {} : { provider: observedProvider }),
+          });
+        }
       });
       if (spec.stdin !== undefined) {
         child.stdin?.end(spec.stdin, "utf8");

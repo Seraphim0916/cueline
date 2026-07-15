@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.6 - 2026-07-15
+
+### Added
+
+- Add a durable caller-work claim protocol for local mutations. A `work` dispatch in caller mode now pauses as `caller_work_pending`; `claimCueLineCallerJob`, `startCueLineCallerJob`, heartbeat, release, and result submission bind the exact run, job, task hash, absolute workdir, caller identity, expiry, and monotonically increasing fencing token. An unstarted expired claim is safely reclaimable; started work that loses its claim becomes `ambiguous` and is never automatically retried.
+- Expose separate controller, caller-work, and process-execution status surfaces. Process status includes the resolved runner, model, provider, PID, phase, and last-progress timestamp; model/provider discovery keeps the first valid Codex header instead of allowing later untrusted job output to spoof it. Caller work reports pending, claimed, and running phases without pretending that Pro used local tools.
+
+### Fixed
+
+- Ignore hidden, disabled, inert, ancestor-hidden, zero-geometry, or otherwise non-actionable residual `Stop answering` buttons. A completed Pro response can now reconcile even when ChatGPT retains a hidden stop control in the DOM.
+- Preserve exact `inspect(job_ids)` targets and allocate the bounded controller-evidence budget to those jobs first, so Pro receives the requested stdout instead of repeatedly seeing only terminal status.
+- Recover only one precisely fenced, normally submitted caller observation after an outer timeout, and release every observation lease in `finally`. Ambiguous/manual/multiple turns, URL mismatches, jobs, commands, and cancellations remain in explicit reconciliation paths.
+- Make caller-work result submission crash-recoverable with a durable result-intent event; reject clock regression, invalid or reversed timestamps, forged or out-of-order claims, duplicate terminal results, and release-after-start. Any non-success result after work starts is normalized to `ambiguous`.
+- Require both `executor: "process"` and `allowProcessExecution: true` at run creation and every nonterminal continuation. Process work never exposes a caller-claim surface, and a failing diagnostic progress hook cannot break process supervision.
+- Launch the bundled `codex-default` process route with `--ignore-user-config`, preventing hidden inheritance of user-configured MCP commands and their process arguments. The runner still uses registered argv directly without a shell.
+- Prefer the current injected built-in Browser binding before fallback discovery, while keeping all controller observation read-only and never invoking `Answer now`, `Respond now`, `Stop`, or equivalent interruption controls.
+
+### Verification
+
+- Added adversarial coverage for hidden stop controls and hidden ancestors, inspected-output prioritization, stale observer fencing, caller claim races/restarts/expiry/result crashes/clock attacks, process double authorization, caller-vs-process status separation, diagnostic-hook failure, and bundled route isolation.
+- Verified the real ChatGPT Web Pro path with a new conversation and new caller run: each prompt was sent once, no process or work job was started, bounded local evidence was returned through caller advice, and Pro was allowed to finish every reasoning turn without interruption. The terminal Pro verdict was `complete`, with no additional evidence requested for the five scoped blockers.
+
 ## 0.1.5 - 2026-07-15
 
 ### Fixed

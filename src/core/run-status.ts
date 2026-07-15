@@ -7,6 +7,7 @@ import {
 import type { RuntimeLeaseObservation } from "../state/runtime-lease.js";
 import type { CancellationObservation } from "../state/cancellation.js";
 import type { RunEvent } from "../state/event-log.js";
+import type { JobStatus } from "../jobs/status.js";
 
 const JOB_STATUSES = [
   "pending",
@@ -27,6 +28,9 @@ export type CueLineRunPhase =
   | "jobs_running"
   | "controller_decision_pending"
   | "caller_jobs_pending"
+  | "caller_work_pending"
+  | "caller_work_claimed"
+  | "caller_work_running"
   | "runtime_active"
   | "runtime_stale"
   | "runtime_ownership_unknown"
@@ -47,12 +51,16 @@ export type CueLineSafeNextAction =
   | "inspect_runtime"
   | "continue"
   | "execute_caller_jobs"
+  | "claim_caller_work"
+  | "start_caller_work"
+  | "continue_caller_work"
   | "return_result";
 
 export interface CueLineRunStatusSummary {
   runId: string;
   status: CueLineRunState["status"];
   executor: CueLineRunState["executor"];
+  allowProcessExecution: boolean;
   phase: CueLineRunPhase;
   round: number;
   maxRounds: number;
@@ -79,6 +87,24 @@ export interface CueLineRunStatusSummary {
       task: string;
       status: CueLineObservedJobStatus;
       persistedStatus: StoredJobStatus;
+      workClaim?: {
+        claimed: boolean;
+        callerId?: string;
+        taskHash?: string;
+        workdir: string;
+        claimedAt?: string;
+        heartbeatAt?: string;
+        expiresAt?: string;
+        startedAt?: string | null;
+      };
+      execution?: {
+        runnerId?: string;
+        pid?: number;
+        model?: string;
+        provider?: string;
+        phase?: string;
+        lastProgressAt?: string;
+      };
     }>;
   };
   continueAllowed: boolean;
@@ -130,6 +156,75 @@ function activeJobCount(state: CueLineRunState): number {
   ).length;
 }
 
+function activeCallerWorkJobs(state: CueLineRunState) {
+  return Object.values(state.jobs).filter(
+    (job) =>
+      job.spec.mode === "work" &&
+      (job.status === "pending" || job.status === "running"),
+  );
+}
+
+function isExactChatGptConversationUrl(value: string | null): boolean {
+  if (value === null) return false;
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.hostname === "chatgpt.com" &&
+      /^\/c\/[^/]+\/?$/.test(parsed.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function normalizedConversationUrl(value: string): string {
+  const parsed = new URL(value);
+  return `${parsed.origin}${parsed.pathname.replace(/\/$/, "")}`;
+}
+
+/**
+ * A stale lease may be fenced automatically only when the abandoned operation
+ * was a side-effect-free observation of one durably submitted caller turn.
+ * Any ambiguity about submission, conversation identity, jobs, or cancellation
+ * keeps the explicit takeover/reconciliation requirement.
+ */
+export function isSafeStaleCallerObservationRecovery(
+  state: CueLineRunState,
+  runtime: RuntimeLeaseObservation,
+  cancellation: CancellationObservation,
+): boolean {
+  if (
+    runtime.ownership !== "stale" ||
+    runtime.ownerId === undefined ||
+    runtime.heartbeatAt === undefined ||
+    cancellation.runRequested ||
+    state.executor !== "caller" ||
+    state.status !== "running" ||
+    state.pendingCommandExecution !== null ||
+    activeJobCount(state) !== 0 ||
+    state.pendingControllerTurns.length !== 1
+  ) {
+    return false;
+  }
+  const turn = state.pendingControllerTurns[0]!;
+  const conversationUrl = turn.conversationUrl ?? state.conversationUrl;
+  if (
+    turn.conversationUrl !== null &&
+    state.conversationUrl !== null &&
+    normalizedConversationUrl(turn.conversationUrl) !==
+      normalizedConversationUrl(state.conversationUrl)
+  ) {
+    return false;
+  }
+  return (
+    turn.round === state.round &&
+    turn.submissionState === "submitted" &&
+    !turn.manualSendConfirmed &&
+    isExactChatGptConversationUrl(conversationUrl)
+  );
+}
+
 function isPristineRun(state: CueLineRunState): boolean {
   return (
     state.round === 0 &&
@@ -168,6 +263,22 @@ function safeNextActionFor(
     return runtime.ownership === "active" ? "observe" : "inspect_runtime";
   }
   if (runtime.ownership === "active") return "observe";
+  if (isSafeStaleCallerObservationRecovery(state, runtime, cancellation)) {
+    return "observe";
+  }
+  if (state.executor === "caller") {
+    const callerWork = activeCallerWorkJobs(state);
+    if (callerWork.some((job) => {
+      const claim = job.callerWork?.claim;
+      return claim !== null && claim !== undefined && claim.startedAt !== null;
+    })) {
+      return "continue_caller_work";
+    }
+    if (callerWork.some((job) => job.callerWork?.claim !== null && job.callerWork?.claim !== undefined)) {
+      return "start_caller_work";
+    }
+    if (callerWork.length > 0) return "claim_caller_work";
+  }
   if (state.executor === "caller" && activeJobCount(state) > 0) {
     return "execute_caller_jobs";
   }
@@ -201,6 +312,9 @@ export function cueLineRunPhase(
   if (state.status === "cancelled") return "cancelled";
   if (cancellation.runRequested) return "cancellation_pending";
   if (state.status === "failed" && runtime.ownership === "active") return "runtime_active";
+  if (isSafeStaleCallerObservationRecovery(state, runtime, cancellation)) {
+    return "controller_response_pending";
+  }
   if (runtime.ownership === "stale") return "runtime_stale";
   if (isPristineRun(state) && runtime.ownership !== "active") return "starting";
   if (runtime.ownership !== "active" && hasRetryableUnsentTurn(state)) {
@@ -214,6 +328,17 @@ export function cueLineRunPhase(
     runtime.ownership !== "active" &&
     activeJobCount(state) > 0
   ) {
+    const callerWork = activeCallerWorkJobs(state);
+    if (callerWork.some((job) => {
+      const claim = job.callerWork?.claim;
+      return claim !== null && claim !== undefined && claim.startedAt !== null;
+    })) {
+      return "caller_work_running";
+    }
+    if (callerWork.some((job) => job.callerWork?.claim !== null && job.callerWork?.claim !== undefined)) {
+      return "caller_work_claimed";
+    }
+    if (callerWork.length > 0) return "caller_work_pending";
     return "caller_jobs_pending";
   }
   if (state.status === "failed") {
@@ -297,11 +422,36 @@ export function summarizeCueLineRunState(
     requestId: null,
     jobKeys: [],
   },
+  persistedJobStatuses: ReadonlyMap<string, JobStatus> = new Map(),
 ): CueLineRunStatusSummary {
   const counts = Object.fromEntries(
     OBSERVED_JOB_STATUSES.map((status) => [status, 0]),
   ) as Record<CueLineObservedJobStatus, number>;
   const items = Object.values(state.jobs).map((job) => {
+    const persisted = persistedJobStatuses.get(job.jobId);
+    const persistedMatches =
+      persisted !== undefined &&
+      (persisted.runId === undefined || persisted.runId === state.runId) &&
+      (persisted.jobKey === undefined || persisted.jobKey === job.jobKey);
+    const execution = {
+      ...(job.runtime ?? {}),
+      ...(persistedMatches && persisted?.runnerId !== undefined
+        ? { runnerId: persisted.runnerId }
+        : {}),
+      ...(persistedMatches && persisted?.pid !== undefined ? { pid: persisted.pid } : {}),
+      ...(persistedMatches && persisted?.model !== undefined
+        ? { model: persisted.model }
+        : {}),
+      ...(persistedMatches && persisted?.provider !== undefined
+        ? { provider: persisted.provider }
+        : {}),
+      ...(persistedMatches && persisted?.phase !== undefined
+        ? { phase: persisted.phase }
+        : {}),
+      ...(persistedMatches && persisted?.lastProgressAt !== undefined
+        ? { lastProgressAt: persisted.lastProgressAt }
+        : {}),
+    };
     const status: CueLineObservedJobStatus =
       (job.status === "pending" || job.status === "running") &&
       state.executor !== "caller" &&
@@ -318,20 +468,42 @@ export function summarizeCueLineRunState(
       task: job.spec.task,
       status,
       persistedStatus: job.status,
+      ...(Object.keys(execution).length === 0 ? {} : { execution }),
+      ...(state.executor !== "caller" ||
+      job.spec.mode !== "work" ||
+      job.spec.workdir === undefined
+        ? {}
+        : {
+            workClaim:
+              job.callerWork?.claim === null || job.callerWork?.claim === undefined
+                ? { claimed: false, workdir: job.spec.workdir }
+                : {
+                    claimed: true,
+                    callerId: job.callerWork.claim.callerId,
+                    taskHash: job.callerWork.claim.taskHash,
+                    workdir: job.callerWork.claim.workdir,
+                    claimedAt: job.callerWork.claim.claimedAt,
+                    heartbeatAt: job.callerWork.claim.heartbeatAt,
+                    expiresAt: job.callerWork.claim.expiresAt,
+                    startedAt: job.callerWork.claim.startedAt,
+                  },
+          }),
     };
   });
   const phase = cueLineRunPhase(state, runtime, cancellation);
   const continueAllowed =
     !cancellation.runRequested &&
     !roundLimitReached(state) &&
-    (runtime.ownership === "missing" || runtime.ownership === "released") &&
-    ((state.status === "failed") ||
-      (state.executor === "caller" && activeJobCount(state) === 0));
+    (((runtime.ownership === "missing" || runtime.ownership === "released") &&
+      ((state.status === "failed") ||
+        (state.executor === "caller" && activeJobCount(state) === 0))) ||
+      isSafeStaleCallerObservationRecovery(state, runtime, cancellation));
   const safeNextAction = safeNextActionFor(state, runtime, cancellation);
   return {
     runId: state.runId,
     status: state.status,
     executor: state.executor,
+    allowProcessExecution: state.allowProcessExecution,
     phase,
     round: state.round,
     maxRounds: state.maxRounds,

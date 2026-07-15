@@ -20,6 +20,8 @@ export interface CueLineRuntimeOptions {
   cancellationPollIntervalMs?: number;
   runTimeoutMs?: number;
   executor?: "caller" | "process";
+  /** Required together with executor="process" before CueLine may spawn local processes. */
+  allowProcessExecution?: boolean;
   maxConcurrency?: number;
   laneConcurrency?: Readonly<Record<string, number>>;
 }
@@ -58,6 +60,53 @@ export interface CueLineCallerJobSubmissionResult {
   runId: string;
   jobId: string;
   outcome: "submitted" | "already_terminal";
+}
+
+export interface CueLineCallerWorkClaimProof {
+  claimId: string;
+  callerId: string;
+  fencingToken: number;
+}
+
+export interface CueLineCallerWorkClaimOptions
+  extends Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> {
+  callerId: string;
+  ttlMs?: number;
+}
+
+export interface CueLineCallerWorkClaimResult extends CueLineCallerWorkClaimProof {
+  runId: string;
+  jobId: string;
+  outcome: "claimed" | "already_claimed";
+  task: string;
+  taskHash: string;
+  workdir: string;
+  claimedAt: string;
+  heartbeatAt: string;
+  expiresAt: string;
+  started: boolean;
+}
+
+export interface CueLineCallerWorkMutationResult {
+  runId: string;
+  jobId: string;
+  claimId: string;
+  fencingToken: number;
+  outcome:
+    | "started"
+    | "already_started"
+    | "heartbeat_recorded"
+    | "released";
+  heartbeatAt?: string;
+  expiresAt?: string;
+}
+
+export interface CueLineCallerWorkMutationOptions
+  extends Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> {}
+
+export interface CueLineCallerJobSubmissionOptions
+  extends Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> {
+  claim?: CueLineCallerWorkClaimProof;
 }
 
 export interface CueLineRuntimeReconciliationResult {

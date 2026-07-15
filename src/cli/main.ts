@@ -200,6 +200,16 @@ async function readRunJobMetadata(home: string): Promise<Map<string, RunJobMetad
         metadata.set(payload.job_id, {
           ...existing,
           status,
+          ...(typeof payload.runner_id === "string"
+            ? { runnerId: payload.runner_id }
+            : {}),
+          ...(typeof payload.pid === "number" ? { pid: payload.pid } : {}),
+          ...(typeof payload.model === "string" ? { model: payload.model } : {}),
+          ...(typeof payload.provider === "string" ? { provider: payload.provider } : {}),
+          ...(typeof payload.phase === "string" ? { phase: payload.phase } : {}),
+          ...(typeof payload.last_progress_at === "string"
+            ? { lastProgressAt: payload.last_progress_at }
+            : {}),
           ...(status === "pending" || status === "running"
             ? {}
             : { finishedAt: event.timestamp }),
@@ -293,7 +303,7 @@ async function jobsCommand(
   }
   for (const job of jobs) {
     io.stdout(
-      `${job.jobId}\t${job.runId ?? "-"}\t${job.jobKey ?? "-"}\t${job.lane ?? "-"}\t${job.mode ?? "-"}\t${job.pid ?? "-"}\t${job.execution}\t${job.observedStatus}\t${job.startedAt}\ttask=${JSON.stringify(job.task ?? "")}`,
+      `${job.jobId}\t${job.runId ?? "-"}\t${job.jobKey ?? "-"}\t${job.lane ?? "-"}\t${job.mode ?? "-"}\t${job.pid ?? "-"}\t${job.execution}\t${job.observedStatus}\t${job.startedAt}\trunner=${job.runnerId ?? "-"}\tmodel=${job.model ?? "-"}\tprovider=${job.provider ?? "-"}\tphase=${job.phase ?? "-"}\tprogress=${job.lastProgressAt ?? "-"}\ttask=${JSON.stringify(job.task ?? "")}`,
     );
   }
   return 0;
@@ -320,6 +330,7 @@ async function runStatusCommand(
   io.stdout(`version\t${CUELINE_VERSION}`);
   io.stdout(`status\t${status.status}`);
   io.stdout(`executor\t${status.executor}`);
+  io.stdout(`process_authorized\t${status.allowProcessExecution ? "yes" : "no"}`);
   io.stdout(`phase\t${status.phase}`);
   io.stdout(
     `runtime\t${status.runtime.ownership}${
@@ -337,7 +348,7 @@ async function runStatusCommand(
   );
   for (const job of status.jobs.items) {
     io.stdout(
-      `job\t${job.jobId}\t${job.jobKey}\t${job.status}\t${job.mode}\t${job.lane}\trequired=${job.required}\tpersisted=${job.persistedStatus}\ttask=${JSON.stringify(job.task)}`,
+      `job\t${job.jobId}\t${job.jobKey}\t${job.status}\t${job.mode}\t${job.lane}\trequired=${job.required}\tpersisted=${job.persistedStatus}\trunner=${job.execution?.runnerId ?? "-"}\tpid=${job.execution?.pid ?? "-"}\tmodel=${job.execution?.model ?? "-"}\tprovider=${job.execution?.provider ?? "-"}\tphase=${job.execution?.phase ?? "-"}\tprogress=${job.execution?.lastProgressAt ?? "-"}\ttask=${JSON.stringify(job.task)}`,
     );
   }
   io.stdout(

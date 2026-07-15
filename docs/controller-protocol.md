@@ -35,7 +35,7 @@ A stale or mismatched value is rejected. CueLine parses only the **last complete
 }
 ```
 
-Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, or `ambiguous`. Successful jobs with non-empty stdout use stdout as controller evidence instead of a combined stdout/stderr stream. Failed and timed-out jobs retain bounded diagnostic error evidence. All job evidence in one controller observation shares a global 12,000-character budget; omitted content is reported once with the exact omitted count. Full stdout/stderr remain in local job status, and only the most recent 20 notices are sent. The local event log remains the recovery record.
+Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, or `ambiguous`. Successful jobs with non-empty stdout use stdout as controller evidence instead of a combined stdout/stderr stream. Failed and timed-out jobs retain bounded diagnostic error evidence. All job evidence in one controller observation shares a global 12,000-character budget; omitted content is reported once with the exact omitted count. After an accepted `inspect(job_ids)`, the named jobs receive that budget before unrelated jobs. Full stdout/stderr remain in local job status, and only the most recent 20 notices are sent. The local event log remains the recovery record.
 
 ## Command envelope
 
@@ -83,9 +83,9 @@ Schedules one or more local jobs.
 
 `job_key` must be unique inside the command and match the supported identifier form. `mode` is `advise` or `work`. Optional fields are `required`, `timeout_ms`, `runner`, `workdir`, and `background`. `runner_id` is invalid and produces an explicit correction to use `runner`. The local runtime—not ChatGPT—resolves the configured executable. `lane` must be a listed available lane; a runner ID is not a lane name. When `runner` is supplied, it must name an enabled, available candidate in the selected lane. CueLine validates every new route in the dispatch before registering or starting any job. One invalid route rejects the whole command and requests a corrected envelope with the same pending identity. Repeating an already persisted deterministic job is ignored rather than executed again.
 
-The default executor is `caller`. It persists pending `advise` jobs and returns them to the current Codex, which executes the exact local inspections and submits terminal results. The web controller has no local tool access and no implicit knowledge of local paths or repository layout. Local evidence must include absolute paths, relevant code excerpts, and exact code/error identifiers, and the intermediary must ask whether more local evidence is needed. Caller-mode `work` is rejected with `CALLER_WORK_REQUIRES_CLAIM` because CueLine cannot yet issue a duplicate-safe side-effect claim.
+The default executor is `caller`. It persists pending `advise` jobs and returns them as `awaiting_caller`. A caller `work` job must include an absolute `workdir`; it returns as `awaiting_caller_work` without executing. The current Codex must acquire a claim bound to run/job/task hash/workdir/caller/fencing token, durably start it before mutation, heartbeat long work, and submit the result with the exact proof. A non-success after start is reported as `ambiguous`, not as proof that no side effect occurred. A `dispatch` alone never means local work started. The web controller has no local tool access or implicit knowledge of local paths/repository layout. Local evidence must include absolute paths, relevant code excerpts, exact code/error identifiers, and an explicit request for any missing local evidence.
 
-The `process` executor must be selected explicitly. Independent `advise` jobs run with a default global concurrency of two and a default per-lane limit of two (both configurable). If any job is `work`, the entire batch remains serial in command order.
+The `process` executor requires both `executor: "process"` and `allowProcessExecution: true`; each non-terminal continuation repeats the second authorization. Independent `advise` jobs run with a default global concurrency of two and a default per-lane limit of two (both configurable). If any job is `work`, the entire batch remains serial in command order.
 
 ### `wait`
 
@@ -93,7 +93,7 @@ Waits for selected running jobs (`job_ids`) or all current running jobs when omi
 
 ### `inspect`
 
-Asks CueLine to present the currently persisted job state on the next round. It does not grant the web controller a new local inspection tool.
+Asks CueLine to present the currently persisted job state on the next round. Named `job_ids` receive the bounded evidence budget before unrelated jobs, so a completed result is not reduced to status merely because earlier jobs consumed the prompt budget. It does not grant the web controller a new local inspection tool.
 
 ### `complete`
 

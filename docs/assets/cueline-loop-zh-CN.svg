@@ -74,5 +74,5 @@
   <path d="M40 520H960" class="rule"/>
   <text x="40" y="546" class="foot">只有五个动作 — dispatch · wait · inspect · complete · blocked。</text>
   <text x="40" y="568" class="foot">只发送一次 → awaiting_controller → 单次只读观测；绝不重发。</text>
-  <text x="40" y="590" class="foot">Caller 只允许 advise；process 必须显式选择，并且不会静默重试。</text>
+  <text x="40" y="590" class="foot">Caller work 必须 claim + start；process 执行必须双重授权。</text>
 </svg>

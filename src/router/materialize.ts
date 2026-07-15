@@ -52,6 +52,7 @@ export function materializeRunnerSpec(
 
   return {
     jobId,
+    runnerId: route.candidate.id,
     argv,
     ...(taskInput === "stdin" ? { stdin: job.task } : {}),
     mode: job.mode,

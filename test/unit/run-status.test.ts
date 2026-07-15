@@ -88,3 +88,34 @@ test("a requested turn with no write-ahead send checkpoint is retry-ready", () =
     assert.equal(summary.controller.responseAccepted, false);
   }
 });
+
+test("process work exposes process execution, never a caller claim surface", () => {
+  const state = initialRunState("run_process_work_status", "Execute", "process", 12, true);
+  state.jobs.job_process_work = {
+    jobId: "job_process_work",
+    jobKey: "process_work",
+    required: true,
+    spec: {
+      job_key: "process_work",
+      lane: "default",
+      mode: "work",
+      task: "Explicit process work",
+      workdir: "/tmp/process-work",
+    },
+    status: "running",
+    output: null,
+    error: null,
+    callerWork: { claim: null, nextFencingToken: 0 },
+    runtime: { runnerId: "codex-default", pid: 4242, phase: "running" },
+  };
+
+  const summary = summarizeCueLineRunState(state, 2, {
+    ownership: "active",
+    ownerId: "owner_process_work",
+    heartbeatAt: "2026-07-15T00:00:00.000Z",
+  });
+
+  assert.equal(summary.jobs.items[0]?.workClaim, undefined);
+  assert.equal(summary.jobs.items[0]?.execution?.runnerId, "codex-default");
+  assert.equal(summary.jobs.items[0]?.execution?.pid, 4242);
+});

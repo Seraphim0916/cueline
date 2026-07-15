@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { createCodexIabAdapter } from "../../src/browser/codex-iab/chatgpt-client.js";
 import {
+  readPageChatState,
   readPageComposerState,
   resolveIabBrowser,
   type IabBrowser,
@@ -321,6 +322,222 @@ test("treats contenteditable block newlines as the same inline prompt", async ()
       Object.defineProperty(globalThis, "document", documentDescriptor);
     } else {
       delete (globalThis as { document?: unknown }).document;
+    }
+  }
+});
+
+test("ignores a hidden residual Stop answering button after the Pro response completed", async () => {
+  const stopButton = {
+    disabled: false,
+    hidden: false,
+    textContent: "Stop answering",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Stop answering";
+      if (name === "aria-hidden") return "true";
+      return null;
+    },
+    closest(selector: string) {
+      return selector.includes("aria-hidden") ? this : null;
+    },
+    getBoundingClientRect() {
+      return { width: 0, height: 0 };
+    },
+    getClientRects() {
+      return [];
+    },
+  };
+  const assistant = {
+    innerText: "<CueLineControl>{\"action\":\"inspect\"}</CueLineControl>",
+    textContent: "<CueLineControl>{\"action\":\"inspect\"}</CueLineControl>",
+    getAttribute(name: string) {
+      if (name === "data-message-author-role") return "assistant";
+      if (name === "data-message-model-slug") return "gpt-5-6-pro";
+      return null;
+    },
+  };
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const styleDescriptor = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelectorAll(selector: string) {
+        if (selector === "button") return [stopButton];
+        if (selector === "[data-message-author-role]") return [assistant];
+        return [];
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { location: { href: "https://chatgpt.com/c/completed-pro-response" } },
+  });
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => ({
+      display: "none",
+      visibility: "hidden",
+      opacity: "0",
+      pointerEvents: "none",
+    }),
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result>(pageFunction: () => Result | Promise<Result>): Promise<Result> {
+        return pageFunction();
+      },
+    },
+  } as unknown as IabTab;
+
+  try {
+    const state = await readPageChatState(tab);
+    assert.equal(state.isAnswering, false);
+    assert.equal(state.assistantText, assistant.innerText);
+    assert.equal(state.lastMessageRole, "assistant");
+  } finally {
+    for (const [name, descriptor] of [
+      ["document", documentDescriptor],
+      ["window", windowDescriptor],
+      ["getComputedStyle", styleDescriptor],
+    ] as const) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globalThis as Record<string, unknown>)[name];
+    }
+  }
+});
+
+test("recognizes a visible actionable Stop answering button while Pro is still responding", async () => {
+  const stopButton = {
+    disabled: false,
+    hidden: false,
+    textContent: "Stop answering",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Stop answering";
+      return null;
+    },
+    closest() {
+      return null;
+    },
+    getBoundingClientRect() {
+      return { width: 40, height: 40 };
+    },
+    getClientRects() {
+      return [{}];
+    },
+  };
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const styleDescriptor = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelectorAll(selector: string) {
+        if (selector === "button") return [stopButton];
+        return [];
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { location: { href: "https://chatgpt.com/c/active-pro-response" } },
+  });
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => ({
+      display: "block",
+      visibility: "visible",
+      opacity: "1",
+      pointerEvents: "auto",
+    }),
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result>(pageFunction: () => Result | Promise<Result>): Promise<Result> {
+        return pageFunction();
+      },
+    },
+  } as unknown as IabTab;
+
+  try {
+    const state = await readPageChatState(tab);
+    assert.equal(state.isAnswering, true);
+  } finally {
+    for (const [name, descriptor] of [
+      ["document", documentDescriptor],
+      ["window", windowDescriptor],
+      ["getComputedStyle", styleDescriptor],
+    ] as const) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globalThis as Record<string, unknown>)[name];
+    }
+  }
+});
+
+test("ignores a dimensioned Stop button hidden by ancestor visibility", async () => {
+  const stopButton = {
+    disabled: false,
+    hidden: false,
+    textContent: "Stop answering",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Stop answering";
+      return null;
+    },
+    closest() {
+      return null;
+    },
+    checkVisibility() {
+      return false;
+    },
+    getBoundingClientRect() {
+      return { width: 40, height: 40 };
+    },
+    getClientRects() {
+      return [{}];
+    },
+  };
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const styleDescriptor = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelectorAll(selector: string) {
+        if (selector === "button") return [stopButton];
+        return [];
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { location: { href: "https://chatgpt.com/c/hidden-ancestor-response" } },
+  });
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => ({
+      display: "block",
+      visibility: "visible",
+      opacity: "1",
+      pointerEvents: "auto",
+    }),
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result>(pageFunction: () => Result | Promise<Result>): Promise<Result> {
+        return pageFunction();
+      },
+    },
+  } as unknown as IabTab;
+
+  try {
+    assert.equal((await readPageChatState(tab)).isAnswering, false);
+  } finally {
+    for (const [name, descriptor] of [
+      ["document", documentDescriptor],
+      ["window", windowDescriptor],
+      ["getComputedStyle", styleDescriptor],
+    ] as const) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globalThis as Record<string, unknown>)[name];
     }
   }
 });

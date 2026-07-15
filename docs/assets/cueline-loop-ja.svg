@@ -74,5 +74,5 @@
   <path d="M40 520H960" class="rule"/>
   <text x="40" y="546" class="foot">アクションは 5 つだけ — dispatch · wait · inspect · complete · blocked。</text>
   <text x="40" y="568" class="foot">1 回送信 → awaiting_controller → 1 回の読み取り観測。再送しません。</text>
-  <text x="40" y="590" class="foot">Caller は advise のみ。process は明示的で、暗黙の再試行はしません。</text>
+  <text x="40" y="590" class="foot">Caller work は claim + start、process 実行は二重承認が必要です。</text>
 </svg>

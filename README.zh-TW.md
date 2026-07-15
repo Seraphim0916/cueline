@@ -13,7 +13,7 @@
 
 **CueLine 把方向盤交給一個已經開著的 ChatGPT 網頁對話：由它規劃整趟執行、喊出每一步；CueLine 檢查每一道文字指令，現在這個 Codex 才在本機執行獲准的工作。**
 
-那個網頁碰不到你的機器，也沒有本機工具。它每一輪只吐出文字控制指令。CueLine 預設把 `advise` 工作保存成待辦，交給現在這個 Codex 執行並提交結果；只有明確指定 `process` executor 時，才會啟動已註冊的本機工作行程。
+那個網頁碰不到你的機器，也沒有本機工具。它每一輪只吐出文字控制指令。CueLine 預設把 caller 工作保存成待辦：`advise` 是協調式交接；`work` 則必須先建立持久 claim 並正式 start，才能開始修改。只有雙重明確授權 `process` executor 時，才會啟動已註冊的本機工作行程。
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 或 GPT Relay 的包裝層。
 
@@ -25,9 +25,9 @@ CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 
 
 非預設的 `maxRounds` 會在建立 run 時固定，並跨所有無 owner 的暫停累計主控總輪數。之後續跑通常省略它、沿用持久值；若傳入不同數字，CueLine 會拒絕，不會偷偷重設或放寬預算。
 
-`startCueLineRun` 與 `runCueLine` 都預設使用 `caller` executor。使用內建瀏覽器時，CueLine 只送一次、保存精確對話 URL，然後回傳 `awaiting_controller` 並釋放 runtime lease，不會讓單一工具呼叫卡著等 Pro 思考。之後的 `continueCueLineRun` 只做一次唯讀觀測；若仍未完成，就再次回傳 `awaiting_controller`，絕不重送。`dispatch` 才會回傳 `awaiting_caller` 與持久化的 `advise` 工作；目前的 Codex 執行各項工作、呼叫 `submitCueLineCallerJobResult`，再沿用同一個 run 續跑。Pro 主控只負責下文字命令，沒有親自查 repo。Caller advise 沒有 execution claim，請協調由單一 session 執行；兩個 session 可能都做同一項查驗，但只有第一份送出的終態證據生效。Caller 模式會明確拒絕 `work`。
+`startCueLineRun` 與 `runCueLine` 都預設使用 `caller` executor。使用內建瀏覽器時，CueLine 只送一次、保存精確對話 URL，然後回傳 `awaiting_controller` 並釋放 runtime lease，不會讓單一工具呼叫卡著等 Pro 思考。之後的 `continueCueLineRun` 只做一次唯讀觀測；若仍未完成，就再次回傳 `awaiting_controller`，絕不重送。`advise` 派工回傳 `awaiting_caller`，沒有副作用 claim，需協調單一 session。`work` 派工回傳 `awaiting_caller_work`，在目前 Codex 呼叫 `claimCueLineCallerJob` 與 `startCueLineCallerJob` 前，絕對尚未開始本機修改。claim 綁定 run、job、task hash、絕對 workdir、caller identity 與 fencing token；已開始的工作不會自動重試，claim 逾期則成為 `ambiguous`。Pro 只提出與審查文字指令，沒有親自使用本機工具。
 
-若明確選擇 `executor: "process"`，通道（lane）必須啟用、候選項必須在任何程序啟動**之前**就確認可用、`argv[0]` 必須早已由你的路由設定註冊過。沒有任何東西會經過 shell。唯讀工作預設全域與每 lane 最多同時 2 個；只要批次包含 `work` 就維持串行。
+Process 模式必須同時指定 `executor: "process"` 與 `allowProcessExecution: true`，非終態續跑也要再次傳入第二道授權。內建 route 另加 `--ignore-user-config`，不讓隱藏 worker 載入使用者設定的 MCP server 或其命令參數。通道（lane）必須啟用、候選項必須在任何程序啟動**之前**就確認可用、`argv[0]` 必須早已由路由設定註冊。沒有任何東西會經過 shell。唯讀工作預設全域與每 lane 最多同時 2 個；只要批次包含 `work` 就維持串行。狀態會顯示解析後 runner、PID、phase、最後進度時間，以及安全辨識到的 model/provider。
 
 主控協定刻意區分路由層級：`lane` 填的是通道名稱 `default`；`codex-default` 是該通道內的候選執行器，不是通道。CueLine 會在註冊任何工作前先驗證整份 `dispatch`；只要包含無效通道或執行器，整份派工就會被退回修正，不會先執行其中一部分。
 
@@ -48,15 +48,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.1.5
+npm install -g cueline@0.1.6
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.1.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.5) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.5/cueline-0.1.5.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.6/cueline-0.1.6.tgz
 cueline install
 cueline doctor
 ```
@@ -89,29 +89,54 @@ cueline doctor
 
 ```js
 import {
+  claimCueLineCallerJob,
   continueCueLineRun,
   createCodexIabAdapter,
+  heartbeatCueLineCallerJob,
   runCueLine,
+  startCueLineCallerJob,
   submitCueLineCallerJobResult,
 } from "cueline";
 
 let result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
-  browser: createCodexIabAdapter(),
+  browser: createCodexIabAdapter({ browser: globalThis.browser }),
   // 選填：conversationUrl、routingConfig / routingConfigPath、home、cwd、
   // runTimeoutMs、signal，以及各工作／預設期限。
 }); // 預設 executor: "caller"
 
-while (result.status === "awaiting_controller" || result.status === "awaiting_caller") {
+while (["awaiting_controller", "awaiting_caller", "awaiting_caller_work"].includes(result.status)) {
   if (result.status === "awaiting_controller") {
     await waitBeforeNextObservation(); // 有界退避；絕不重送
-  } else {
+  } else if (result.status === "awaiting_caller") {
     for (const job of result.pendingJobs ?? []) {
       const stdout = await executeExactLocalAdvice(job.spec.task);
       await submitCueLineCallerJobResult(result.runId, job.jobId, {
         status: "succeeded",
         stdout,
       });
+    }
+  } else {
+    for (const job of result.pendingJobs ?? []) {
+      if (job.spec.mode !== "work") continue;
+      const claim = await claimCueLineCallerJob(result.runId, job.jobId, {
+        callerId: "stable-codex-task-identity",
+      });
+      const proof = {
+        claimId: claim.claimId,
+        callerId: claim.callerId,
+        fencingToken: claim.fencingToken,
+      };
+      await startCueLineCallerJob(result.runId, job.jobId, proof);
+      const stdout = await executeExactLocalWork(job.spec.task, claim.workdir, {
+        heartbeat: () => heartbeatCueLineCallerJob(result.runId, job.jobId, proof),
+      });
+      await submitCueLineCallerJobResult(
+        result.runId,
+        job.jobId,
+        { status: "succeeded", stdout },
+        { claim: proof },
+      );
     }
   }
   result = await continueCueLineRun({ runId: result.runId });
@@ -122,11 +147,11 @@ if (result.status === "complete") {
 }
 ```
 
-若回傳 `awaiting_controller`，代表同一個精確 request 已送出、但 Pro 回覆尚未被觀測；稍後續跑只會唯讀觀測，不會重送。若回傳 `awaiting_caller`，請由目前的 Codex 執行 `result.pendingJobs` 內每一項 `advise`，用 `submitCueLineCallerJobResult` 提交真實結果，再呼叫 `continueCueLineRun`。這不是 Pro 網頁直接使用本機工具。
+若回傳 `awaiting_controller`，代表同一個精確 request 已送出、但 Pro 回覆尚未被觀測；稍後續跑只會唯讀觀測，不會重送。`awaiting_caller` 交接 `advise`；`awaiting_caller_work` 則必須依序 claim、start、執行、heartbeat 與帶 claim proof 提交結果。Pro 網頁從未直接使用本機工具。
 
 在 Codex 的 runtime 裡，import `cueline api path` 印出的那個絕對路徑模組——那就是你安裝的那份套件建置出來的 API。
 
-`startCueLineRun` 只建立持久 run 並回傳 `ready`；`runCueLine` 會建立並推進到持久 controller 觀測暫停、caller 交接或終態。`continueCueLineRun({ runId })` 沿用同一個對話。續跑前先執行 `cueline run status <run-id> --json`；缺少 owner 的 `controller_response_pending` 若只有一個正常送出的回合且顯示 `safeNextAction: observe`，代表同一個 Pro 回覆尚待唯讀觀測，稍後續跑即可且不得重送。`safeNextAction: reconcile` 只保留給模糊、人工送出或多個待對帳回合。缺少 owner 的 `caller_jobs_pending` 是正常本機交接，不是 orphan，也不是還在等 ChatGPT。
+`startCueLineRun` 只建立持久 run 並回傳 `ready`；`runCueLine` 會建立並推進到持久 controller 觀測暫停、caller 交接或終態。續跑前先執行 `cueline run status <run-id> --json`。單一正常送出、非人工、具精確 URL、無 job／pending command／取消的 stale caller observer 可被 fencing 後唯讀恢復；其他 stale 狀態仍須正式接管。`caller_work_pending`、`caller_work_claimed`、`caller_work_running` 分別只允許 `claim_caller_work`、`start_caller_work`、`continue_caller_work`，主控的 `dispatch` 本身不代表本機工作已開始。
 
 ## CLI
 
@@ -137,7 +162,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.5
+CueLine 0.1.6
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -179,7 +204,7 @@ Node 版本太舊、或沒有任何已啟用的 caller 通道時，`cueline doct
 
 `CUELINE_CONFIG` 用來指定路由設定檔；`CUELINE_HOME` 用來搬動本機狀態（預設 `~/.cueline`）。
 
-Caller 模式不會啟動路由行程。只有明確選擇 `process` executor 時，內建的 `default` 通道才會以 `codex-default` 執行 `codex exec`；`advise` 用 `read-only`、`work` 用 `workspace-write`。
+Caller 模式不會啟動路由行程。只有同時選擇 `executor: "process"` 與 `allowProcessExecution: true` 時，內建的 `default` 通道才會以 `codex-default` 執行隔離的 `codex exec --ignore-user-config`；`advise` 用 `read-only`、`work` 用 `workspace-write`。
 
 狀態放在 `CUELINE_HOME` 底下：
 
@@ -195,9 +220,9 @@ jobs/<job-id>.json            每個工作的執行證據
 
 事件日誌才是紀錄本身：主控端的這一輪在送出之前就先寫下、工作在行程啟動之前就先註冊，所以「意圖」與「副作用」之間若被中斷，會留下痕跡。壞掉的快照會被忽略、從第 1 號事件重建，而不是硬信它。
 
-續跑只會接回完全相同的對話網址。ChatGPT 把長文字自動轉成附件時，CueLine 會辨識 `attachment_ready`，且最多只點一次；模糊點擊一律記為 `possibly_sent`，絕不補點或重送。若操作者手動送出附件，用 `cueline run reconcile RUN_ID --request-id REQUEST_ID --manual-send-confirmed` 寫入正式確認；之後仍須通過完全相同的 conversation、Pro 證據與 protocol/run/round/request identity 才能唯讀接回。
+續跑只會接回完全相同的對話網址。ChatGPT 把長文字自動轉成附件時，CueLine 會辨識 `attachment_ready`，且最多只點一次；模糊點擊一律記為 `possibly_sent`，絕不補點或重送。只有實際可見、啟用且可操作的 Stop 按鈕才表示 Pro 仍在回答；隱藏殘留按鈕不會擋住完成回覆。若操作者手動送出附件，用 `cueline run reconcile RUN_ID --request-id REQUEST_ID --manual-send-confirmed` 寫入正式確認；之後仍須通過完全相同的 conversation、Pro 證據與 protocol/run/round/request identity 才能唯讀接回。
 
-送給主控的工作證據優先採用成功且非空的 stdout，全體共用 12,000 字元上限；完整 stdout/stderr 仍保留在本機 job status。
+送給主控的工作證據優先採用成功且非空的 stdout，全體共用 12,000 字元上限；完整 stdout/stderr 仍保留在本機 job status。若 Pro 接受 `inspect(job_ids)`，下一輪會先替指定 job 保留證據預算，再處理無關工作。
 
 ## 驗證
 
@@ -214,7 +239,7 @@ npm pack --dry-run
 
 ## 0.1 的限制
 
-只支援文字控制命令。一次執行只對應一個對話。選成 `Pro` 是 CueLine 唯一會做的模型切換。支援 ChatGPT 自動把長文字轉成附件，但不支援主動上傳檔案、圖片、Deep Research、Projects 或 Apps。Caller 模式只允許 `advise`；`work` 必須明確選用 process executor。任何模糊送出或已啟動工作都不會被自動重試。
+只支援文字控制命令。一次執行只對應一個對話。選成 `Pro` 是 CueLine 唯一會做的模型切換。支援 ChatGPT 自動把長文字轉成附件，但不支援主動上傳檔案、圖片、Deep Research、Projects 或 Apps。Caller `work` 必須經過明確 claim/start，長工作需 heartbeat；process 執行則要雙重明確授權。任何模糊送出或已啟動工作都不會被自動重試。
 
 完整矩陣見 [compatibility](docs/compatibility.md)。
 

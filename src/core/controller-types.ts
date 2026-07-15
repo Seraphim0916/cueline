@@ -32,6 +32,7 @@ export interface ControllerRuntimeOptions {
   cancellationPollIntervalMs?: number;
   runTimeoutMs?: number;
   executor?: CueLineExecutor;
+  allowProcessExecution?: boolean;
   maxConcurrency?: number;
   laneConcurrency?: Readonly<Record<string, number>>;
   runtimeHeartbeatIntervalMs?: number;
@@ -49,6 +50,7 @@ export interface CreateControllerRunOptions {
   home?: string;
   now?: () => Date;
   executor?: CueLineExecutor;
+  allowProcessExecution?: boolean;
   maxRounds?: number;
 }
 
@@ -64,7 +66,8 @@ export interface CueLineResult {
     | Exclude<CueLineRunStatus, "running" | "failed">
     | "ready"
     | "awaiting_controller"
-    | "awaiting_caller";
+    | "awaiting_caller"
+    | "awaiting_caller_work";
   finalDeliveryText?: string;
   conversationUrl?: string;
   cancelledReason?: string;

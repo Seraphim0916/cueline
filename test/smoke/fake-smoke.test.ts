@@ -4,10 +4,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { continueCueLineRun, runCueLine } from "../../src/api.js";
+import {
+  continueCueLineRun,
+  defaultRoutingConfigPath,
+  runCueLine,
+} from "../../src/api.js";
 import type { BrowserTurnInput, ControllerTurn } from "../../src/browser/browser-adapter.js";
 import { CueLineError } from "../../src/core/errors.js";
 import type { RoutingConfig } from "../../src/router/types.js";
+import { loadRoutingConfig } from "../../src/router/config-loader.js";
 import { readEvents } from "../../src/state/event-log.js";
 import { FakeBrowserAdapter } from "../fakes/fake-browser.js";
 
@@ -32,6 +37,45 @@ function reply(
   });
 }
 
+test("the bundled process route does not inherit user MCP configuration", async () => {
+  const config = await loadRoutingConfig(defaultRoutingConfigPath());
+  const argv = config.lanes.default?.candidates[0]?.argv ?? [];
+
+  assert.equal(argv.includes("--ignore-user-config"), true);
+  assert.equal(argv.includes("--dangerously-bypass-approvals-and-sandbox"), false);
+});
+
+test("process execution requires the executor selection and a second explicit authorization", async () => {
+  const browser = new FakeBrowserAdapter([]);
+  await assert.rejects(
+    runCueLine({
+      executor: "process",
+      request: "Must not spawn without double authorization",
+      runId: "run_process_without_authorization",
+      home: await mkdtemp(path.join(tmpdir(), "cueline-process-guard-")),
+      browser,
+      routingConfig: {
+        version: 1,
+        lanes: {
+          default: {
+            enabled: true,
+            candidates: [
+              {
+                id: "must-not-spawn",
+                argv: [process.execPath, "-e", "process.exit(99)"],
+                task_input: "stdin",
+              },
+            ],
+          },
+        },
+      },
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "PROCESS_EXECUTION_NOT_AUTHORIZED",
+  );
+  assert.equal(browser.calls.length, 0);
+});
+
 test("public API drives browser, routing, process execution, persistence, and final delivery", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "cueline-smoke-"));
   const environment = { ...process.env };
@@ -47,7 +91,7 @@ test("public API drives browser, routing, process execution, persistence, and fi
             argv: [
               process.execPath,
               "-e",
-              "process.stdin.setEncoding('utf8'); let data=''; process.stdin.on('data', c => data += c); process.stdin.on('end', () => process.stdout.write('WORKER:' + data));",
+              "process.stderr.write('model: smoke-model\\nprovider: local-test\\n'); process.stdin.setEncoding('utf8'); let data=''; process.stdin.on('data', c => data += c); process.stdin.on('end', () => process.stdout.write('WORKER:' + data));",
             ],
             task_input: "stdin",
           },
@@ -79,6 +123,7 @@ test("public API drives browser, routing, process execution, persistence, and fi
 
   const result = await runCueLine({
     executor: "process",
+    allowProcessExecution: true,
     request: "Run the standalone smoke",
     runId: "run_public_smoke",
     home,
@@ -89,6 +134,12 @@ test("public API drives browser, routing, process execution, persistence, and fi
 
   assert.equal(result.status, "complete");
   assert.equal(result.finalDeliveryText, "CUELINE_SMOKE_OK");
+  const completedJob = Object.values(result.state.jobs)[0];
+  assert.equal(completedJob?.runtime?.runnerId, "node-smoke");
+  assert.equal(completedJob?.runtime?.model, "smoke-model");
+  assert.equal(completedJob?.runtime?.provider, "local-test");
+  assert.equal(completedJob?.runtime?.phase, "completed");
+  assert.equal(typeof completedJob?.runtime?.pid, "number");
   assert.equal(
     (await readEvents(path.join(home, "runs", result.runId, "events.jsonl"))).some(
       (event) => event.type === "run_completed",

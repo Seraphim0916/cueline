@@ -48,6 +48,10 @@ export function jobId(runId: string, jobKey: string, spec: unknown): string {
   return `job_${digest({ run_id: runId, job_key: jobKey, spec }).slice(0, 32)}`;
 }
 
+export function jobSpecHash(spec: unknown): string {
+  return digest(spec);
+}
+
 export function messageId(
   runId: string,
   round: number,

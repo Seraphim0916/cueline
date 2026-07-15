@@ -74,5 +74,5 @@
   <path d="M40 520H960" class="rule"/>
   <text x="40" y="546" class="foot">Five actions only — dispatch · wait · inspect · complete · blocked.</text>
   <text x="40" y="568" class="foot">One send → awaiting_controller → one-shot observe; never resend.</text>
-  <text x="40" y="590" class="foot">Caller accepts advise only. Process execution is explicit and never silently retried.</text>
+  <text x="40" y="590" class="foot">Caller work needs claim + start. Process execution needs double authorization.</text>
 </svg>

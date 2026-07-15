@@ -154,6 +154,7 @@ test("materializes mode-safe argv tokens and stdin task input", () => {
   assert.equal(spec.cwd, "/tmp/example");
   assert.equal(spec.timeoutMs, 12_345);
   assert.equal(spec.background, true);
+  assert.equal((spec as typeof spec & { runnerId?: string }).runnerId, "codex");
 });
 
 test("materializes an argv task only at an explicit placeholder", () => {

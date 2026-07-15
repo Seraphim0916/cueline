@@ -1,9 +1,12 @@
 import type {
+  CueLineCallerJobSubmissionOptions,
   CueLineCallerJobResultInput,
   CueLineCallerJobSubmissionResult,
+  CueLineCallerWorkClaimProof,
   CueLineRuntimeOptions,
   ManualControllerSubmissionConfirmation,
 } from "./api-contracts.js";
+import { validateCallerWorkResultClaim } from "./api-caller-work.js";
 import { CueLineError } from "./core/errors.js";
 import { loadPersistedRunStore } from "./core/persisted-run.js";
 import { runtimeEnvironment } from "./core/runtime.js";
@@ -203,6 +206,24 @@ function assertCallerJobResultInput(
       );
     }
   }
+  for (const field of ["startedAt", "finishedAt"] as const) {
+    if (typeof value[field] === "string" && !Number.isFinite(Date.parse(value[field]))) {
+      throw new CueLineError(
+        "CALLER_JOB_RESULT_INVALID",
+        `Caller job result field '${field}' must be a valid timestamp.`,
+      );
+    }
+  }
+  if (
+    typeof value.startedAt === "string" &&
+    typeof value.finishedAt === "string" &&
+    Date.parse(value.finishedAt) < Date.parse(value.startedAt)
+  ) {
+    throw new CueLineError(
+      "CALLER_JOB_RESULT_INVALID",
+      "Caller job result finishedAt cannot precede startedAt.",
+    );
+  }
   if (
     value.exitCode !== undefined &&
     value.exitCode !== null &&
@@ -215,11 +236,37 @@ function assertCallerJobResultInput(
   }
 }
 
+function workResultIntentStatus(
+  events: Awaited<ReturnType<typeof readAuthoritativeRunEvents>>,
+  jobId: string,
+  proof: CueLineCallerWorkClaimProof,
+): string | undefined {
+  for (const event of events) {
+    if (event.type !== "caller_work_result_submission_started") continue;
+    const payload =
+      typeof event.payload === "object" &&
+      event.payload !== null &&
+      !Array.isArray(event.payload)
+        ? (event.payload as Record<string, unknown>)
+        : {};
+    if (
+      payload.job_id === jobId &&
+      payload.claim_id === proof.claimId &&
+      payload.caller_id === proof.callerId &&
+      payload.fencing_token === proof.fencingToken &&
+      typeof payload.status === "string"
+    ) {
+      return payload.status;
+    }
+  }
+  return undefined;
+}
+
 export async function submitCueLineCallerJobResult(
   runId: string,
   jobId: string,
   input: CueLineCallerJobResultInput,
-  options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> = {},
+  options: CueLineCallerJobSubmissionOptions = {},
 ): Promise<CueLineCallerJobSubmissionResult> {
   const environment = options.environment ?? runtimeEnvironment();
   const home = options.home ?? defaultCueLineHome(environment);
@@ -253,9 +300,10 @@ export async function submitCueLineCallerJobResult(
     if (!job) {
       throw new CueLineError("JOB_NOT_FOUND", `No job '${jobId}' exists in run '${runId}'.`);
     }
-    if (job.status !== "pending" && job.status !== "running") {
-      return { runId, jobId, outcome: "already_terminal" };
-    }
+    const effectiveStatus =
+      job.spec.mode === "work" && input.status !== "succeeded"
+        ? "ambiguous"
+        : input.status;
     const statusStore = new JobStatusStore(home);
     let terminal = await statusStore.read(jobId);
     if (terminal?.status === "pending" || terminal?.status === "running") {
@@ -268,7 +316,59 @@ export async function submitCueLineCallerJobResult(
           `Persisted terminal evidence for '${jobId}' does not belong to this caller job.`,
         );
       }
-    } else {
+    }
+    const events = await readAuthoritativeRunEvents(home, runId);
+    if (job.spec.mode === "work") {
+      if (options.claim === undefined) {
+        throw new CueLineError(
+          "CALLER_WORK_CLAIM_REQUIRED",
+          `Caller work result for '${jobId}' requires the exact active claim proof.`,
+        );
+      }
+      const intentStatus = workResultIntentStatus(events, jobId, options.claim);
+      const durableTerminalIntent =
+        terminal !== undefined && intentStatus !== undefined && intentStatus === terminal.status;
+      if (
+        intentStatus !== undefined &&
+        intentStatus !== (terminal?.status ?? effectiveStatus)
+      ) {
+        throw new CueLineError(
+          "CALLER_JOB_RESULT_CONFLICT",
+          `Caller work result intent for '${jobId}' is already bound to status '${intentStatus}'.`,
+        );
+      }
+      const validation = await validateCallerWorkResultClaim(
+        store,
+        job,
+        options.claim,
+        home,
+        now(),
+        { durableTerminalIntent },
+      );
+      if (validation.alreadyTerminal) {
+        return { runId, jobId, outcome: "already_terminal" };
+      }
+    } else if (options.claim !== undefined) {
+      throw new CueLineError(
+        "CALLER_WORK_CLAIM_UNEXPECTED",
+        `Advise job '${jobId}' does not accept a caller work claim.`,
+      );
+    } else if (job.status !== "pending" && job.status !== "running") {
+      return { runId, jobId, outcome: "already_terminal" };
+    }
+    if (job.spec.mode === "work" && options.claim !== undefined) {
+      const intentStatus = workResultIntentStatus(events, jobId, options.claim);
+      if (intentStatus === undefined) {
+        await store.append("caller_work_result_submission_started", {
+          job_id: jobId,
+          status: terminal?.status ?? effectiveStatus,
+          claim_id: options.claim.claimId,
+          caller_id: options.claim.callerId,
+          fencing_token: options.claim.fencingToken,
+        });
+      }
+    }
+    if (terminal === undefined) {
       const stdout = input.stdout ?? "";
       const stderr = input.stderr ?? "";
       const output =
@@ -280,8 +380,14 @@ export async function submitCueLineCallerJobResult(
             : `${stdout}${stdout.endsWith("\n") ? "" : "\n"}${stderr}`);
       const startedAt = input.startedAt ?? now().toISOString();
       const finishedAt = input.finishedAt ?? now().toISOString();
+      if (Date.parse(finishedAt) < Date.parse(startedAt)) {
+        throw new CueLineError(
+          "CALLER_JOB_RESULT_INVALID",
+          "Caller job result finishedAt cannot precede startedAt.",
+        );
+      }
       const result = {
-        status: input.status,
+        status: effectiveStatus,
         exitCode: input.exitCode ?? (input.status === "succeeded" ? 0 : null),
         stdout,
         stderr,
@@ -301,7 +407,7 @@ export async function submitCueLineCallerJobResult(
         lane: job.spec.lane,
         mode: job.spec.mode,
         execution: "foreground",
-        status: input.status,
+        status: effectiveStatus,
         startedAt,
         finishedAt,
         result,
@@ -309,7 +415,6 @@ export async function submitCueLineCallerJobResult(
       } satisfies JobStatus;
       await statusStore.write(terminal);
     }
-    const events = await readAuthoritativeRunEvents(home, runId);
     const alreadyRecorded = events.some((event) => {
       if (event.type !== "caller_job_result_submitted") return false;
       const payload =
@@ -325,6 +430,15 @@ export async function submitCueLineCallerJobResult(
         job_id: jobId,
         status: terminal.status,
       });
+      if (job.spec.mode === "work" && options.claim !== undefined) {
+        await store.append("caller_work_result_submitted", {
+          job_id: jobId,
+          status: terminal.status,
+          claim_id: options.claim.claimId,
+          caller_id: options.claim.callerId,
+          fencing_token: options.claim.fencingToken,
+        });
+      }
     }
     const terminalResult = terminal.result;
     const controllerOutput =

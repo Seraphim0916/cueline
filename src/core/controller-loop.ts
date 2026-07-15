@@ -30,7 +30,10 @@ import type {
 } from "./controller-types.js";
 import { asCueLineError, CueLineError } from "./errors.js";
 import { commandHash, messageId, runId as createRunId } from "./ids.js";
-import { assertRunCanContinue } from "./run-status.js";
+import {
+  assertRunCanContinue,
+  isSafeStaleCallerObservationRecovery,
+} from "./run-status.js";
 import {
   DEFAULT_MAX_ROUNDS,
   initialRunState,
@@ -70,9 +73,10 @@ function resultFromState(state: CueLineRunState): CueLineResult {
 function awaitingCallerResult(state: CueLineRunState): CueLineResult {
   const pendingJobs = Object.values(state.jobs)
     .filter((job) => job.status === "pending" || job.status === "running");
+  const hasWork = pendingJobs.some((job) => job.spec.mode === "work");
   return {
     runId: state.runId,
-    status: "awaiting_caller",
+    status: hasWork ? "awaiting_caller_work" : "awaiting_caller",
     ...(state.conversationUrl === null ? {} : { conversationUrl: state.conversationUrl }),
     state,
     pendingJobs,
@@ -581,9 +585,22 @@ async function createControllerRunStore(
   const id =
     options.runId ??
     createRunId({ request: options.request, created_at: now().toISOString(), nonce: randomUUID() });
-  const executor = options.executor ?? "process";
+  const executor = options.executor ?? "caller";
+  const allowProcessExecution = options.allowProcessExecution === true;
+  if (executor === "process" && !allowProcessExecution) {
+    throw new CueLineError(
+      "PROCESS_EXECUTION_NOT_AUTHORIZED",
+      "Process execution requires both executor='process' and allowProcessExecution=true.",
+    );
+  }
   const maxRounds = validatedMaxRounds(options.maxRounds);
-  const initial = initialRunState(id, options.request, executor, maxRounds);
+  const initial = initialRunState(
+    id,
+    options.request,
+    executor,
+    maxRounds,
+    allowProcessExecution,
+  );
   const home = options.home ?? defaultCueLineHome();
   const store = await RunStore.createWithInitialEvent({
     home,
@@ -594,6 +611,7 @@ async function createControllerRunStore(
   }, "run_created", {
     request: options.request,
     executor,
+    ...(allowProcessExecution ? { allow_process_execution: true } : {}),
     ...(options.maxRounds === undefined ? {} : { max_rounds: maxRounds }),
   });
   await store.snapshot();
@@ -647,8 +665,11 @@ export async function runControllerLoop(options: ControllerLoopOptions): Promise
   } catch (error) {
     return await handleControllerFailure(store, options.jobSupervisor, error);
   } finally {
-    await cancellation?.stop();
-    await lease.release();
+    try {
+      await cancellation?.stop();
+    } finally {
+      await lease.release();
+    }
   }
 }
 
@@ -676,23 +697,48 @@ export async function continueControllerLoop(
   ) {
     return resultFromState(initialState);
   }
+  if (
+    initialState.executor === "process" &&
+    (!initialState.allowProcessExecution || options.allowProcessExecution !== true)
+  ) {
+    throw new CueLineError(
+      "PROCESS_EXECUTION_NOT_AUTHORIZED",
+      "Continuing a process run requires durable authorization and allowProcessExecution=true on this call.",
+    );
+  }
   const maxRounds = persistedMaxRounds(initialState, options.maxRounds);
   if (durableRoundLimitReached(initialState, maxRounds)) {
     throw maxRoundsExceeded(maxRounds);
   }
-  assertRunCanContinue(
+  const initialRuntime = await readRuntimeLease(home, options.runId, { now });
+  const initialCancellation = await readCancellationObservation(home, options.runId);
+  const recoverStaleObserver = isSafeStaleCallerObservationRecovery(
     initialState,
-    await readRuntimeLease(home, options.runId, { now }),
-    await readCancellationObservation(home, options.runId),
+    initialRuntime,
+    initialCancellation,
   );
-  const lease = await RuntimeLease.claim({
-    home,
-    runId: options.runId,
-    now,
-    ...(options.runtimeHeartbeatIntervalMs === undefined
-      ? {}
-      : { heartbeatIntervalMs: options.runtimeHeartbeatIntervalMs }),
-  });
+  if (!recoverStaleObserver) {
+    assertRunCanContinue(initialState, initialRuntime, initialCancellation);
+  }
+  const lease = recoverStaleObserver
+    ? await RuntimeLease.takeoverStale({
+        home,
+        runId: options.runId,
+        now,
+        expectedOwnerId: initialRuntime.ownerId!,
+        expectedHeartbeatAt: initialRuntime.heartbeatAt!,
+        ...(options.runtimeHeartbeatIntervalMs === undefined
+          ? {}
+          : { heartbeatIntervalMs: options.runtimeHeartbeatIntervalMs }),
+      })
+    : await RuntimeLease.claim({
+        home,
+        runId: options.runId,
+        now,
+        ...(options.runtimeHeartbeatIntervalMs === undefined
+          ? {}
+          : { heartbeatIntervalMs: options.runtimeHeartbeatIntervalMs }),
+      });
   let cancellation: OwnedCancellation | undefined;
   let store = initialStore;
   try {
@@ -736,6 +782,17 @@ export async function continueControllerLoop(
       maxRounds,
       signal: ownedSignal,
     });
+    if (recoverStaleObserver) {
+      const pending = state.pendingControllerTurns[0]!;
+      await store.append("runtime_stale_caller_observer_recovered", {
+        previous_owner_id: initialRuntime.ownerId,
+        previous_heartbeat_at: initialRuntime.heartbeatAt,
+        request_id: pending.requestId,
+        round: pending.round,
+        conversation_url: pending.conversationUrl ?? state.conversationUrl,
+        recovery: "fenced_read_only_observation",
+      });
+    }
     await store.append("run_resumed", { previous_status: state.status });
     await store.snapshot();
     const pendingCommandExecution = store.state.pendingCommandExecution ?? null;
@@ -780,7 +837,10 @@ export async function continueControllerLoop(
   } catch (error) {
     return await handleControllerFailure(store, options.jobSupervisor, error);
   } finally {
-    await cancellation?.stop();
-    await lease.release();
+    try {
+      await cancellation?.stop();
+    } finally {
+      await lease.release();
+    }
   }
 }

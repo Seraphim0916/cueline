@@ -19,6 +19,7 @@ import {
   takeoverCueLineRuntime,
 } from "../../src/api.js";
 import { jobId } from "../../src/core/ids.js";
+import { isSafeStaleCallerObservationRecovery } from "../../src/core/run-status.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
 import { JobStatusStore } from "../../src/jobs/status.js";
 import type { ControllerJobSpec } from "../../src/protocol/types.js";
@@ -72,12 +73,13 @@ async function createJobRun(
   const store = await RunStore.create({
     home,
     runId,
-    initialState: initialRunState(runId, "", executor),
+    initialState: initialRunState(runId, "", executor, 12, executor === "process"),
     reducer: reduceRunState,
   });
   await store.append("run_created", {
     request: "Exercise lifecycle recovery",
     executor,
+    ...(executor === "process" ? { allow_process_execution: true } : {}),
   });
   await store.append("job_registered", {
     job: {
@@ -325,12 +327,13 @@ test("process takeover's advertised runtime reconciliation is executable before 
   const store = await RunStore.create({
     home,
     runId,
-    initialState: initialRunState(runId, "", "process"),
+    initialState: initialRunState(runId, "", "process", 12, true),
     reducer: reduceRunState,
   });
   await store.append("run_created", {
     request: "Resume a process run only after runtime reconciliation",
     executor: "process",
+    allow_process_execution: true,
   });
   const heartbeatAt = "2026-07-15T00:00:00.000Z";
   await writeFile(
@@ -364,6 +367,7 @@ test("process takeover's advertised runtime reconciliation is executable before 
       (input) => completeReply(input, "PROCESS_TAKEOVER_CONTINUED"),
     ]),
     routingConfig,
+    allowProcessExecution: true,
   });
   assert.equal(result.status, "complete");
   assert.equal(result.finalDeliveryText, "PROCESS_TAKEOVER_CONTINUED");
@@ -635,6 +639,199 @@ test("a crash after response receipt reconciles that response instead of sending
   assert.equal(events.filter((event) => event.type === "controller_turn_requested").length, 1);
 });
 
+test("a stale caller observer is fenced and recovers one normally submitted turn without resending", async () => {
+  const home = await temporaryHome();
+  const runId = "run_stale_caller_observer_recovery";
+  const requestId = "msg_stale_caller_observer_recovery";
+  const conversationUrl = "https://chatgpt.com/c/stale-caller-observer-recovery";
+  const prompt = "Observe the already submitted Pro turn exactly once";
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: "Recover a hard-reset read-only controller observer",
+    executor: "caller",
+  });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: requestId,
+    prompt,
+    prompt_hash: "stale-caller-observer-prompt-hash",
+  });
+  await store.append("controller_turn_submitted", {
+    round: 1,
+    request_id: requestId,
+    submission_state: "submitted",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "inline_ready",
+    baseline_assistant_message_count: 0,
+  });
+  await store.snapshot();
+  const heartbeatAt = "2026-07-15T00:00:00.000Z";
+  await writeFile(
+    runPaths(home, runId).runtimeLease,
+    `${JSON.stringify({
+      protocol: "cueline/runtime-lease/0.1",
+      run_id: runId,
+      owner_id: "hard-reset-observer-owner",
+      pid: String(process.pid),
+      state: "active",
+      claimed_at: heartbeatAt,
+      heartbeat_at: heartbeatAt,
+    })}\n`,
+    "utf8",
+  );
+  let sendCalls = 0;
+  let recoverCalls = 0;
+  const browser = {
+    async sendTurn(): Promise<ControllerTurn> {
+      sendCalls += 1;
+      throw new Error("stale caller observation recovery must never resend");
+    },
+    async recoverTurn(input: BrowserTurnInput): Promise<ControllerTurn> {
+      recoverCalls += 1;
+      return {
+        ...completeReply(input, "STALE_OBSERVER_RECOVERED"),
+        conversationUrl,
+      };
+    },
+  };
+
+  const recoverableStatus = await loadCueLineRunStatus(runId, {
+    home,
+    now: () => new Date("2026-07-15T00:01:00.000Z"),
+  });
+  assert.equal(recoverableStatus.phase, "controller_response_pending");
+  assert.equal(recoverableStatus.continueAllowed, true);
+  assert.equal(recoverableStatus.safeNextAction, "observe");
+
+  const result = await continueCueLineRun({
+    runId,
+    home,
+    now: () => new Date("2026-07-15T00:01:00.000Z"),
+    browser,
+    conversationUrl,
+    routingConfig,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "STALE_OBSERVER_RECOVERED");
+  assert.equal(sendCalls, 0);
+  assert.equal(recoverCalls, 1);
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(
+    events.filter((event) => event.type === "runtime_stale_caller_observer_recovered").length,
+    1,
+  );
+});
+
+test("stale caller observation recovery refuses every ambiguous or side-effectful variant", () => {
+  const conversationUrl = "https://chatgpt.com/c/strict-stale-observer";
+  const base = {
+    ...initialRunState("run_strict_stale_observer", "Observe only", "caller"),
+    round: 1,
+    pendingControllerTurns: [
+      {
+        round: 1,
+        requestId: "msg_strict_stale_observer",
+        prompt: "Observe only",
+        promptHash: "hash",
+        repairAttempt: 0,
+        submissionState: "submitted" as const,
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: 0,
+        composerPromptState: "inline_ready" as const,
+        manualSendConfirmed: false,
+        submissionCheckpointContract: "write_ahead_v1" as const,
+      },
+    ],
+    conversationUrl,
+  };
+  const runtime = {
+    ownership: "stale" as const,
+    ownerId: "stale-observer-owner",
+    heartbeatAt: "2026-07-15T00:00:00.000Z",
+  };
+  const cancellation = { runRequested: false, jobRequests: [] };
+  assert.equal(isSafeStaleCallerObservationRecovery(base, runtime, cancellation), true);
+
+  const variants = [
+    {
+      ...base,
+      pendingControllerTurns: [
+        { ...base.pendingControllerTurns[0]!, submissionState: "possibly_sent" as const },
+      ],
+    },
+    {
+      ...base,
+      pendingControllerTurns: [
+        { ...base.pendingControllerTurns[0]!, manualSendConfirmed: true },
+      ],
+    },
+    {
+      ...base,
+      conversationUrl: null,
+      pendingControllerTurns: [
+        { ...base.pendingControllerTurns[0]!, conversationUrl: null },
+      ],
+    },
+    {
+      ...base,
+      conversationUrl: "https://chatgpt.com/c/different-conversation",
+    },
+    {
+      ...base,
+      jobs: {
+        active: {
+          jobId: "active",
+          jobKey: "active",
+          required: true,
+          spec: {
+            job_key: "active",
+            lane: "default",
+            mode: "advise" as const,
+            task: "Must keep stale recovery disabled",
+          },
+          status: "pending" as const,
+          output: null,
+          error: null,
+        },
+      },
+    },
+    {
+      ...base,
+      pendingCommandExecution: {
+        commandHash: "hash",
+        command: {
+          protocol: "cueline/0.1" as const,
+          run_id: base.runId,
+          round: 1,
+          request_id: "msg_strict_stale_observer",
+          action: "inspect" as const,
+        },
+      },
+    },
+  ];
+  for (const variant of variants) {
+    assert.equal(
+      isSafeStaleCallerObservationRecovery(variant, runtime, cancellation),
+      false,
+    );
+  }
+  assert.equal(
+    isSafeStaleCallerObservationRecovery(base, runtime, {
+      runRequested: true,
+      jobRequests: [],
+    }),
+    false,
+  );
+});
+
 test("caller result input is fully validated before any durable write", async () => {
   const home = await temporaryHome();
   const runId = "run_missing_for_invalid_caller_result";
@@ -684,6 +881,7 @@ test("continuation reconciles ownerless active process jobs even after the run f
     home,
     browser,
     routingConfig,
+    allowProcessExecution: true,
   });
 
   assert.equal(result.status, "complete");

@@ -1,7 +1,7 @@
 {
   "name": "cueline",
-  "version": "0.1.5",
-  "description": "Use a ChatGPT web conversation as the text controller for durable local advice executed by the current Codex.",
+  "version": "0.1.6",
+  "description": "Use a ChatGPT web conversation as the text controller for durable local advice or explicitly claimed work executed by the current Codex.",
   "author": {
     "name": "CueLine contributors"
   }

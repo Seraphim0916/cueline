@@ -117,7 +117,53 @@ export async function readPageChatState(tab: IabTab): Promise<PageChatState> {
         .join(" ")
         .replace(/\s+/g, " ")
         .trim();
-      return /stop/i.test(label) && /(answer|generat|respond|stream|thinking)/i.test(label);
+      if (!/stop/i.test(label) || !/(answer|generat|respond|stream|thinking)/i.test(label)) {
+        return false;
+      }
+      if (
+        button.disabled ||
+        button.hidden ||
+        button.getAttribute("aria-disabled") === "true" ||
+        button.getAttribute("aria-hidden") === "true" ||
+        button.closest('[hidden], [aria-hidden="true"], [inert]') !== null
+      ) {
+        return false;
+      }
+      const checkVisibility = (
+        button as HTMLButtonElement & {
+          checkVisibility?: (options?: {
+            checkOpacity?: boolean;
+            checkVisibilityCSS?: boolean;
+          }) => boolean;
+        }
+      ).checkVisibility;
+      if (typeof checkVisibility === "function") {
+        try {
+          if (
+            !checkVisibility.call(button, {
+              checkOpacity: true,
+              checkVisibilityCSS: true,
+            })
+          ) {
+            return false;
+          }
+        } catch {
+          // Older browser bindings may expose checkVisibility without option support.
+          // The explicit style and geometry checks below remain the safe fallback.
+        }
+      }
+      const style = getComputedStyle(button);
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.visibility === "collapse" ||
+        style.pointerEvents === "none" ||
+        Number(style.opacity) === 0
+      ) {
+        return false;
+      }
+      const bounds = button.getBoundingClientRect();
+      return bounds.width > 0 && bounds.height > 0 && button.getClientRects().length > 0;
     });
 
     const messages = Array.from(document.querySelectorAll("[data-message-author-role]"));

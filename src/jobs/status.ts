@@ -14,7 +14,12 @@ export interface JobStatus {
   jobKey?: string;
   lane?: string;
   mode?: JobMode;
+  runnerId?: string;
+  model?: string;
+  provider?: string;
   pid?: number;
+  phase?: string;
+  lastProgressAt?: string;
   execution: JobExecution;
   status: JobStatusKind;
   startedAt: string;

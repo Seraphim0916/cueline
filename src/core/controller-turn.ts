@@ -185,8 +185,12 @@ export function observationFor(
 ): ControllerObservation {
   const remaining = { value: MAX_CONTROLLER_EVIDENCE_CHARS, omittedChars: 0 };
   const sourceJobs = jobObservations(state);
+  const inspectedJobIds = new Set(state.inspectionJobIds ?? []);
   const boundedJobs = new Map<string, (typeof sourceJobs)[number]>();
   const allocationOrder = [...sourceJobs].sort((left, right) => {
+    const leftInspected = inspectedJobIds.has(left.job_id) ? 0 : 1;
+    const rightInspected = inspectedJobIds.has(right.job_id) ? 0 : 1;
+    if (leftInspected !== rightInspected) return leftInspected - rightInspected;
     const leftFailed = left.status === "succeeded" ? 1 : 0;
     const rightFailed = right.status === "succeeded" ? 1 : 0;
     if (leftFailed !== rightFailed) return leftFailed - rightFailed;

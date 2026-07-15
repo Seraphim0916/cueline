@@ -10,6 +10,8 @@ export type JobResultStatus =
 
 export interface RunnerSpec {
   jobId: string;
+  /** Resolved routing candidate, persisted before process spawn. */
+  runnerId?: string;
   runId?: string;
   jobKey?: string;
   argv: readonly string[];
@@ -41,6 +43,14 @@ export interface JobResult {
 
 export interface RunnerRunHooks {
   onSpawn?(pid: number): void | Promise<void>;
+  onProgress?(progress: RunnerProgress): void | Promise<void>;
+}
+
+export interface RunnerProgress {
+  phase: string;
+  at: string;
+  model?: string;
+  provider?: string;
 }
 
 export interface RunnerAdapter {

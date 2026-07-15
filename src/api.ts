@@ -7,6 +7,13 @@ import type {
 } from "./api-contracts.js";
 import { confirmManualControllerSubmission } from "./api-controller-handoff.js";
 import {
+  claimCueLineCallerJob,
+  heartbeatCueLineCallerJob,
+  reconcileExpiredCallerWorkClaims,
+  releaseCueLineCallerJob,
+  startCueLineCallerJob,
+} from "./api-caller-work.js";
+import {
   isTerminalRun,
   reconcileCueLineRuntime,
   terminalResult,
@@ -27,6 +34,7 @@ import {
 import { runtimeCwd, runtimeEnvironment } from "./core/runtime.js";
 import {
   assertRunCanContinue,
+  isSafeStaleCallerObservationRecovery,
   type CueLineRunStatusSummary,
 } from "./core/run-status.js";
 import type { CueLineRunState } from "./core/state-machine.js";
@@ -119,7 +127,7 @@ function routingInstruction(
     const lanes = Object.entries(config.lanes)
       .filter(([, lane]) => lane.enabled)
       .map(([name]) => name);
-    return `Caller execution lanes: ${lanes.join(", ")}. Use only a listed lane with mode advise. The current Codex executes each task after handoff; do not select runner or runner_id. The web controller has no local tools. Local inspection tasks must return exact code or error identifiers, relevant code excerpts, and absolute local paths; request any missing local evidence explicitly.`;
+    return `Caller execution lanes: ${lanes.join(", ")}. Use only a listed lane with mode advise or work. The current Codex executes each task after handoff. Every work job must include the exact absolute workdir. CueLine only records work as pending until the current Codex explicitly claims and starts it; dispatch does not mean local work has begun. Do not select runner or runner_id. The web controller has no local tools. Local inspection tasks must return exact code or error identifiers, relevant code excerpts, and absolute local paths; request any missing local evidence explicitly.`;
   }
   const lanes = Object.entries(config.lanes)
     .filter(([, lane]) => lane.enabled)
@@ -190,6 +198,9 @@ export async function startCueLineRun(
     ...(options.runId === undefined ? {} : { runId: options.runId }),
     home: options.home ?? defaultCueLineHome(options.environment ?? runtimeEnvironment()),
     executor: options.executor ?? "caller",
+    ...(options.allowProcessExecution === undefined
+      ? {}
+      : { allowProcessExecution: options.allowProcessExecution }),
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
@@ -203,6 +214,9 @@ export async function runCueLine(options: StartCueLineRunOptions): Promise<CueLi
     ...(options.runId === undefined ? {} : { runId: options.runId }),
     ...runtime,
     executor: options.executor ?? "caller",
+    ...(options.allowProcessExecution === undefined
+      ? {}
+      : { allowProcessExecution: options.allowProcessExecution }),
     returnAfterControllerSubmission: (options.executor ?? "caller") === "caller",
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
     ...(options.maxRepairAttempts === undefined
@@ -287,6 +301,24 @@ export async function continueCueLineRun(
       ...(options.now === undefined ? {} : { now: options.now }),
     });
   }
+  const callerHasActiveJobs =
+    state.executor === "caller" &&
+    Object.values(state.jobs).some(
+      (job) => job.status === "pending" || job.status === "running",
+    );
+  if (
+    callerHasActiveJobs &&
+    (runtime.ownership === "missing" || runtime.ownership === "released")
+  ) {
+    await reconcileExpiredCallerWorkClaims(options.runId, {
+      home,
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+    state = await loadPersistedRunState(home, options.runId);
+    runtime = await readRuntimeLease(home, options.runId, {
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+  }
   const hasActiveJobs = Object.values(state.jobs).some(
     (job) => job.status === "pending" || job.status === "running",
   );
@@ -307,16 +339,24 @@ export async function continueCueLineRun(
       ...(options.now === undefined ? {} : { now: options.now }),
     });
   }
-  assertRunCanContinue(
-    state,
-    runtime,
-    await readCancellationObservation(home, options.runId),
-  );
+  const cancellation = await readCancellationObservation(home, options.runId);
+  if (!isSafeStaleCallerObservationRecovery(state, runtime, cancellation)) {
+    assertRunCanContinue(state, runtime, cancellation);
+  }
   assertNotNested(environment);
   if (options.executor !== undefined && options.executor !== state.executor) {
     throw new CueLineError(
       "RUN_EXECUTOR_MISMATCH",
       `Run '${options.runId}' uses executor '${state.executor}', not '${options.executor}'.`,
+    );
+  }
+  if (
+    state.executor === "process" &&
+    (!state.allowProcessExecution || options.allowProcessExecution !== true)
+  ) {
+    throw new CueLineError(
+      "PROCESS_EXECUTION_NOT_AUTHORIZED",
+      "Continuing a process run requires allowProcessExecution=true in addition to its persisted authorization.",
     );
   }
   const preparedRuntime = await prepareRuntime(
@@ -328,6 +368,7 @@ export async function continueCueLineRun(
     runId: options.runId,
     ...preparedRuntime,
     executor: state.executor,
+    ...(state.executor === "process" ? { allowProcessExecution: true } : {}),
     returnAfterControllerSubmission: state.executor === "caller",
     ...(options.reconcileRequestId === undefined
       ? {}
@@ -359,6 +400,12 @@ export {
   submitCueLineCallerJobResult,
 } from "./api-controller-handoff.js";
 export {
+  claimCueLineCallerJob,
+  heartbeatCueLineCallerJob,
+  releaseCueLineCallerJob,
+  startCueLineCallerJob,
+};
+export {
   cancelCueLineJob,
   cancelCueLineRun,
   loadCueLineRunState,
@@ -371,7 +418,13 @@ export { CUELINE_VERSION } from "./version.js";
 export type {
   ContinueCueLineRunOptions,
   CueLineCallerJobResultInput,
+  CueLineCallerJobSubmissionOptions,
   CueLineCallerJobSubmissionResult,
+  CueLineCallerWorkClaimOptions,
+  CueLineCallerWorkClaimProof,
+  CueLineCallerWorkClaimResult,
+  CueLineCallerWorkMutationOptions,
+  CueLineCallerWorkMutationResult,
   CueLineJobCancellationResult,
   CueLineRunCancellationResult,
   CueLineRuntimeOptions,

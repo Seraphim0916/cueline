@@ -25,7 +25,11 @@ import {
 } from "../../src/api.js";
 import { CueLineError } from "../../src/core/errors.js";
 import { jobId } from "../../src/core/ids.js";
-import { continueControllerLoop, runControllerLoop } from "../../src/core/controller-loop.js";
+import {
+  continueControllerLoop as continueControllerLoopRaw,
+  runControllerLoop as runControllerLoopRaw,
+} from "../../src/core/controller-loop.js";
+import { observationFor } from "../../src/core/controller-turn.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
 import { CUELINE_PROTOCOL, type ControllerJobSpec } from "../../src/protocol/types.js";
 import { JobStatusStore, type JobStatus } from "../../src/jobs/status.js";
@@ -41,6 +45,23 @@ import { RuntimeLease } from "../../src/state/runtime-lease.js";
 import { RunStore } from "../../src/state/store.js";
 import { FakeBrowserAdapter } from "../fakes/fake-browser.js";
 import { FakeJobSupervisor } from "../fakes/fake-runner.js";
+
+// Most tests in this file predate caller execution and intentionally exercise
+// the process supervisor. Keep that intent explicit under the double-auth
+// contract while allowing individual tests to override executor="caller".
+const runControllerLoop = (
+  options: Parameters<typeof runControllerLoopRaw>[0],
+) => runControllerLoopRaw({
+  executor: "process",
+  allowProcessExecution: true,
+  ...options,
+});
+const continueControllerLoop = (
+  options: Parameters<typeof continueControllerLoopRaw>[0],
+) => continueControllerLoopRaw({
+  allowProcessExecution: true,
+  ...options,
+});
 
 function reply(
   command: (input: BrowserTurnInput) => Record<string, unknown>,
@@ -827,7 +848,7 @@ test("public caller prompt lists enabled lanes without process availability", as
   assert.equal(result.pendingJobs?.[0]?.jobKey, "caller_offline_lane");
 });
 
-test("caller execution rejects work jobs until duplicate-safe claims exist", async () => {
+test("caller work dispatch creates a durable unstarted job awaiting an explicit claim", async () => {
   const browser = new FakeBrowserAdapter([
     reply(() => ({
       action: "dispatch",
@@ -837,17 +858,10 @@ test("caller execution rejects work jobs until duplicate-safe claims exist", asy
           lane: "default",
           mode: "work",
           task: "Must not execute twice",
+          workdir: "/tmp/cueline-caller-work-claim",
         },
       ],
     })),
-    reply((input) => {
-      assert.match(input.prompt, /CALLER_WORK_REQUIRES_CLAIM/);
-      return {
-        action: "blocked",
-        reason: "Caller work requires an execution claim",
-        final_delivery_text: "NO_UNCLAIMED_WORK",
-      };
-    }),
   ]);
 
   const result = await runCueLine({
@@ -872,10 +886,11 @@ test("caller execution rejects work jobs until duplicate-safe claims exist", asy
     },
   });
 
-  assert.equal(result.status, "blocked");
-  assert.equal(result.finalDeliveryText, "NO_UNCLAIMED_WORK");
-  assert.deepEqual(result.state.jobs, {});
-  assert.equal(browser.calls.length, 2);
+  assert.equal(result.status as string, "awaiting_caller_work");
+  assert.equal(result.finalDeliveryText, undefined);
+  assert.equal(Object.values(result.state.jobs).length, 1);
+  assert.equal(Object.values(result.state.jobs)[0]?.status, "pending");
+  assert.equal(browser.calls.length, 1);
 });
 
 test("caller result retry finishes a partial durable submission without overwriting evidence", async () => {
@@ -1464,10 +1479,14 @@ test("a second session cannot continue a legacy running run without ownership ev
   const store = await RunStore.create({
     home: stateHome,
     runId,
-    initialState: initialRunState(runId, ""),
+    initialState: initialRunState(runId, "", "process", 12, true),
     reducer: reduceRunState,
   });
-  await store.append("run_created", { request: "Keep the original loop authoritative" });
+  await store.append("run_created", {
+    request: "Keep the original loop authoritative",
+    executor: "process",
+    allow_process_execution: true,
+  });
   await store.append("controller_command_accepted", {
     command_hash: "accepted-command",
   });
@@ -1516,10 +1535,14 @@ test("continuation reconciles dead ownerless process jobs before resuming the co
   const store = await RunStore.create({
     home: stateHome,
     runId,
-    initialState: initialRunState(runId, "", "process"),
+    initialState: initialRunState(runId, "", "process", 12, true),
     reducer: reduceRunState,
   });
-  await store.append("run_created", { request: "Recover a dead owner", executor: "process" });
+  await store.append("run_created", {
+    request: "Recover a dead owner",
+    executor: "process",
+    allow_process_execution: true,
+  });
   await store.append("controller_command_accepted", {
     command_hash: "orphaned-dispatch-hash",
     command: {
@@ -1582,6 +1605,7 @@ test("continuation reconciles dead ownerless process jobs before resuming the co
     home: stateHome,
     browser,
     routingConfig,
+    allowProcessExecution: true,
   });
 
   assert.equal(result.status, "complete");
@@ -1783,7 +1807,7 @@ test("runtime heartbeat loss settles owned jobs before recording run failure", {
   const reloaded = await RunStore.load({
     home: stateHome,
     runId,
-    initialState: initialRunState(runId, ""),
+    initialState: initialRunState(runId, "", "process", 12, true),
     reducer: reduceRunState,
   });
   assert.equal(reloaded.state.status, "failed");
@@ -1906,6 +1930,7 @@ test("run cancel reaches the active owner, terminates advise work, and closes th
   ]);
   const running = runCueLine({
     executor: "process",
+    allowProcessExecution: true,
     request: "Start a cancellable audit",
     runId,
     home: stateHome,
@@ -1980,6 +2005,7 @@ test("job cancel reaches the active owner without cancelling the controller loop
   ]);
   const running = runCueLine({
     executor: "process",
+    allowProcessExecution: true,
     request: "Cancel only one audit",
     runId,
     home: stateHome,
@@ -2047,6 +2073,7 @@ test("run timeout cancels owned work instead of abandoning the inner execution",
   await assert.rejects(
     runCueLine({
       executor: "process",
+      allowProcessExecution: true,
       request: "Bound the whole run",
       runId,
       home: stateHome,
@@ -2237,6 +2264,7 @@ test("max-round failure cancels an optional background process before releasing 
   await assert.rejects(
     runCueLine({
       executor: "process",
+      allowProcessExecution: true,
       request: "Never leave an optional background child behind",
       runId,
       home: stateHome,
@@ -3446,7 +3474,11 @@ test("recovered invalid routing is repaired before any job is registered", async
     initialState: initialRunState(runId, ""),
     reducer: reduceRunState,
   });
-  await store.append("run_created", { request: "Reject an invalid recovered route" });
+  await store.append("run_created", {
+    request: "Reject an invalid recovered route",
+    executor: "process",
+    allow_process_execution: true,
+  });
   await store.append("controller_turn_requested", {
     round: 1,
     request_id: requestId,
@@ -4073,6 +4105,39 @@ test("controller evidence budget is global across multiple large jobs", async ()
   });
 
   assert.equal(result.finalDeliveryText, "GLOBAL_BUDGET_OK");
+});
+
+test("caller inspect prioritizes every requested job before unrelated successful output", () => {
+  const runId = "run_caller_inspect_priority";
+  const state = initialRunState(runId, "Inspect one exact caller result", "caller");
+  const specs = ["alpha", "beta", "target"].map((key) => ({
+    job_key: key,
+    lane: "default",
+    mode: "advise" as const,
+    task: `Audit ${key}`,
+  }));
+  for (const [index, spec] of specs.entries()) {
+    const id = jobId(runId, spec.job_key, spec);
+    state.jobs[id] = {
+      jobId: id,
+      jobKey: spec.job_key,
+      required: true,
+      spec,
+      status: "succeeded",
+      output:
+        spec.job_key === "target"
+          ? `TARGET_INSPECT_EVIDENCE\n${"T".repeat(8_000)}`
+          : `UNRELATED_${index}\n${String(index).repeat(9_000)}`,
+      error: null,
+    };
+  }
+  const targetId = Object.values(state.jobs).find((job) => job.jobKey === "target")!.jobId;
+  (state as typeof state & { inspectionJobIds: string[] }).inspectionJobIds = [targetId];
+
+  const observation = observationFor(state, 4, "msg_inspect_priority");
+  const target = observation.jobs.find((job) => job.job_id === targetId);
+  assert.match(target?.output ?? "", /TARGET_INSPECT_EVIDENCE/);
+  assert.ok((target?.output?.length ?? 0) > 7_500, "inspect output should receive priority");
 });
 
 test("controller evidence budget applies after JSON safety escaping", async () => {

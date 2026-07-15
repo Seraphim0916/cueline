@@ -91,10 +91,14 @@ async function seedActiveRun(home: string): Promise<string> {
   const store = await RunStore.create({
     home,
     runId,
-    initialState: initialRunState(runId, ""),
+    initialState: initialRunState(runId, "", "process", 12, true),
     reducer: reduceRunState,
   });
-  await store.append("run_created", { request: "Inspect a large project" });
+  await store.append("run_created", {
+    request: "Inspect a large project",
+    executor: "process",
+    allow_process_execution: true,
+  });
   await store.append("controller_turn_requested", {
     round: 1,
     request_id: "msg_cli_status",
@@ -136,10 +140,14 @@ async function seedOneRunningJob(home: string, runId: string): Promise<string> {
   const store = await RunStore.create({
     home,
     runId,
-    initialState: initialRunState(runId, ""),
+    initialState: initialRunState(runId, "", "process", 12, true),
     reducer: reduceRunState,
   });
-  await store.append("run_created", { request: "Cancel one legacy job" });
+  await store.append("run_created", {
+    request: "Cancel one legacy job",
+    executor: "process",
+    allow_process_execution: true,
+  });
   const spec = {
     job_key: "legacy_job",
     lane: "default",
@@ -303,7 +311,7 @@ test("run reconcile records operator-confirmed manual submission without resendi
   const store = await RunStore.create({
     home: context.home,
     runId,
-    initialState: initialRunState(runId, ""),
+    initialState: initialRunState(runId, "", "process", 12, true),
     reducer: reduceRunState,
   });
   await store.append("run_created", { request: "Recover manual attachment" });
@@ -519,7 +527,11 @@ test("run takeover directs an interrupted process run through runtime reconcilia
     initialState: initialRunState(runId, ""),
     reducer: reduceRunState,
   });
-  await store.append("run_created", { request: "Reconcile a lost process owner" });
+  await store.append("run_created", {
+    request: "Reconcile a lost process owner",
+    executor: "process",
+    allow_process_execution: true,
+  });
   await store.append("controller_turn_requested", {
     round: 1,
     request_id: "msg_cli_process_takeover",

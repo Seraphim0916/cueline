@@ -74,5 +74,5 @@
   <path d="M40 520H960" class="rule"/>
   <text x="40" y="546" class="foot">동작은 다섯 개뿐 — dispatch · wait · inspect · complete · blocked.</text>
   <text x="40" y="568" class="foot">한 번 전송 → awaiting_controller → 한 번 읽기 관측. 재전송 금지.</text>
-  <text x="40" y="590" class="foot">Caller는 advise만 허용. process는 명시적이며 자동 재시도하지 않음.</text>
+  <text x="40" y="590" class="foot">Caller work는 claim + start, process 실행은 이중 승인이 필요함.</text>
 </svg>

@@ -13,7 +13,7 @@
 
 **CueLine 把方向盘交给一个已经打开的 ChatGPT 网页会话：由它规划运行、发出每一步文本指令；CueLine 负责校验，当前 Codex 才在本机执行获准的工作。**
 
-那个网页碰不到你的机器，也没有本地工具。CueLine 默认把 `advise` 作业持久化并交回当前 Codex 执行；只有显式选择 `process` executor，才会启动已注册的本地 worker。
+那个网页碰不到你的机器，也没有本地工具。CueLine 默认把 caller 作业持久化：`advise` 是协调式交接；`work` 必须先获得持久 claim 并正式 start。只有双重显式授权 `process` executor，才会启动已注册的本地 worker。
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 或 GPT Relay 的包装层。
 
@@ -25,9 +25,9 @@ CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnil
 
 非默认的 `maxRounds` 会在创建 run 时固定，并跨所有无 owner 的暂停累计控制器总轮次。后续继续通常省略它并复用持久值；传入不同数值会被拒绝，不会暗中重置或放宽预算。
 
-`startCueLineRun` 与 `runCueLine` 都默认使用 `caller`。使用内置浏览器时，CueLine 只发送一次、保存精确会话 URL，然后返回 `awaiting_controller` 并释放 runtime lease，不会让单次工具调用一直等待 Pro。之后的 `continueCueLineRun` 只做一次只读观测；若尚未完成，会再次返回 `awaiting_controller`，绝不重发。`dispatch` 才返回 `awaiting_caller`；当前 Codex 执行各个 `advise` 任务、调用 `submitCueLineCallerJobResult`，再继续同一 run。Pro 控制器只下文本命令，不能使用本地工具。Caller advice 没有 execution claim，请协调由单一 session 执行；两个 session 可能都做同一项检查，但只有第一份提交的终态证据生效。Caller 模式明确拒绝 `work`。
+`startCueLineRun` 与 `runCueLine` 都默认使用 `caller`。CueLine 发送一次后返回 `awaiting_controller` 并释放 lease；继续只做一次只读观测，绝不重发。`advise` 返回 `awaiting_caller`，没有副作用 claim；`work` 返回 `awaiting_caller_work`，必须由当前 Codex 调用 `claimCueLineCallerJob` 与 `startCueLineCallerJob` 后才能修改。claim 绑定 run、job、task hash、绝对 workdir、caller identity 与 fencing token；已开始的工作不会自动重试，过期后成为 `ambiguous`。Pro 只提出和审查文本指令，不会使用本地工具。
 
-控制器决定*应该发生什么*；本地这一侧决定*是否允许发生、以何种方式发生*：通道（lane）必须启用、候选必须在任何进程启动**之前**确认可用、`argv[0]` 必须早已由你的路由配置注册。没有任何内容会经过 shell。worker 一旦启动，就不会悄悄退回到第二个候选——失败以证据的形式返回，而不是自动重试。
+Process 模式必须同时指定 `executor: "process"` 与 `allowProcessExecution: true`，非终态继续也要再次传入第二道授权。内置 route 还使用 `--ignore-user-config`，不会让隐藏 worker 加载用户配置的 MCP server 或其命令参数。通道必须启用、候选必须在任何进程启动**之前**确认可用、`argv[0]` 必须已注册。没有内容经过 shell，也不会在启动后自动换候选。
 
 控制器协议有意区分路由层级：`lane` 填的是通道名称 `default`；`codex-default` 是该通道内的候选执行器，不是通道。CueLine 会在注册任何作业之前先验证整份 `dispatch`；只要包含无效通道或执行器，整份派工就会被退回修复，不会先执行其中一部分。
 
@@ -48,15 +48,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.1.5
+npm install -g cueline@0.1.6
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.1.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.5) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.5/cueline-0.1.5.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.6/cueline-0.1.6.tgz
 cueline install
 cueline doctor
 ```
@@ -89,29 +89,45 @@ cueline doctor
 
 ```js
 import {
+  claimCueLineCallerJob,
   continueCueLineRun,
   createCodexIabAdapter,
+  heartbeatCueLineCallerJob,
   runCueLine,
+  startCueLineCallerJob,
   submitCueLineCallerJobResult,
 } from "cueline";
 
 let result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
-  browser: createCodexIabAdapter(),
+  browser: createCodexIabAdapter({ browser: globalThis.browser }),
   // 可选：conversationUrl、routingConfig / routingConfigPath、home、cwd、
   // runTimeoutMs、signal，以及作业/默认期限。
 }); // 默认 executor: "caller"
 
-while (result.status === "awaiting_controller" || result.status === "awaiting_caller") {
+while (["awaiting_controller", "awaiting_caller", "awaiting_caller_work"].includes(result.status)) {
   if (result.status === "awaiting_controller") {
     await waitBeforeNextObservation(); // 有界退避；绝不重发
-  } else {
+  } else if (result.status === "awaiting_caller") {
     for (const job of result.pendingJobs ?? []) {
       const stdout = await executeExactLocalAdvice(job.spec.task);
       await submitCueLineCallerJobResult(result.runId, job.jobId, {
         status: "succeeded",
         stdout,
       });
+    }
+  } else {
+    for (const job of result.pendingJobs ?? []) {
+      if (job.spec.mode !== "work") continue;
+      const claim = await claimCueLineCallerJob(result.runId, job.jobId, {
+        callerId: "stable-codex-task-identity",
+      });
+      const proof = { claimId: claim.claimId, callerId: claim.callerId, fencingToken: claim.fencingToken };
+      await startCueLineCallerJob(result.runId, job.jobId, proof);
+      const stdout = await executeExactLocalWork(job.spec.task, claim.workdir, {
+        heartbeat: () => heartbeatCueLineCallerJob(result.runId, job.jobId, proof),
+      });
+      await submitCueLineCallerJobResult(result.runId, job.jobId, { status: "succeeded", stdout }, { claim: proof });
     }
   }
   result = await continueCueLineRun({ runId: result.runId });
@@ -122,7 +138,7 @@ if (result.status === "complete") {
 }
 ```
 
-若返回 `awaiting_controller`，表示同一个精确 request 已发送、但 Pro 回复尚未被观测；稍后继续只会执行只读观测，不会重发。若返回 `awaiting_caller`，由当前 Codex 执行 `result.pendingJobs` 中的每个 `advise`，用 `submitCueLineCallerJobResult` 提交真实结果，再调用 `continueCueLineRun`。这不是 Pro 网页直接使用本地工具。
+`awaiting_controller` 只读观测且不重发；`awaiting_caller` 交接 `advise`；`awaiting_caller_work` 必须依次 claim、start、执行、heartbeat 并带 claim proof 提交。Pro 网页从不直接使用本地工具。
 
 在 Codex 的 runtime 里，import `cueline api path` 打印出的那个绝对路径模块——那就是你安装的那份包构建出来的 API。
 
@@ -137,7 +153,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.5
+CueLine 0.1.6
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -179,7 +195,7 @@ CueLine skill removed: /Users/you/.codex/skills/cueline
 
 `CUELINE_CONFIG` 用于指定路由配置文件；`CUELINE_HOME` 用于迁移本地状态（默认 `~/.cueline`）。
 
-Caller 模式不会启动路由进程。只有显式选择 `process` executor 时，内置 `default` 通道才以 `codex-default` 运行 `codex exec`；独立 `advise` 默认全局/每 lane 并发上限均为 2，包含 `work` 的批次保持串行。
+Caller 模式不会启动路由进程。只有同时选择 `executor: "process"` 与 `allowProcessExecution: true` 时，内置 `default` 通道才以 `codex-default` 运行隔离的 `codex exec --ignore-user-config`；独立 `advise` 默认全局/每 lane 并发上限均为 2，包含 `work` 的批次保持串行。
 
 状态位于 `CUELINE_HOME` 之下：
 
@@ -212,7 +228,7 @@ npm pack --dry-run
 
 ## 0.1 的限制
 
-仅支持文本控制命令。一次运行只对应一个会话。支持 ChatGPT 自动将长文本转为附件，但不支持主动文件上传、图片、Deep Research、Projects 或 Apps。Caller 模式只允许 `advise`；`work` 必须显式选择 process executor。模糊发送和已启动工作都不会被自动重试。
+仅支持文本控制命令。一次运行只对应一个会话。支持 ChatGPT 自动将长文本转为附件，但不支持主动文件上传、图片、Deep Research、Projects 或 Apps。Caller `work` 必须显式 claim/start；process 执行必须双重授权。模糊发送和已启动工作都不会被自动重试。
 
 完整矩阵见 [compatibility](docs/compatibility.md)。
 

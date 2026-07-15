@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { JobStatusStore, type JobStatus } from "../jobs/status.js";
 import type { ControllerCommand, ControllerJobSpec } from "../protocol/types.js";
 import { RunStore } from "../state/store.js";
@@ -13,6 +15,14 @@ export function statusPayload(status: JobStatus): Record<string, unknown> {
   return {
     job_id: status.jobId,
     status: status.status,
+    ...(status.runnerId === undefined ? {} : { runner_id: status.runnerId }),
+    ...(status.pid === undefined ? {} : { pid: status.pid }),
+    ...(status.model === undefined ? {} : { model: status.model }),
+    ...(status.provider === undefined ? {} : { provider: status.provider }),
+    ...(status.phase === undefined ? {} : { phase: status.phase }),
+    ...(status.lastProgressAt === undefined
+      ? {}
+      : { last_progress_at: status.lastProgressAt }),
     ...(output === undefined ? {} : { output }),
     ...(status.error === undefined ? {} : { error: status.error }),
   };
@@ -27,10 +37,18 @@ export function validateCommandBeforeAcceptance(
   for (const spec of command.jobs) {
     options.validateJobSpec?.(spec);
     if (store.state.executor === "caller" && spec.mode === "work") {
-      throw new CueLineError(
-        "CALLER_WORK_REQUIRES_CLAIM",
-        "Caller execution accepts advise jobs only until an execution claim can prevent duplicate side effects; use advise or explicitly select the process executor.",
-      );
+      if (spec.workdir === undefined || !path.isAbsolute(spec.workdir)) {
+        throw new CueLineError(
+          "CALLER_WORKDIR_REQUIRED",
+          "Caller work requires an explicit absolute workdir so its durable claim is bound to one local workspace.",
+        );
+      }
+      if (spec.background === true) {
+        throw new CueLineError(
+          "CALLER_WORK_BACKGROUND_UNSUPPORTED",
+          "Caller work is handed back for an explicit claim; background process execution is not available in caller mode.",
+        );
+      }
     }
     const id = jobId(store.runId, spec.job_key, spec);
     const existing = Object.values(store.state.jobs).find(
@@ -101,6 +119,9 @@ async function registerDispatchedJob(
     status: "pending",
     output: null,
     error: null,
+    ...(store.state.executor === "caller" && spec.mode === "work"
+      ? { callerWork: { claim: null, nextFencingToken: 0 } }
+      : {}),
   };
   await store.append("job_registered", { job });
   return job;
@@ -118,7 +139,14 @@ async function startDispatchedJob(
   const id = job.jobId;
   try {
     const runnerSpec = options.resolveRunnerSpec(id, spec);
-    await store.append("job_status", { job_id: id, status: "running" });
+    const startedAt = (options.now ?? (() => new Date()))().toISOString();
+    await store.append("job_status", {
+      job_id: id,
+      status: "running",
+      ...(runnerSpec.runnerId === undefined ? {} : { runner_id: runnerSpec.runnerId }),
+      phase: "starting",
+      last_progress_at: startedAt,
+    });
     return {
       jobId: id,
       backgroundAdvice: spec.mode === "advise" && spec.background === true,

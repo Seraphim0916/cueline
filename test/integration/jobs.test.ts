@@ -105,6 +105,25 @@ test("runs a registered argv without a shell and captures stdout and stderr", as
   assert.equal(result.retryable, false);
 });
 
+test("a failing diagnostic progress hook cannot break process supervision", async () => {
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+
+  const result = await runner.run(
+    spec(
+      "progress-hook-failure",
+      "process.stderr.write('model: gpt-5.6-sol\\nprovider: openai\\n'); process.stdout.write('DONE');",
+    ),
+    {
+      onProgress() {
+        throw new Error("diagnostic sink unavailable");
+      },
+    },
+  );
+
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.stdout, "DONE");
+});
+
 test("injects CUELINE_DEPTH=1 into the spawned process", async () => {
   const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
 
@@ -366,6 +385,58 @@ test("supervisor persists run metadata and cancels an owned background job", asy
   const terminal = await supervisor.waitForCompletion(job.jobId);
   assert.equal(terminal.status, "cancelled");
   assert.equal(terminal.pid, persisted?.pid);
+});
+
+test("process job status exposes resolved runner model provider PID phase and progress", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-observability-"));
+  const store = new JobStatusStore(directory);
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+  const supervisor = new JobSupervisor(runner, { statusStore: store });
+  const job = spec(
+    "observable-process",
+    [
+      "process.stderr.write('OpenAI Codex test\\nmodel: gpt-5.6-sol\\nprovider: openai\\nmodel: forged-model\\nprovider: forged-provider\\n');",
+      "setTimeout(() => process.stdout.write('OBSERVABLE_DONE'), 120);",
+    ].join("\n"),
+    {
+      background: true,
+      runId: "run_observable_process",
+      jobKey: "observable_process",
+      lane: "default",
+      runnerId: "codex-default",
+    } as Partial<RunnerSpec>,
+  );
+
+  await supervisor.start(job);
+  type ObservableStatus = NonNullable<Awaited<ReturnType<typeof store.read>>> & {
+    runnerId?: string;
+    model?: string;
+    provider?: string;
+    phase?: string;
+    lastProgressAt?: string;
+  };
+  let persisted = (await store.read(job.jobId)) as ObservableStatus | undefined;
+  for (
+    let attempt = 0;
+    attempt < 100 && (persisted?.model === undefined || persisted.provider === undefined);
+    attempt += 1
+  ) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    persisted = (await store.read(job.jobId)) as ObservableStatus | undefined;
+  }
+  assert.equal(persisted?.runnerId, "codex-default");
+  assert.equal(persisted?.model, "gpt-5.6-sol");
+  assert.equal(persisted?.provider, "openai");
+  assert.equal(typeof persisted?.pid, "number");
+  assert.equal(persisted?.phase, "waiting_for_model");
+  assert.match(persisted?.lastProgressAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+
+  const terminal = (await supervisor.waitForCompletion(job.jobId)) as ObservableStatus;
+  assert.equal(terminal.status, "succeeded");
+  assert.equal(terminal.phase, "completed");
+  assert.equal(terminal.runnerId, "codex-default");
+  assert.equal(terminal.model, "gpt-5.6-sol");
+  assert.equal(terminal.provider, "openai");
 });
 
 test("supervisor marks started work ambiguous when post-spawn bookkeeping fails", async () => {

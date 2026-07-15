@@ -73,12 +73,22 @@ export async function loadCueLineRunStatus(
   const acceptedCommand = acceptedControllerCommandEvidence(
     await readAuthoritativeRunEvents(home, runId),
   );
+  const statusStore = new JobStatusStore(home);
+  const persistedJobStatuses = new Map(
+    (await Promise.all(
+      Object.keys(store.state.jobs).map(async (jobId) => [
+        jobId,
+        await statusStore.read(jobId),
+      ] as const),
+    )).flatMap(([jobId, status]) => status === undefined ? [] : [[jobId, status] as const]),
+  );
   return summarizeCueLineRunState(
     store.state,
     store.lastSequence,
     runtime,
     cancellation,
     acceptedCommand,
+    persistedJobStatuses,
   );
 }
 
