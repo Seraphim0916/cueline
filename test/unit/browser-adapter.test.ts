@@ -2185,6 +2185,82 @@ test("recovers an existing completed response from the exact conversation withou
   assert.equal(fixture.sendButtons[0]!.clicks, 0);
 });
 
+test("recovery treats contenteditable block newlines as the same user prompt", async () => {
+  const conversationUrl = "https://chatgpt.com/c/recovery-block-newlines";
+  const prompt = "First instruction\nSecond instruction\nThird instruction";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "completed multiline response",
+        assistantMessageCount: 1,
+        lastUserText: "First instruction\n\nSecond instruction\r\n \nThird instruction",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_recovery_block_newlines",
+    round: 1,
+    requestId: "msg_recovery_block_newlines",
+    prompt,
+  });
+
+  assert.equal(turn.text, "completed multiline response");
+  assert.equal(turn.conversationUrl, conversationUrl);
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
+test("recovery newline normalization preserves meaningful indentation", async () => {
+  const conversationUrl = "https://chatgpt.com/c/recovery-indentation";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "reply to a differently indented prompt",
+        assistantMessageCount: 1,
+        lastUserText: "Run exactly:\nnpm test",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.recoverTurn!({
+      runId: "run_recovery_indentation",
+      round: 1,
+      requestId: "msg_recovery_indentation",
+      prompt: "Run exactly:\n  npm test",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_RECONCILIATION_MISMATCH",
+  );
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
 test("recovery ignores a stale selected webview and claims the exact user conversation", async () => {
   const conversationUrl = "https://chatgpt.com/c/claimed-existing-response";
   const prompt = "Claim the exact completed controller conversation";
