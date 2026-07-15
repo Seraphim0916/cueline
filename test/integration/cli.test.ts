@@ -303,6 +303,32 @@ test("run status refuses to call a legacy running run active without ownership e
   assert.match(humanResult.stdout, /next\s+inspect_runtime/);
 });
 
+test("run timeline paginates the authoritative log without exposing payloads or writing", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  const before = await readEvents(runPaths(context.home, runId).events);
+
+  const result = invoke(
+    ["run", "timeline", runId, "--after", "9", "--limit", "2", "--json"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const timeline = JSON.parse(result.stdout) as {
+    runId: string;
+    entries: Array<{ sequence: number; payload?: unknown }>;
+    hasMore: boolean;
+    nextAfterSequence: number;
+  };
+  assert.equal(timeline.runId, runId);
+  assert.deepEqual(timeline.entries.map((entry) => entry.sequence), [10, 11]);
+  assert.ok(timeline.entries.every((entry) => !("payload" in entry)));
+  assert.equal(timeline.hasMore, true);
+  assert.equal(timeline.nextAfterSequence, 11);
+  const after = await readEvents(runPaths(context.home, runId).events);
+  assert.deepEqual(after, before);
+});
+
 test("run reconcile records operator-confirmed manual submission without resending", async () => {
   const context = await fixture();
   const runId = "run_cli_manual_reconcile";
