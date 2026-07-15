@@ -356,12 +356,13 @@ export async function readPageProbeState(tab: IabTab): Promise<PageProbeState> {
       const buttons = Array.from(document.querySelectorAll("button"));
       const isAnswering = buttons.some((element) => {
         const button = element as HTMLButtonElement;
-        const label = normalize(
-          [button.getAttribute("aria-label"), button.textContent].filter(Boolean).join(" "),
-        );
+        const ariaLabel = normalize(button.getAttribute("aria-label"));
+        const label = ariaLabel || normalize(button.textContent);
         return (
           /(stop|停止|中止|중지|정지)/i.test(label) &&
-          /(answer|generat|respond|stream|thinking|回答|回覆|生成|產生|思考|생성|답변|응답)/i.test(label) &&
+          /(answer|generat|respond|response|stream|thinking|回答|回覆|作答|生成|產生|思考|応答|생성|답변|응답)/i.test(
+            label,
+          ) &&
           !button.disabled &&
           button.getAttribute("aria-disabled") !== "true" &&
           isVisible(button)

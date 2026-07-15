@@ -435,6 +435,8 @@ test("browser probe reports a missing runtime as structured diagnostics", async 
 
 test("page probe recognizes an attachment and ignores a hidden residual Stop button", async () => {
   let includeLocalizedStop = false;
+  let localizedStopAria = "停止產生";
+  let localizedStopText = "停止產生";
   const hiddenStop = {
     disabled: false,
     hidden: false,
@@ -464,9 +466,11 @@ test("page probe recognizes an attachment and ignores a hidden residual Stop but
   const localizedStop = {
     disabled: false,
     hidden: false,
-    textContent: "停止產生",
+    get textContent() {
+      return localizedStopText;
+    },
     getAttribute(name: string) {
-      if (name === "aria-label") return "停止產生";
+      if (name === "aria-label") return localizedStopAria;
       return null;
     },
     closest() { return null; },
@@ -570,6 +574,16 @@ test("page probe recognizes an attachment and ignores a hidden residual Stop but
     assert.equal(JSON.stringify(state).includes("private-farm-plan.txt"), false);
     includeLocalizedStop = true;
     assert.equal((await readPageProbeState(tab)).isAnswering, true);
+    localizedStopAria = "Stop sharing";
+    localizedStopText = "Generating preview";
+    assert.equal(
+      (await readPageProbeState(tab)).isAnswering,
+      false,
+      "does not combine unrelated aria and visible-text tokens",
+    );
+    localizedStopAria = "";
+    localizedStopText = "応答を停止";
+    assert.equal((await readPageProbeState(tab)).isAnswering, true, "visible-text fallback");
   } finally {
     for (const [name, descriptor] of [
       ["document", documentDescriptor],
