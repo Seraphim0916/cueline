@@ -6,6 +6,7 @@ import type {
   StartCueLineRunOptions,
 } from "./api-contracts.js";
 import { confirmManualControllerSubmission } from "./api-controller-handoff.js";
+import { verifyCueLineRun } from "./api-run-verification.js";
 import {
   claimCueLineCallerJob,
   heartbeatCueLineCallerJob,
@@ -413,6 +414,7 @@ export {
   reconcileCueLineRuntime,
   takeoverCueLineRuntime,
 } from "./api-runtime-lifecycle.js";
+export { verifyCueLineRun };
 export { createCodexIabAdapter };
 export { CUELINE_VERSION } from "./version.js";
 export type {
@@ -427,6 +429,9 @@ export type {
   CueLineCallerWorkMutationResult,
   CueLineJobCancellationResult,
   CueLineRunCancellationResult,
+  CueLineRunVerificationFinding,
+  CueLineRunVerificationOutcome,
+  CueLineRunVerificationReport,
   CueLineRuntimeOptions,
   CueLineRuntimeReconciliationResult,
   CueLineRuntimeTakeoverResult,

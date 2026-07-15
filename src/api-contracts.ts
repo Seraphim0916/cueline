@@ -31,6 +31,37 @@ export interface StartCueLineRunOptions extends CueLineRuntimeOptions {
   runId?: string;
 }
 
+export type CueLineRunVerificationOutcome = "verified" | "degraded" | "unreadable";
+
+export interface CueLineRunVerificationFinding {
+  code: string;
+  severity: "warning" | "error";
+  surface: "marker" | "events" | "snapshot" | "runtime" | "jobs";
+  message: string;
+}
+
+export interface CueLineRunVerificationReport {
+  runId: string;
+  outcome: CueLineRunVerificationOutcome;
+  marker: "valid" | "missing" | "invalid";
+  eventLog:
+    | {
+        readable: true;
+        totalEvents: number;
+        authoritativeEvents: number;
+        lastSequence: number;
+      }
+    | {
+        readable: false;
+        totalEvents: 0;
+        authoritativeEvents: 0;
+        lastSequence: null;
+      };
+  snapshot: "missing" | "valid" | "stale" | "invalid";
+  runtimeOwnership: "missing" | "active" | "stale" | "released" | "invalid";
+  findings: CueLineRunVerificationFinding[];
+}
+
 export interface ContinueCueLineRunOptions extends CueLineRuntimeOptions {
   runId: string;
   reconcileRequestId?: string;

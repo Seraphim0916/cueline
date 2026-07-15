@@ -54,7 +54,7 @@ The v0.1 adapter relies on accessible textbox/button roles, attachment chips, an
 
 ## CLI boundary
 
-`cueline doctor`, `routing`, `jobs`, `run status`, `api path`, and `config path` are read-only. `install`/`uninstall` change only the package-owned skill link. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel` / `run stop`, and `job cancel` append audit evidence or change local durable state; `cueline help` lists their exact positional syntax and options. None drives the ChatGPT page. `run reconcile --manual-send-confirmed --conversation-url URL` can atomically bind the first exact URL created by a manual send; the imported API still performs identity/Pro reconciliation through Codex's IAB browser object. `run takeover` retires only an exact stale owner/heartbeat and refuses a fresh active owner; every process run is directed through `reconcile-runtime` before continuation.
+`cueline doctor`, `routing`, `jobs`, `run status`, `run verify`, `api path`, and `config path` are read-only. `install`/`uninstall` change only the package-owned skill link. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel` / `run stop`, and `job cancel` append audit evidence or change local durable state; `cueline help` lists their exact positional syntax and options. None drives the ChatGPT page. `run reconcile --manual-send-confirmed --conversation-url URL` can atomically bind the first exact URL created by a manual send; the imported API still performs identity/Pro reconciliation through Codex's IAB browser object. `run takeover` retires only an exact stale owner/heartbeat and refuses a fresh active owner; every process run is directed through `reconcile-runtime` before continuation.
 
 ## Live readiness checklist
 

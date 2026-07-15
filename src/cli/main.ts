@@ -13,6 +13,7 @@ import {
   reconcileCueLineRuntime,
   routingConfigPath,
   takeoverCueLineRuntime,
+  verifyCueLineRun,
 } from "../api.js";
 import { CueLineError } from "../core/errors.js";
 import type { JobStatus } from "../jobs/status.js";
@@ -36,7 +37,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|jobs|run status|run verify|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -52,6 +53,7 @@ function help(): string {
     "  routing        list every lane and the candidate that would be selected",
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
     "  run status     summarize one persisted run for safe cross-session handoff",
+    "  run verify     verify durable run evidence without returning its content",
     "  run reconcile  confirm one manually sent controller turn; never resends it",
     "  run takeover   explicitly retire one exact stale runtime owner",
     "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
@@ -70,6 +72,7 @@ function help(): string {
     "  cueline routing",
     "  cueline jobs [--json]",
     "  cueline run status <run-id> [--json]",
+    "  cueline run verify <run-id> [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
     "  cueline run takeover <run-id> [--json]",
     "  cueline run reconcile-runtime <run-id> [--json]",
@@ -95,7 +98,7 @@ function help(): string {
     "  2  the arguments were not understood",
     "",
     "state effects:",
-    "  Read-only: doctor, routing, jobs, run status, api path, config path, help, version.",
+    "  Read-only: doctor, routing, jobs, run status, run verify, api path, config path, help, version.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
@@ -359,6 +362,35 @@ async function runStatusCommand(
   return 0;
 }
 
+async function runVerifyCommand(
+  runId: string,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const report = await verifyCueLineRun(runId, { environment });
+  if (json) {
+    io.stdout(JSON.stringify(report, null, 2));
+  } else {
+    io.stdout(`run\t${report.runId}`);
+    io.stdout(`outcome\t${report.outcome}`);
+    io.stdout(`marker\t${report.marker}`);
+    io.stdout(
+      report.eventLog.readable
+        ? `events\treadable\ttotal=${report.eventLog.totalEvents}\tauthoritative=${report.eventLog.authoritativeEvents}\tlast_sequence=${report.eventLog.lastSequence}`
+        : "events\tunreadable",
+    );
+    io.stdout(`snapshot\t${report.snapshot}`);
+    io.stdout(`runtime\t${report.runtimeOwnership}`);
+    for (const item of report.findings) {
+      io.stdout(
+        `finding\t${item.severity}\t${item.code}\t${item.surface}\t${item.message}`,
+      );
+    }
+  }
+  return report.outcome === "verified" ? 0 : 1;
+}
+
 async function doctorCommand(environment: NodeJS.ProcessEnv, io: CliIo): Promise<number> {
   const configPath = routingConfigPath(environment);
   const home = defaultCueLineHome(environment);
@@ -525,6 +557,14 @@ export async function main(
       (args.length === 3 || (args.length === 4 && args[3] === "--json"))
     ) {
       return runStatusCommand(args[2], args[3] === "--json", environment, io);
+    }
+    if (
+      args[0] === "run" &&
+      args[1] === "verify" &&
+      typeof args[2] === "string" &&
+      (args.length === 3 || (args.length === 4 && args[3] === "--json"))
+    ) {
+      return runVerifyCommand(args[2], args[3] === "--json", environment, io);
     }
     if (
       args[0] === "run" &&
