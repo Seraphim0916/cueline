@@ -6,6 +6,7 @@ import type {
   CueLineRuntimeTakeoverResult,
 } from "./api-contracts.js";
 import type { CueLineResult } from "./core/controller-loop.js";
+import { boundedControllerEventEvidence } from "./core/controller-turn.js";
 import { CueLineError } from "./core/errors.js";
 import {
   loadPersistedRunState,
@@ -371,15 +372,10 @@ function persistedTerminalPayload(
   job: StoredJob,
   persisted: JobStatus,
 ): Record<string, unknown> {
-  const fullOutput = persisted.result?.output;
-  const stdout = persisted.result?.stdout;
-  const controllerOutput =
-    persisted.status === "succeeded" && stdout?.trim() ? stdout : fullOutput;
   return {
     job_id: job.jobId,
     status: persisted.status,
-    ...(controllerOutput === undefined ? {} : { output: controllerOutput }),
-    ...(persisted.error === undefined ? {} : { error: persisted.error }),
+    ...boundedControllerEventEvidence(persisted),
   };
 }
 

@@ -4,14 +4,16 @@ import { JobStatusStore, type JobStatus } from "../jobs/status.js";
 import type { ControllerCommand, ControllerJobSpec } from "../protocol/types.js";
 import { RunStore } from "../state/store.js";
 import { throwIfCancelled } from "./controller-abort.js";
-import { controllerResultOutput } from "./controller-turn.js";
+import {
+  boundedControllerEventEvidence,
+  truncate,
+} from "./controller-turn.js";
 import type { ControllerRuntimeOptions, JobSupervisorLike } from "./controller-types.js";
 import { asCueLineError, CueLineError } from "./errors.js";
 import { jobId } from "./ids.js";
 import type { CueLineRunState, StoredJob } from "./state-machine.js";
 
 export function statusPayload(status: JobStatus): Record<string, unknown> {
-  const output = controllerResultOutput(status);
   return {
     job_id: status.jobId,
     status: status.status,
@@ -23,8 +25,7 @@ export function statusPayload(status: JobStatus): Record<string, unknown> {
     ...(status.lastProgressAt === undefined
       ? {}
       : { last_progress_at: status.lastProgressAt }),
-    ...(output === undefined ? {} : { output }),
-    ...(status.error === undefined ? {} : { error: status.error }),
+    ...boundedControllerEventEvidence(status),
   };
 }
 
@@ -168,7 +169,7 @@ async function startDispatchedJob(
           return {
             job_id: id,
             status: "failed",
-            error: failure.message,
+            error: truncate(failure.message),
           };
         },
       ),
@@ -178,7 +179,7 @@ async function startDispatchedJob(
     await store.append("job_status", {
       job_id: id,
       status: "failed",
-      error: failure.message,
+      error: truncate(failure.message),
     });
     return undefined;
   }
@@ -217,7 +218,7 @@ async function executeProcessDispatch(
         return {
           job_id: job.jobId,
           status: "failed",
-          error: failure.message,
+          error: truncate(failure.message),
         };
       },
     ),
@@ -297,7 +298,7 @@ async function executeProcessDispatch(
           return {
             job_id: settled.entry.jobId,
             status: "failed",
-            error: failure.message,
+            error: truncate(failure.message),
           };
         });
       continue;

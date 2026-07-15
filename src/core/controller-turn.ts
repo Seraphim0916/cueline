@@ -83,6 +83,16 @@ export function controllerResultOutput(status: JobStatus): string | undefined {
   return result.output;
 }
 
+export function boundedControllerEventEvidence(
+  status: JobStatus,
+): { output?: string; error?: string } {
+  const output = controllerResultOutput(status);
+  return {
+    ...(output === undefined ? {} : { output: truncate(output) }),
+    ...(status.error === undefined ? {} : { error: truncate(status.error) }),
+  };
+}
+
 function promptJson(value: unknown): string {
   return JSON.stringify(value, null, 2)
     .replaceAll("<", "\\u003c")

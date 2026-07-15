@@ -373,6 +373,46 @@ test("process takeover's advertised runtime reconciliation is executable before 
   assert.equal(result.finalDeliveryText, "PROCESS_TAKEOVER_CONTINUED");
 });
 
+test("runtime reconciliation bounds terminal evidence copied from full job status", async () => {
+  const home = await temporaryHome();
+  const runId = "run_reconcile_bounded_terminal_evidence";
+  const fixture = await createJobRun(home, runId, "process");
+  const stdout = `RECOVERED_STDOUT\n${"S".repeat(30_000)}`;
+  const stderr = `RECOVERED_TRACE_SENTINEL\n${"T".repeat(150_000)}`;
+  const error = `RECOVERED_ERROR\n${"E".repeat(40_000)}`;
+  const persisted = succeededStatus(runId, fixture.jobId, fixture.spec, stdout);
+  persisted.result.stderr = stderr;
+  persisted.result.output = `${stdout}\n${stderr}`;
+  const persistedWithError = { ...persisted, error };
+  await new JobStatusStore(home).write(persistedWithError);
+
+  const reconciled = await reconcileCueLineRuntime(runId, { home });
+
+  assert.equal(reconciled.outcome, "reconciled");
+  assert.equal(reconciled.affectedJobs, 1);
+  const durableStatus = await new JobStatusStore(home).read(fixture.jobId);
+  assert.equal(durableStatus?.result?.stdout, stdout);
+  assert.equal(durableStatus?.result?.stderr, stderr);
+  assert.equal(durableStatus?.error, error);
+  const terminalEvent = (await readEvents(runPaths(home, runId).events)).findLast(
+    (entry) =>
+      entry.type === "job_status" &&
+      typeof entry.payload === "object" &&
+      entry.payload !== null &&
+      !Array.isArray(entry.payload) &&
+      (entry.payload as Record<string, unknown>).status === "succeeded",
+  );
+  const payload = terminalEvent?.payload as Record<string, unknown>;
+  assert.equal(typeof payload.output, "string");
+  assert.equal(typeof payload.error, "string");
+  assert.match(payload.output as string, /RECOVERED_STDOUT/);
+  assert.doesNotMatch(payload.output as string, /RECOVERED_TRACE_SENTINEL/);
+  assert.match(payload.output as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.match(payload.error as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.ok((payload.output as string).length < 20_000);
+  assert.ok((payload.error as string).length < 20_000);
+});
+
 test("concurrent explicit takeovers record attempts safely but only one confirmed success", async () => {
   const home = await temporaryHome();
   const runId = "run_concurrent_explicit_takeover";

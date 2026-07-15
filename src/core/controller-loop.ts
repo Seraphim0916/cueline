@@ -200,7 +200,7 @@ async function settleCancelledJobs(
       await store.append("job_status", {
         job_id: job.jobId,
         status: "ambiguous",
-        error: failure.message,
+        error: truncate(failure.message),
       });
     }
   }
