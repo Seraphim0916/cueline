@@ -6,6 +6,7 @@ import { CueLineError } from "../../src/core/errors.js";
 import { parseRoutingConfig } from "../../src/router/config-loader.js";
 import { executableAvailability } from "../../src/router/availability.js";
 import { materializeRunnerSpec } from "../../src/router/materialize.js";
+import { explainRoutingConfig } from "../../src/router/explain.js";
 import { resolveRoute } from "../../src/router/resolver.js";
 import type { RoutingConfig } from "../../src/router/types.js";
 
@@ -43,6 +44,37 @@ test("selects the first available candidate in declared order before spawn", () 
   assert.equal(route.lane, "triage");
   assert.equal(route.candidate.id, "second");
   assert.equal(route.candidateIndex, 1);
+});
+
+test("routing explanation selects the same candidate as the resolver", () => {
+  const routingConfig = config();
+  const availability = { first: false, second: true, third: true };
+  const route = resolveRoute("triage", routingConfig, availability);
+  const explanation = explainRoutingConfig(routingConfig, availability, "triage");
+
+  assert.equal(explanation.availableLanes, 1);
+  assert.equal(explanation.lanes[0]?.selectedRunnerId, route.candidate.id);
+  assert.deepEqual(
+    explanation.lanes[0]?.candidates.map((candidate) => candidate.reasonCode),
+    ["RUNNER_UNAVAILABLE", "SELECTED_FIRST_AVAILABLE", "AVAILABLE_FALLBACK"],
+  );
+});
+
+test("routing explanation never probes candidates in a disabled lane", () => {
+  let calls = 0;
+  const explanation = explainRoutingConfig(
+    config(),
+    () => {
+      calls += 1;
+      return true;
+    },
+    "disabled",
+  );
+
+  assert.equal(calls, 0);
+  assert.equal(explanation.availableLanes, 0);
+  assert.equal(explanation.lanes[0]?.status, "disabled");
+  assert.equal(explanation.lanes[0]?.candidates[0]?.reasonCode, "LANE_DISABLED");
 });
 
 test("skips disabled candidates while retaining deterministic fallback order", () => {

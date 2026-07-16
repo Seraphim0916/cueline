@@ -514,6 +514,7 @@ export { verifyCueLineRun };
 export { createCodexIabAdapter, probeCodexIab };
 export { waitForCueLineRunChange } from "./observation/run-watch.js";
 export { lintControllerCommandText } from "./protocol/lint-command.js";
+export { explainRoutingConfig } from "./router/explain.js";
 export {
   buildCueLineRunHandoff,
   createCueLineRunHandoff,
@@ -569,6 +570,12 @@ export type {
   CueLineProtocolLintRouting,
   CueLineProtocolLintSeverity,
 } from "./protocol/lint-command.js";
+export type {
+  RoutingCandidateExplanation,
+  RoutingCandidateReasonCode,
+  RoutingExplanation,
+  RoutingLaneExplanation,
+} from "./router/explain.js";
 export type {
   CueLineRunHandoffBuildOptions,
   CueLineRunHandoffContent,

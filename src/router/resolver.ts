@@ -68,7 +68,11 @@ function isAvailabilityChecker(value: RouteAvailability): value is CandidateAvai
   );
 }
 
-function isAvailable(availability: RouteAvailability, candidate: RouteCandidate, lane: string): boolean {
+export function routeCandidateIsAvailable(
+  availability: RouteAvailability,
+  candidate: RouteCandidate,
+  lane: string,
+): boolean {
   if (typeof availability === "function") {
     return availability(candidate, lane);
   }
@@ -99,7 +103,7 @@ export function resolveRoute(
     if (candidate === undefined || candidate.enabled === false) {
       throw new Error("ROUTE_REFERENCE_VALIDATION_INCONSISTENT");
     }
-    if (!isAvailable(availability, candidate, lane)) {
+    if (!routeCandidateIsAvailable(availability, candidate, lane)) {
       throw new CueLineError(
         "ROUTE_RUNNER_UNAVAILABLE",
         `runner '${requestedCandidateId}' is unavailable for lane: ${lane}`,
@@ -114,7 +118,7 @@ export function resolveRoute(
     if (candidate === undefined || candidate.enabled === false) {
       continue;
     }
-    if (isAvailable(availability, candidate, lane)) {
+    if (routeCandidateIsAvailable(availability, candidate, lane)) {
       return { lane, candidate, candidateIndex };
     }
   }
