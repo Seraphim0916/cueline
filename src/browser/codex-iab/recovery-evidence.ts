@@ -12,7 +12,12 @@ export function isProModelSlug(slug: string | null): slug is string {
 }
 
 export function normalizedMessageText(value: string | null): string {
-  return (value ?? "").replace(/\r\n/g, "\n").trim();
+  return (value ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n(?:[ \t]*\n)+/g, "\n")
+    .trim();
 }
 
 export function hasExactControllerEnvelopeIdentity(

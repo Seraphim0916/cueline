@@ -237,8 +237,8 @@ export async function readPageComposerState(
         String(value ?? "")
           .replace(/\u00a0/g, " ")
           .replace(/\r\n?/g, "\n")
-          .replace(/[ \t]*\n[ \t]*/g, "\n")
-          .replace(/\n{2,}/g, "\n")
+          .replace(/[ \t]+\n/g, "\n")
+          .replace(/\n(?:[ \t]*\n)+/g, "\n")
           .trim();
       const composer = document.querySelector('#prompt-textarea[contenteditable="true"]');
       const inlineText = normalize(
@@ -356,8 +356,8 @@ export async function readPageProbeState(tab: IabTab): Promise<PageProbeState> {
         String(value ?? "")
           .replace(/\u00a0/g, " ")
           .replace(/\r\n?/g, "\n")
-          .replace(/[ \t]*\n[ \t]*/g, "\n")
-          .replace(/\n{2,}/g, "\n")
+          .replace(/[ \t]+\n/g, "\n")
+          .replace(/\n(?:[ \t]*\n)+/g, "\n")
           .trim();
       const isVisible = (element: Element): boolean => {
         const htmlElement = element as HTMLElement & {
