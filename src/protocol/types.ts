@@ -43,6 +43,10 @@ export interface WaitCommand extends ControllerCommandBase {
 export interface InspectCommand extends ControllerCommandBase {
   action: "inspect";
   job_ids?: string[];
+  /** Raw-character offset into one explicitly selected job's preferred evidence field. */
+  evidence_offset?: number;
+  /** SHA-256 identity copied from the selected evidence window. */
+  evidence_hash?: string;
 }
 
 export interface CompleteCommand extends ControllerCommandBase {
@@ -77,6 +81,14 @@ export interface JobObservation {
     | "ambiguous";
   output?: string;
   error?: string;
+  evidence_window?: {
+    field: "output" | "error";
+    offset: number;
+    end: number;
+    total_chars: number;
+    next_offset: number | null;
+    content_hash: string;
+  };
 }
 
 export interface ControllerObservation {

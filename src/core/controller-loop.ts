@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { JobStatusStore } from "../jobs/status.js";
 import {
   CancellationWatcher,
   readCancellationObservation,
@@ -9,6 +10,10 @@ import { readRuntimeLease, RuntimeLease } from "../state/runtime-lease.js";
 import { RunStore } from "../state/store.js";
 import { throwIfCancelled } from "./controller-abort.js";
 import {
+  controllerConversationArchiveNeedsRecovery,
+  settleControllerConversationArchive,
+} from "./controller-conversation-archive.js";
+import {
   executeAcceptedCommand,
   statusPayload,
   validateCommandBeforeAcceptance,
@@ -16,6 +21,7 @@ import {
 } from "./controller-command-execution.js";
 import {
   assertConversationUrlCompatible,
+  controllerResultOutput,
   observationFor,
   requestControllerCommand,
   truncate,
@@ -30,6 +36,7 @@ import type {
 } from "./controller-types.js";
 import { asCueLineError, CueLineError } from "./errors.js";
 import { commandHash, messageId, runId as createRunId } from "./ids.js";
+import { validatedTimerDelay } from "./timing.js";
 import {
   assertRunCanContinue,
   isSafeStaleCallerObservationRecovery,
@@ -200,7 +207,7 @@ async function settleCancelledJobs(
       await store.append("job_status", {
         job_id: job.jobId,
         status: "ambiguous",
-        error: failure.message,
+        error: truncate(failure.message),
       });
     }
   }
@@ -307,10 +314,24 @@ function watchOwnedCancellation(
   };
 }
 
-function validatedLimits(options: ControllerRuntimeOptions): {
+type ControllerRuntimeLimitOptions = Pick<
+  ControllerRuntimeOptions,
+  | "maxRounds"
+  | "maxRepairAttempts"
+  | "runTimeoutMs"
+  | "cancellationPollIntervalMs"
+  | "runtimeHeartbeatIntervalMs"
+  | "maxConcurrency"
+  | "laneConcurrency"
+  | "archiveControllerConversationOnComplete"
+>;
+
+export function validateControllerRuntimeOptions(options: ControllerRuntimeLimitOptions): {
   maxRounds: number;
   maxRepairAttempts: number;
+  laneConcurrency: Readonly<Record<string, number>> | undefined;
 } {
+  validatedArchivePolicy(options.archiveControllerConversationOnComplete);
   const maxRounds = validatedMaxRounds(options.maxRounds);
   const maxRepairAttempts = options.maxRepairAttempts ?? 2;
   if (!Number.isSafeInteger(maxRepairAttempts) || maxRepairAttempts < 0) {
@@ -319,11 +340,23 @@ function validatedLimits(options: ControllerRuntimeOptions): {
       "maxRepairAttempts must be a non-negative integer.",
     );
   }
-  if (
-    options.runTimeoutMs !== undefined &&
-    (!Number.isSafeInteger(options.runTimeoutMs) || options.runTimeoutMs < 1)
-  ) {
-    throw new CueLineError("RUN_TIMEOUT_INVALID", "runTimeoutMs must be a positive integer.");
+  if (options.runTimeoutMs !== undefined) {
+    validatedTimerDelay(options.runTimeoutMs, {
+      code: "RUN_TIMEOUT_INVALID",
+      name: "runTimeoutMs",
+    });
+  }
+  if (options.cancellationPollIntervalMs !== undefined) {
+    validatedTimerDelay(options.cancellationPollIntervalMs, {
+      code: "CANCELLATION_POLL_INTERVAL_INVALID",
+      name: "cancellationPollIntervalMs",
+    });
+  }
+  if (options.runtimeHeartbeatIntervalMs !== undefined) {
+    validatedTimerDelay(options.runtimeHeartbeatIntervalMs, {
+      code: "RUNTIME_HEARTBEAT_INTERVAL_INVALID",
+      name: "runtimeHeartbeatIntervalMs",
+    });
   }
   const maxConcurrency = options.maxConcurrency ?? 2;
   if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {
@@ -332,15 +365,42 @@ function validatedLimits(options: ControllerRuntimeOptions): {
       "maxConcurrency must be a positive integer.",
     );
   }
-  for (const [lane, limit] of Object.entries(options.laneConcurrency ?? {})) {
-    if (!Number.isSafeInteger(limit) || limit < 1) {
+  const laneConcurrency: unknown = options.laneConcurrency;
+  let normalizedLaneConcurrency: Readonly<Record<string, number>> | undefined;
+  if (laneConcurrency !== undefined) {
+    if (
+      laneConcurrency === null ||
+      typeof laneConcurrency !== "object" ||
+      Array.isArray(laneConcurrency)
+    ) {
       throw new CueLineError(
         "LANE_CONCURRENCY_INVALID",
-        `laneConcurrency['${lane}'] must be a positive integer.`,
+        "laneConcurrency must be a record of positive integer limits.",
       );
     }
+    const ownLimits: Record<string, number> = Object.create(null) as Record<string, number>;
+    for (const [lane, limit] of Object.entries(laneConcurrency)) {
+      if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1) {
+        throw new CueLineError(
+          "LANE_CONCURRENCY_INVALID",
+          `laneConcurrency['${lane}'] must be a positive integer.`,
+        );
+      }
+      ownLimits[lane] = limit;
+    }
+    normalizedLaneConcurrency = Object.freeze(ownLimits);
   }
-  return { maxRounds, maxRepairAttempts };
+  return { maxRounds, maxRepairAttempts, laneConcurrency: normalizedLaneConcurrency };
+}
+
+function validatedRuntimeOptions<Options extends ControllerRuntimeOptions>(
+  options: Options,
+): Options {
+  const { laneConcurrency } = validateControllerRuntimeOptions(options);
+  return {
+    ...options,
+    ...(laneConcurrency === undefined ? {} : { laneConcurrency }),
+  };
 }
 
 function validatedMaxRounds(value: number | undefined): number {
@@ -349,6 +409,16 @@ function validatedMaxRounds(value: number | undefined): number {
     throw new CueLineError("MAX_ROUNDS_INVALID", "maxRounds must be a positive integer.");
   }
   return maxRounds;
+}
+
+function validatedArchivePolicy(value: boolean | undefined): boolean {
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new CueLineError(
+      "CONTROLLER_CONVERSATION_ARCHIVE_POLICY_INVALID",
+      "archiveControllerConversationOnComplete must be a boolean.",
+    );
+  }
+  return value === true;
 }
 
 function persistedMaxRounds(
@@ -379,11 +449,42 @@ function durableRoundLimitReached(state: CueLineRunState, maxRounds: number): bo
   );
 }
 
+async function controllerEvidenceJobs(
+  store: RunStore<CueLineRunState>,
+): Promise<ReturnType<typeof jobObservations>> {
+  const observations = jobObservations(store.state);
+  const statusStore = new JobStatusStore(store.paths.home);
+  return Promise.all(
+    observations.map(async (observation) => {
+      const job = store.state.jobs[observation.job_id];
+      try {
+        const persisted = await statusStore.read(observation.job_id);
+        if (
+          persisted === undefined ||
+          persisted.status !== observation.status ||
+          (persisted.runId !== undefined && persisted.runId !== store.runId) ||
+          (persisted.jobKey !== undefined && persisted.jobKey !== job?.jobKey)
+        ) {
+          return observation;
+        }
+        const output = controllerResultOutput(persisted);
+        return {
+          ...observation,
+          ...(output === undefined ? {} : { output }),
+          ...(persisted.error === undefined ? {} : { error: persisted.error }),
+        };
+      } catch {
+        return observation;
+      }
+    }),
+  );
+}
+
 async function driveControllerLoop(
   store: RunStore<CueLineRunState>,
   options: ControllerRuntimeOptions,
 ): Promise<CueLineResult> {
-  const { maxRounds, maxRepairAttempts } = validatedLimits(options);
+  const { maxRounds, maxRepairAttempts } = validateControllerRuntimeOptions(options);
   const id = store.runId;
   for (;;) {
     throwIfCancelled(options.signal);
@@ -392,11 +493,12 @@ async function driveControllerLoop(
       throw maxRoundsExceeded(maxRounds);
     }
     const round = state.round + 1;
+    const evidenceJobs = await controllerEvidenceJobs(store);
     const requestId = messageId(id, round, "observation", {
-      jobs: jobObservations(state),
+      jobs: evidenceJobs,
       notices: state.notices,
     });
-    const observation = observationFor(state, round, requestId);
+    const observation = observationFor(state, round, requestId, evidenceJobs);
     const command = await requestControllerCommand(
       store,
       options.browser,
@@ -405,7 +507,7 @@ async function driveControllerLoop(
       maxRepairAttempts,
       options.controllerInstructions ?? [],
       undefined,
-      (candidate) => validateCommandBeforeAcceptance(store, candidate, options),
+      (candidate) => validateCommandBeforeAcceptance(store, candidate, options, evidenceJobs),
       options.signal,
       undefined,
       options.returnAfterControllerSubmission === true,
@@ -511,7 +613,13 @@ async function reconcilePendingControllerTurn(
     );
   }
   const state = store.state;
-  const observation = observationFor(state, pending.round, pending.requestId);
+  const evidenceJobs = await controllerEvidenceJobs(store);
+  const observation = observationFor(
+    state,
+    pending.round,
+    pending.requestId,
+    evidenceJobs,
+  );
   const recoveryInput = {
     runId: state.runId,
     round: pending.round,
@@ -543,7 +651,7 @@ async function reconcilePendingControllerTurn(
       attempt: pending.repairAttempt,
       ...(pending.manualSendConfirmed ? { manualSendConfirmed: true } : {}),
     },
-    (candidate) => validateCommandBeforeAcceptance(store, candidate, options),
+    (candidate) => validateCommandBeforeAcceptance(store, candidate, options, evidenceJobs),
     options.signal,
     expectedConversationUrl,
     options.returnAfterControllerSubmission === true,
@@ -594,12 +702,16 @@ async function createControllerRunStore(
     );
   }
   const maxRounds = validatedMaxRounds(options.maxRounds);
+  const archiveControllerConversationOnComplete = validatedArchivePolicy(
+    options.archiveControllerConversationOnComplete,
+  );
   const initial = initialRunState(
     id,
     options.request,
     executor,
     maxRounds,
     allowProcessExecution,
+    archiveControllerConversationOnComplete,
   );
   const home = options.home ?? defaultCueLineHome();
   const store = await RunStore.createWithInitialEvent({
@@ -613,6 +725,9 @@ async function createControllerRunStore(
     executor,
     ...(allowProcessExecution ? { allow_process_execution: true } : {}),
     ...(options.maxRounds === undefined ? {} : { max_rounds: maxRounds }),
+    ...(archiveControllerConversationOnComplete
+      ? { archive_controller_conversation_on_complete: true }
+      : {}),
   });
   await store.snapshot();
   return store;
@@ -625,7 +740,7 @@ export async function createControllerRun(
 }
 
 export async function runControllerLoop(options: ControllerLoopOptions): Promise<CueLineResult> {
-  validatedLimits(options);
+  options = validatedRuntimeOptions(options);
   const store = await createControllerRunStore(options);
   const now = options.now ?? (() => new Date());
   const id = store.runId;
@@ -676,7 +791,7 @@ export async function runControllerLoop(options: ControllerLoopOptions): Promise
 export async function continueControllerLoop(
   options: ContinueControllerLoopOptions,
 ): Promise<CueLineResult> {
-  validatedLimits(options);
+  options = validatedRuntimeOptions(options);
   const now = options.now ?? (() => new Date());
   const home = options.home ?? defaultCueLineHome();
   const initialStore = await RunStore.load({
@@ -691,13 +806,25 @@ export async function continueControllerLoop(
     throw new CueLineError("RUN_NOT_FOUND", `No persisted CueLine run '${options.runId}' was found.`);
   }
   if (
+    options.archiveControllerConversationOnComplete !== undefined &&
+    options.archiveControllerConversationOnComplete !==
+      (initialState.controllerConversationArchive?.enabled ?? false)
+  ) {
+    throw new CueLineError(
+      "CONTROLLER_CONVERSATION_ARCHIVE_POLICY_MISMATCH",
+      `Run '${options.runId}' has a different durable controller conversation archive policy.`,
+    );
+  }
+  const recoverControllerArchive = controllerConversationArchiveNeedsRecovery(initialState);
+  if (
     initialState.status === "complete" ||
     initialState.status === "blocked" ||
     initialState.status === "cancelled"
   ) {
-    return resultFromState(initialState);
+    if (!recoverControllerArchive) return resultFromState(initialState);
   }
   if (
+    !recoverControllerArchive &&
     initialState.executor === "process" &&
     (!initialState.allowProcessExecution || options.allowProcessExecution !== true)
   ) {
@@ -717,7 +844,17 @@ export async function continueControllerLoop(
     initialRuntime,
     initialCancellation,
   );
-  if (!recoverStaleObserver) {
+  if (
+    recoverControllerArchive &&
+    initialRuntime.ownership !== "missing" &&
+    initialRuntime.ownership !== "released"
+  ) {
+    throw new CueLineError(
+      "RUN_OWNERSHIP_UNVERIFIED",
+      "The completed run's archive recovery requires a missing or released runtime owner.",
+    );
+  }
+  if (!recoverStaleObserver && !recoverControllerArchive) {
     assertRunCanContinue(initialState, initialRuntime, initialCancellation);
   }
   const lease = recoverStaleObserver
@@ -762,7 +899,11 @@ export async function continueControllerLoop(
       state.status === "blocked" ||
       state.status === "cancelled"
     ) {
-      return resultFromState(state);
+      assertConversationUrlCompatible(state, options.conversationUrl);
+      if (controllerConversationArchiveNeedsRecovery(state)) {
+        await settleControllerConversationArchive(store, options);
+      }
+      return resultFromState(store.state);
     }
     assertConversationUrlCompatible(state, options.conversationUrl);
     const cancellationObservation = await readCancellationObservation(home, options.runId);

@@ -3,6 +3,11 @@ import { readFile } from "node:fs/promises";
 import { CueLineError } from "../core/errors.js";
 import type { LaneConfig, RouteCandidate, RoutingConfig } from "./types.js";
 
+const CONFIG_FIELDS = new Set(["$schema", "version", "lanes"]);
+const LANE_FIELDS = new Set(["enabled", "candidates"]);
+const CANDIDATE_FIELDS = new Set(["id", "argv", "task_input", "enabled"]);
+const LANE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -11,10 +16,26 @@ function invalid(message: string, details?: unknown): CueLineError {
   return new CueLineError("ROUTING_CONFIG_INVALID", message, { details });
 }
 
+function assertKnownFields(
+  value: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  scope: string,
+  details: Record<string, unknown> = {},
+): void {
+  const field = Object.keys(value).find((candidate) => !allowed.has(candidate));
+  if (field !== undefined) {
+    throw invalid(`${scope} contains unsupported field '${field}'`, {
+      ...details,
+      field,
+    });
+  }
+}
+
 function parseCandidate(value: unknown, lane: string, index: number): RouteCandidate {
   if (!isRecord(value)) {
     throw invalid("route candidate must be an object", { lane, index });
   }
+  assertKnownFields(value, CANDIDATE_FIELDS, "route candidate", { lane, index });
 
   const { id, argv, task_input, enabled } = value;
   if (typeof id !== "string" || id.trim().length === 0) {
@@ -42,6 +63,7 @@ function parseLane(value: unknown, lane: string): LaneConfig {
   if (!isRecord(value)) {
     throw invalid("lane configuration must be an object", { lane });
   }
+  assertKnownFields(value, LANE_FIELDS, "lane configuration", { lane });
 
   const { enabled, candidates } = value;
   if (typeof enabled !== "boolean") {
@@ -67,6 +89,12 @@ export function parseRoutingConfig(value: unknown): RoutingConfig {
   if (!isRecord(value)) {
     throw invalid("routing configuration must be an object");
   }
+  assertKnownFields(value, CONFIG_FIELDS, "routing configuration");
+  if (value.$schema !== undefined && typeof value.$schema !== "string") {
+    throw invalid("routing configuration $schema must be a string", {
+      field: "$schema",
+    });
+  }
   if (value.version !== 1) {
     throw invalid("routing configuration version must be 1", { version: value.version });
   }
@@ -76,8 +104,8 @@ export function parseRoutingConfig(value: unknown): RoutingConfig {
 
   const lanes: Record<string, LaneConfig> = {};
   for (const [lane, laneValue] of Object.entries(value.lanes)) {
-    if (lane.trim().length === 0) {
-      throw invalid("lane name must be non-empty");
+    if (!LANE_PATTERN.test(lane)) {
+      throw invalid("lane name contains unsupported characters", { lane });
     }
     lanes[lane] = parseLane(laneValue, lane);
   }

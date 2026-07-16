@@ -31,6 +31,135 @@ test("runtime fence authority changes when a generation commits from legacy to e
   );
 });
 
+test("malformed runtime lease identity and timestamps are invalid, never stale", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-invalid-lease-record-"));
+  const runId = "run_invalid_lease_record";
+  const paths = runPaths(home, runId);
+  await mkdir(paths.runDir, { recursive: true });
+  const timestamp = "2026-07-15T00:00:00.000Z";
+  const valid = {
+    protocol: "cueline/runtime-lease/0.1",
+    run_id: runId,
+    owner_id: "durable-owner",
+    pid: "shared-runtime",
+    state: "active",
+    claimed_at: timestamp,
+    heartbeat_at: timestamp,
+  };
+  const malformed = [
+    { ...valid, owner_id: "" },
+    { ...valid, owner_id: " durable-owner " },
+    { ...valid, pid: "" },
+    { ...valid, pid: " shared-runtime " },
+    { ...valid, claimed_at: "not-a-time" },
+    { ...valid, claimed_at: "2026-07-15" },
+    { ...valid, heartbeat_at: "not-a-time" },
+    { ...valid, heartbeat_at: "2026-07-15T08:00:00+08:00" },
+    {
+      ...valid,
+      retired_owners: [
+        { owner_id: "old", events_after_sequence: 1, retired_at: "not-a-time" },
+      ],
+    },
+    {
+      ...valid,
+      retired_owners: [
+        {
+          owner_id: "old",
+          events_after_sequence: 1,
+          retired_at: timestamp,
+          extra: true,
+        },
+      ],
+    },
+    { ...valid, state: "released" },
+    { ...valid, state: "released", released_at: "not-a-time" },
+  ];
+
+  for (const record of malformed) {
+    await writeFile(paths.runtimeLease, `${JSON.stringify(record)}\n`, "utf8");
+    assert.equal(
+      (await readRuntimeLease(home, runId, { now: () => new Date(timestamp) })).ownership,
+      "invalid",
+    );
+  }
+});
+
+test("a malformed runtime fence timestamp cannot authorize its epoch lease", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-invalid-fence-record-"));
+  const runId = "run_invalid_fence_record";
+  const paths = runPaths(home, runId);
+  const generation = "invalid-fence-generation";
+  const timestamp = "2026-07-15T00:00:00.000Z";
+  await mkdir(`${paths.runtimeLease}.epochs`, { recursive: true });
+  await writeFile(
+    `${paths.runtimeLease}.fence`,
+    `${JSON.stringify({
+      protocol: "cueline/runtime-fence/0.1",
+      run_id: runId,
+      generation,
+      created_at: "not-a-time",
+      lease_source: "epoch",
+    })}\n`,
+    "utf8",
+  );
+  await writeFile(
+    `${paths.runtimeLease}.epochs/${generation}.json`,
+    `${JSON.stringify({
+      protocol: "cueline/runtime-lease/0.1",
+      run_id: runId,
+      owner_id: "epoch-owner",
+      pid: "shared-runtime",
+      state: "active",
+      claimed_at: timestamp,
+      heartbeat_at: timestamp,
+    })}\n`,
+    "utf8",
+  );
+
+  assert.equal(
+    (await readRuntimeLease(home, runId, { now: () => new Date(timestamp) })).ownership,
+    "invalid",
+  );
+});
+
+test("a runtime fence generation cannot escape the epoch directory", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-fence-path-escape-"));
+  const runId = "run_fence_path_escape";
+  const paths = runPaths(home, runId);
+  const timestamp = "2026-07-15T00:00:00.000Z";
+  await mkdir(`${paths.runtimeLease}.epochs`, { recursive: true });
+  await writeFile(
+    `${paths.runtimeLease}.fence`,
+    `${JSON.stringify({
+      protocol: "cueline/runtime-fence/0.1",
+      run_id: runId,
+      generation: "../escaped",
+      created_at: timestamp,
+      lease_source: "epoch",
+    })}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(paths.runDir, "escaped.json"),
+    `${JSON.stringify({
+      protocol: "cueline/runtime-lease/0.1",
+      run_id: runId,
+      owner_id: "outside-epoch-owner",
+      pid: "shared-runtime",
+      state: "active",
+      claimed_at: timestamp,
+      heartbeat_at: timestamp,
+    })}\n`,
+    "utf8",
+  );
+
+  assert.equal(
+    (await readRuntimeLease(home, runId, { now: () => new Date(timestamp) })).ownership,
+    "invalid",
+  );
+});
+
 async function ageRuntimeMutationLock(home: string, runId: string): Promise<void> {
   const lockDirectory = `${runPaths(home, runId).runtimeLease}.lock`;
   const entries = await readdir(lockDirectory);
@@ -41,6 +170,29 @@ async function ageRuntimeMutationLock(home: string, runId: string): Promise<void
   }
   for (const entry of entries) await utimes(`${lockDirectory}/${entry}`, old, old);
 }
+
+test("runtime lease rejects unsafe heartbeat timer values before creating ownership", async () => {
+  for (const heartbeatIntervalMs of [
+    0,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    2_147_483_648,
+  ]) {
+    const home = await mkdtemp(path.join(tmpdir(), "cueline-invalid-heartbeat-"));
+    const runId = "run_invalid_heartbeat";
+    await mkdir(runPaths(home, runId).runDir, { recursive: true });
+
+    await assert.rejects(
+      RuntimeLease.claim({ home, runId, heartbeatIntervalMs }),
+      (error: unknown) =>
+        error instanceof CueLineError &&
+        error.code === "RUNTIME_HEARTBEAT_INTERVAL_INVALID",
+      String(heartbeatIntervalMs),
+    );
+    assert.equal((await readRuntimeLease(home, runId)).ownership, "missing");
+  }
+});
 
 test("runtime lease proves active ownership, rejects a second owner, and exposes staleness", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "cueline-lease-"));
@@ -284,6 +436,51 @@ test("explicit stale takeover atomically replaces a non-numeric live-host owner 
   assert.equal(replacement.ownership, "active");
   assert.notEqual(replacement.ownerId, "shared-node-repl-owner");
   await lease.release();
+});
+
+test("invalid takeover heartbeat timing cannot append intent or replace the stale owner", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-invalid-takeover-timer-"));
+  const runId = "run_invalid_takeover_timer";
+  const paths = runPaths(home, runId);
+  await mkdir(paths.runDir, { recursive: true });
+  const heartbeatAt = "2026-07-15T00:00:00.000Z";
+  await writeFile(
+    paths.runtimeLease,
+    `${JSON.stringify({
+      protocol: "cueline/runtime-lease/0.1",
+      run_id: runId,
+      owner_id: "stale-owner",
+      pid: "remote-owner",
+      state: "active",
+      claimed_at: heartbeatAt,
+      heartbeat_at: heartbeatAt,
+    })}\n`,
+    "utf8",
+  );
+
+  await assert.rejects(
+    RuntimeLease.takeoverStale({
+      home,
+      runId,
+      expectedOwnerId: "stale-owner",
+      expectedHeartbeatAt: heartbeatAt,
+      now: () => new Date("2026-07-15T00:01:00.000Z"),
+      heartbeatIntervalMs: 2_147_483_648,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "RUNTIME_HEARTBEAT_INTERVAL_INVALID",
+  );
+
+  const observation = await readRuntimeLease(home, runId, {
+    now: () => new Date("2026-07-15T00:01:00.000Z"),
+  });
+  assert.equal(observation.ownership, "stale");
+  assert.equal(observation.ownerId, "stale-owner");
+  assert.equal(
+    (await readdir(paths.runDir)).some((entry) => entry.includes("takeover-intents")),
+    false,
+  );
 });
 
 test("explicit stale takeover refuses an active heartbeat and has one atomic concurrent winner", async () => {

@@ -97,6 +97,99 @@ test("rejects runner_id with an explicit runner field correction", () => {
   );
 });
 
+test("rejects prompt in a dispatch job with an explicit task field correction", () => {
+  const command = {
+    ...base("dispatch"),
+    jobs: [
+      {
+        job_key: "review",
+        lane: "triage",
+        mode: "advise",
+        prompt: "one",
+      },
+    ],
+  };
+  assert.throws(
+    () => parseControllerCommand(envelope(command), expected),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROL_JOB_FIELD_UNKNOWN" &&
+      /prompt.*task/.test(error.message),
+  );
+});
+
+test("rejects unknown top-level command fields instead of silently dropping them", () => {
+  assert.throws(
+    () =>
+      parseControllerCommand(
+        envelope({ ...base("wait"), operator_hint: "silently ignored before" }),
+        expected,
+      ),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROL_COMMAND_FIELD_UNKNOWN" &&
+      /operator_hint/.test(error.message),
+  );
+});
+
+test("rejects known fields that do not belong to the selected action", () => {
+  const cases = [
+    { value: { ...base("dispatch"), jobs: [], wait_ms: 1 }, field: "wait_ms" },
+    { value: { ...base("wait"), jobs: [] }, field: "jobs" },
+    { value: { ...base("inspect"), wait_ms: 1 }, field: "wait_ms" },
+    {
+      value: { ...base("complete"), final_delivery_text: "done", reason: "extra" },
+      field: "reason",
+    },
+    { value: { ...base("blocked"), reason: "blocked", job_ids: ["job_1"] }, field: "job_ids" },
+  ];
+
+  for (const { value, field } of cases) {
+    assert.throws(
+      () => parseControllerCommand(envelope(value), expected),
+      (error: unknown) =>
+        error instanceof CueLineError &&
+        error.code === "CONTROL_COMMAND_FIELD_INVALID_FOR_ACTION" &&
+        error.message.includes(field) &&
+        error.message.includes(String((value as Record<string, unknown>).action)),
+    );
+  }
+});
+
+test("keeps the exact allowed optional fields for wait, inspect, and blocked", () => {
+  assert.deepEqual(
+    parseControllerCommand(
+      envelope({ ...base("wait"), job_ids: ["job_1"], wait_ms: 5_000 }),
+      expected,
+    ),
+    { ...base("wait"), job_ids: ["job_1"], wait_ms: 5_000 },
+  );
+  assert.deepEqual(
+    parseControllerCommand(envelope({ ...base("inspect"), job_ids: ["job_1"] }), expected),
+    { ...base("inspect"), job_ids: ["job_1"] },
+  );
+  assert.deepEqual(
+    parseControllerCommand(
+      envelope({ ...base("blocked"), reason: "why", final_delivery_text: "stop" }),
+      expected,
+    ),
+    { ...base("blocked"), reason: "why", final_delivery_text: "stop" },
+  );
+});
+
+test("rejects empty, duplicate, or malformed job_ids instead of accepting a no-op inspect", () => {
+  for (const jobIds of [[], ["job_1", "job_1"], ["   "], ["../job_1"]]) {
+    assert.throws(
+      () =>
+        parseControllerCommand(
+          envelope({ ...base("inspect"), job_ids: jobIds }),
+          expected,
+        ),
+      hasCode("CONTROL_COMMAND_INVALID"),
+    );
+  }
+});
+
 test("parses only the last complete valid dispatch envelope", () => {
   const stale = envelope({ ...base("wait"), round: 1 });
   const valid = envelope({
@@ -131,4 +224,136 @@ test("parses a complete command with final delivery text", () => {
     ...base("complete"),
     final_delivery_text: "CUELINE_OK",
   });
+});
+
+test("parses a single-job inspect evidence offset", () => {
+  const evidenceHash = "a".repeat(64);
+  const parsed = parseControllerCommand(
+    envelope({
+      ...base("inspect"),
+      job_ids: ["job_abc"],
+      evidence_offset: 12_345,
+      evidence_hash: evidenceHash,
+    }),
+    expected,
+  );
+  assert.deepEqual(parsed, {
+    ...base("inspect"),
+    job_ids: ["job_abc"],
+    evidence_offset: 12_345,
+    evidence_hash: evidenceHash,
+  });
+});
+
+test("rejects unsafe or ambiguous inspect evidence offsets", () => {
+  for (const command of [
+    { ...base("inspect"), evidence_offset: 1, evidence_hash: "a".repeat(64) },
+    {
+      ...base("inspect"),
+      job_ids: ["job_a", "job_b"],
+      evidence_offset: 1,
+      evidence_hash: "a".repeat(64),
+    },
+    {
+      ...base("inspect"),
+      job_ids: ["job_a"],
+      evidence_offset: -1,
+      evidence_hash: "a".repeat(64),
+    },
+    {
+      ...base("inspect"),
+      job_ids: ["job_a"],
+      evidence_offset: 1.5,
+      evidence_hash: "a".repeat(64),
+    },
+    {
+      ...base("inspect"),
+      job_ids: ["job_a"],
+      evidence_offset: 1_000_000_001,
+      evidence_hash: "a".repeat(64),
+    },
+    { ...base("inspect"), job_ids: ["job_a"], evidence_offset: 1 },
+    { ...base("inspect"), job_ids: ["job_a"], evidence_hash: "a".repeat(64) },
+    {
+      ...base("inspect"),
+      job_ids: ["job_a"],
+      evidence_offset: 1,
+      evidence_hash: "not-a-sha256",
+    },
+  ]) {
+    assert.throws(
+      () => parseControllerCommand(envelope(command), expected),
+      hasCode("CONTROL_COMMAND_INVALID"),
+    );
+  }
+  assert.throws(
+    () =>
+      parseControllerCommand(
+        envelope({
+          ...base("wait"),
+          job_ids: ["job_a"],
+          evidence_offset: 1,
+          evidence_hash: "a".repeat(64),
+        }),
+        expected,
+    ),
+    hasCode("CONTROL_COMMAND_FIELD_INVALID_FOR_ACTION"),
+  );
+});
+
+test("rejects a control envelope above the protocol size budget", () => {
+  const command = { ...base("blocked"), reason: "x".repeat(131_072) };
+  assert.throws(
+    () => parseControllerCommand(envelope(command), expected),
+    hasCode("CONTROL_ENVELOPE_TOO_LARGE"),
+  );
+});
+
+test("rejects a dispatch that exceeds the per-command job limit", () => {
+  const command = {
+    ...base("dispatch"),
+    jobs: Array.from({ length: 65 }, (_, index) => ({
+      job_key: `review_${index}`,
+      lane: "triage",
+      mode: "advise",
+      task: `Review item ${index}`,
+    })),
+  };
+  assert.throws(
+    () => parseControllerCommand(envelope(command), expected),
+    hasCode("CONTROL_DISPATCH_JOBS_LIMIT_EXCEEDED"),
+  );
+});
+
+test("rejects wait and inspect commands above the job reference limit", () => {
+  const jobIds = Array.from({ length: 257 }, (_, index) => `job_${index}`);
+  for (const action of ["wait", "inspect"]) {
+    assert.throws(
+      () => parseControllerCommand(envelope({ ...base(action), job_ids: jobIds }), expected),
+      hasCode("CONTROL_JOB_IDS_LIMIT_EXCEEDED"),
+    );
+  }
+});
+
+test("accepts controller commands exactly at the documented resource limits", () => {
+  const jobs = Array.from({ length: 64 }, (_, index) => ({
+    job_key: `review_${index}`,
+    lane: "triage",
+    mode: "advise",
+    task: `Review item ${index}`,
+  }));
+  const dispatch = parseControllerCommand(
+    envelope({ ...base("dispatch"), jobs }),
+    expected,
+  );
+  assert.equal(dispatch.action, "dispatch");
+  if (dispatch.action === "dispatch") assert.equal(dispatch.jobs.length, 64);
+
+  const jobIds = Array.from({ length: 256 }, (_, index) => `job_${index}`);
+  const inspect = parseControllerCommand(
+    envelope({ ...base("inspect"), job_ids: jobIds }),
+    expected,
+  );
+  assert.equal(inspect.action, "inspect");
+  if (inspect.action === "inspect") assert.equal(inspect.job_ids?.length, 256);
 });

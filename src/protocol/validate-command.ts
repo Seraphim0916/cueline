@@ -1,8 +1,13 @@
 import { CueLineError } from "../core/errors.js";
 import {
+  MAX_CONTROLLER_DISPATCH_JOBS,
+  MAX_CONTROLLER_JOB_IDS,
+} from "./limits.js";
+import {
   CUELINE_PROTOCOL,
   type BlockedCommand,
   type CompleteCommand,
+  type ControllerAction,
   type ControllerCommand,
   type ControllerJobSpec,
   type DispatchCommand,
@@ -13,6 +18,21 @@ import {
 
 const JOB_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const LANE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const JOB_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const COMMON_COMMAND_FIELDS = ["protocol", "run_id", "round", "request_id", "action"] as const;
+const ACTION_COMMAND_FIELDS = new Map<ControllerAction, ReadonlySet<string>>([
+  ["dispatch", new Set([...COMMON_COMMAND_FIELDS, "jobs"])],
+  ["wait", new Set([...COMMON_COMMAND_FIELDS, "job_ids", "wait_ms"])],
+  [
+    "inspect",
+    new Set([...COMMON_COMMAND_FIELDS, "job_ids", "evidence_offset", "evidence_hash"]),
+  ],
+  ["complete", new Set([...COMMON_COMMAND_FIELDS, "final_delivery_text"])],
+  ["blocked", new Set([...COMMON_COMMAND_FIELDS, "reason", "final_delivery_text"])],
+]);
+const ALL_COMMAND_FIELDS = new Set(
+  [...ACTION_COMMAND_FIELDS.values()].flatMap((fields) => [...fields]),
+);
 const JOB_FIELDS = new Set([
   "job_key",
   "lane",
@@ -31,6 +51,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function fail(message: string, details?: unknown): never {
   throw new CueLineError("CONTROL_COMMAND_INVALID", message, { details });
+}
+
+function isControllerAction(value: string): value is ControllerAction {
+  return ACTION_COMMAND_FIELDS.has(value as ControllerAction);
+}
+
+function assertCommandFields(record: Record<string, unknown>, action: ControllerAction): void {
+  const unknownField = Object.keys(record).find((key) => !ALL_COMMAND_FIELDS.has(key));
+  if (unknownField !== undefined) {
+    throw new CueLineError(
+      "CONTROL_COMMAND_FIELD_UNKNOWN",
+      `Unsupported controller command field '${unknownField}'.`,
+      { details: { field: unknownField, action } },
+    );
+  }
+  const allowed = ACTION_COMMAND_FIELDS.get(action)!;
+  const invalidField = Object.keys(record).find((key) => !allowed.has(key));
+  if (invalidField !== undefined) {
+    throw new CueLineError(
+      "CONTROL_COMMAND_FIELD_INVALID_FOR_ACTION",
+      `Controller command field '${invalidField}' is not valid for action '${action}'.`,
+      { details: { field: invalidField, action } },
+    );
+  }
 }
 
 function requiredString(record: Record<string, unknown>, key: string): string {
@@ -78,13 +122,38 @@ function optionalPositiveInteger(
   return value as number;
 }
 
+function optionalNonNegativeInteger(
+  record: Record<string, unknown>,
+  key: string,
+  maximum: number,
+): number | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > maximum) {
+    return fail(`'${key}' must be an integer from 0 to ${maximum}.`, { key });
+  }
+  return value as number;
+}
+
 function optionalStringArray(record: Record<string, unknown>, key: string): string[] | undefined {
   const value = record[key];
   if (value === undefined) {
     return undefined;
   }
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item === "")) {
-    return fail(`'${key}' must be an array of non-empty strings.`, { key });
+  if (Array.isArray(value) && value.length > MAX_CONTROLLER_JOB_IDS) {
+    throw new CueLineError(
+      "CONTROL_JOB_IDS_LIMIT_EXCEEDED",
+      `'${key}' may contain at most ${MAX_CONTROLLER_JOB_IDS} job IDs.`,
+      { details: { key, maximum_items: MAX_CONTROLLER_JOB_IDS } },
+    );
+  }
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.some((item) => typeof item !== "string" || !JOB_ID_PATTERN.test(item)) ||
+    new Set(value).size !== value.length
+  ) {
+    return fail(`'${key}' must be a non-empty array of unique job IDs.`, { key });
   }
   return [...value] as string[];
 }
@@ -99,7 +168,9 @@ function validateJob(value: unknown): ControllerJobSpec {
     const correction =
       unknownField === "runner_id"
         ? " Use 'runner'; 'runner_id' is not part of the CueLine controller contract."
-        : "";
+        : unknownField === "prompt"
+          ? " Use 'task'; 'prompt' is not part of a CueLine dispatch job."
+          : "";
     throw new CueLineError(
       "CONTROL_JOB_FIELD_UNKNOWN",
       `Unsupported dispatch job field '${unknownField}'.${correction}`,
@@ -180,6 +251,10 @@ export function validateControllerCommand(
   validateIdentity(value, expected);
 
   const action = requiredString(value, "action");
+  if (!isControllerAction(action)) {
+    return fail(`Unsupported controller action '${action}'.`, { action });
+  }
+  assertCommandFields(value, action);
   const base = {
     protocol: CUELINE_PROTOCOL,
     run_id: expected.runId,
@@ -190,6 +265,13 @@ export function validateControllerCommand(
   if (action === "dispatch") {
     if (!Array.isArray(value.jobs) || value.jobs.length === 0) {
       return fail("A dispatch command requires at least one job.");
+    }
+    if (value.jobs.length > MAX_CONTROLLER_DISPATCH_JOBS) {
+      throw new CueLineError(
+        "CONTROL_DISPATCH_JOBS_LIMIT_EXCEEDED",
+        `A dispatch command may contain at most ${MAX_CONTROLLER_DISPATCH_JOBS} jobs.`,
+        { details: { maximum_items: MAX_CONTROLLER_DISPATCH_JOBS } },
+      );
     }
     const jobs = value.jobs.map(validateJob);
     const seen = new Set<string>();
@@ -218,7 +300,26 @@ export function validateControllerCommand(
   if (action === "inspect") {
     const command: InspectCommand = { ...base, action };
     const jobIds = optionalStringArray(value, "job_ids");
+    const evidenceOffset = optionalNonNegativeInteger(value, "evidence_offset", 1_000_000_000);
+    const evidenceHash = optionalString(value, "evidence_hash");
+    if ((evidenceOffset === undefined) !== (evidenceHash === undefined)) {
+      return fail("'evidence_offset' and 'evidence_hash' must be provided together.", {
+        field: "evidence_offset",
+      });
+    }
+    if (evidenceOffset !== undefined && jobIds?.length !== 1) {
+      return fail("Paginated evidence requires exactly one explicit 'job_ids' entry.", {
+        field: "job_ids",
+      });
+    }
+    if (evidenceHash !== undefined && !/^[0-9a-f]{64}$/.test(evidenceHash)) {
+      return fail("'evidence_hash' must be the exact lowercase SHA-256 from evidence_window.", {
+        field: "evidence_hash",
+      });
+    }
     if (jobIds !== undefined) command.job_ids = jobIds;
+    if (evidenceOffset !== undefined) command.evidence_offset = evidenceOffset;
+    if (evidenceHash !== undefined) command.evidence_hash = evidenceHash;
     return command;
   }
 

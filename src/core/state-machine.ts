@@ -1,9 +1,15 @@
+import path from "node:path";
+
 import type {
   ControllerCommand,
   ControllerJobSpec,
   JobObservation,
 } from "../protocol/types.js";
 import type { RunEvent } from "../state/event-log.js";
+import {
+  isExactChatGptConversationUrl,
+  sameChatGptConversationUrl,
+} from "./conversation-url.js";
 import { jobSpecHash } from "./ids.js";
 
 export type CueLineRunStatus = "running" | "complete" | "blocked" | "cancelled" | "failed";
@@ -31,6 +37,24 @@ export type ControllerSubmissionState =
   | "submitting"
   | "possibly_sent"
   | "submitted";
+
+export type ControllerConversationArchiveStatus =
+  | "disabled"
+  | "waiting_for_completion"
+  | "pending"
+  | "started"
+  | "archived"
+  | "ambiguous"
+  | "failed";
+
+export interface ControllerConversationArchiveState {
+  enabled: boolean;
+  status: ControllerConversationArchiveStatus;
+  code: string | null;
+  message: string | null;
+  proof: "conversation_url_changed" | null;
+  postActionUrl: string | null;
+}
 
 export interface PendingControllerTurn {
   round: number;
@@ -61,12 +85,19 @@ export interface CallerWorkClaim {
   callerId: string;
   taskHash: string;
   workdir: string;
+  workdirIdentity?: CallerWorkdirIdentity;
   fencingToken: number;
   claimedAt: string;
   heartbeatAt: string;
   expiresAt: string;
   ttlMs: number;
   startedAt: string | null;
+}
+
+export interface CallerWorkdirIdentity {
+  resolvedPath: string;
+  device: string;
+  inode: string;
 }
 
 export interface CallerWorkState {
@@ -107,12 +138,17 @@ export interface CueLineRunState {
   status: CueLineRunStatus;
   round: number;
   conversationUrl: string | null;
+  controllerConversationArchive: ControllerConversationArchiveState;
   pendingControllerTurns: PendingControllerTurn[];
   abandonedControllerTurns: PendingControllerTurn[];
   lastFailure: RunFailureEvidence | null;
   jobs: Record<string, StoredJob>;
   /** Job IDs explicitly requested by the most recently accepted inspect command. */
   inspectionJobIds: string[];
+  /** Raw-character evidence offset for an inspect command targeting exactly one job. */
+  inspectionEvidenceOffset?: number;
+  /** Content identity that fences a paginated inspect against output replacement. */
+  inspectionEvidenceHash?: string | null;
   notices: string[];
   commandHashes: string[];
   pendingCommandExecution: PendingCommandExecution | null;
@@ -132,6 +168,28 @@ function validCallerId(value: unknown): value is string {
 
 function validIsoTimestamp(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function validWorkdirIdentity(value: unknown): value is CallerWorkdirIdentity {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.resolvedPath === "string" &&
+    path.isAbsolute(record.resolvedPath) &&
+    typeof record.device === "string" &&
+    /^\d+$/.test(record.device) &&
+    typeof record.inode === "string" &&
+    /^\d+$/.test(record.inode)
+  );
+}
+
+function sameWorkdirIdentity(value: unknown, expected: CallerWorkdirIdentity): boolean {
+  return (
+    validWorkdirIdentity(value) &&
+    value.resolvedPath === expected.resolvedPath &&
+    value.device === expected.device &&
+    value.inode === expected.inode
+  );
 }
 
 function validClaimWindow(
@@ -158,27 +216,37 @@ function recordPayload(event: RunEvent): Record<string, unknown> {
   return event.payload as Record<string, unknown>;
 }
 
-function normalizedConversationUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return value;
-  }
-}
-
 function preserveCanonicalConversationUrl(
   canonical: string | null,
   candidate: unknown,
 ): string | null {
-  if (typeof candidate !== "string" || candidate === "") return canonical;
+  if (!isExactChatGptConversationUrl(candidate)) return canonical;
   if (
     canonical !== null &&
-    normalizedConversationUrl(candidate) !== normalizedConversationUrl(canonical)
+    !sameChatGptConversationUrl(candidate, canonical)
   ) {
     return canonical;
   }
   return canonical ?? candidate;
+}
+
+function initialControllerConversationArchive(
+  enabled: boolean,
+): ControllerConversationArchiveState {
+  return {
+    enabled,
+    status: enabled ? "waiting_for_completion" : "disabled",
+    code: null,
+    message: null,
+    proof: null,
+    postActionUrl: null,
+  };
+}
+
+function controllerConversationArchive(
+  state: CueLineRunState,
+): ControllerConversationArchiveState {
+  return state.controllerConversationArchive ?? initialControllerConversationArchive(false);
 }
 
 export function initialRunState(
@@ -187,6 +255,7 @@ export function initialRunState(
   executor: CueLineExecutor = "caller",
   maxRounds = DEFAULT_MAX_ROUNDS,
   allowProcessExecution = false,
+  archiveControllerConversationOnComplete = false,
 ): CueLineRunState {
   return {
     runId,
@@ -197,11 +266,16 @@ export function initialRunState(
     status: "running",
     round: 0,
     conversationUrl: null,
+    controllerConversationArchive: initialControllerConversationArchive(
+      archiveControllerConversationOnComplete,
+    ),
     pendingControllerTurns: [],
     abandonedControllerTurns: [],
     lastFailure: null,
     jobs: {},
     inspectionJobIds: [],
+    inspectionEvidenceOffset: 0,
+    inspectionEvidenceHash: null,
     notices: [],
     commandHashes: [],
     pendingCommandExecution: null,
@@ -226,6 +300,7 @@ export function isControllerTurnProvenUnsent(
 export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLineRunState {
   const payload = recordPayload(event);
   if (event.type === "run_created" && typeof payload.request === "string") {
+    const archiveEnabled = payload.archive_controller_conversation_on_complete === true;
     return {
       ...state,
       request: payload.request,
@@ -241,6 +316,7 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
         payload.max_rounds >= 1
           ? payload.max_rounds
           : state.maxRounds ?? DEFAULT_MAX_ROUNDS,
+      controllerConversationArchive: initialControllerConversationArchive(archiveEnabled),
     };
   }
   if (event.type === "run_resumed") {
@@ -449,9 +525,23 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           ? command.job_ids.filter((value): value is string => typeof value === "string")
           : Object.keys(state.jobs)
         : [];
+    const inspectionEvidenceOffset =
+      command.action === "inspect" &&
+      Number.isSafeInteger(command.evidence_offset) &&
+      (command.evidence_offset as number) >= 0
+        ? (command.evidence_offset as number)
+        : 0;
+    const inspectionEvidenceHash =
+      command.action === "inspect" &&
+      typeof command.evidence_hash === "string" &&
+      /^[0-9a-f]{64}$/.test(command.evidence_hash)
+        ? command.evidence_hash
+        : null;
     return {
       ...state,
       inspectionJobIds,
+      inspectionEvidenceOffset,
+      inspectionEvidenceHash,
       commandHashes: [...state.commandHashes, payload.command_hash],
       pendingCommandExecution:
         typeof payload.command === "object" &&
@@ -516,6 +606,8 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       record.taskHash !== jobSpecHash(existing.spec) ||
       typeof record.workdir !== "string" ||
       record.workdir !== existing.spec.workdir ||
+      (record.workdirIdentity !== undefined &&
+        !validWorkdirIdentity(record.workdirIdentity)) ||
       !Number.isSafeInteger(record.fencingToken) ||
       record.fencingToken !== (existing.callerWork?.nextFencingToken ?? 0) + 1 ||
       !validIsoTimestamp(record.claimedAt) ||
@@ -558,7 +650,10 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       claim.fencingToken !== payload.fencing_token ||
       payload.caller_id !== claim.callerId ||
       (event.type === "caller_work_started" &&
-        (payload.task_hash !== claim.taskHash || payload.workdir !== claim.workdir))
+        (payload.task_hash !== claim.taskHash ||
+          payload.workdir !== claim.workdir ||
+          (claim.workdirIdentity !== undefined &&
+            !sameWorkdirIdentity(payload.workdir_identity, claim.workdirIdentity))))
     ) {
       return state;
     }
@@ -705,6 +800,7 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     };
   }
   if (event.type === "run_completed" && typeof payload.final_delivery_text === "string") {
+    const archive = controllerConversationArchive(state);
     return {
       ...state,
       status: "complete",
@@ -712,6 +808,96 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       abandonedControllerTurns: [],
       pendingCommandExecution: null,
       finalDeliveryText: payload.final_delivery_text,
+      controllerConversationArchive:
+        archive.enabled && archive.status === "waiting_for_completion"
+          ? { ...archive, status: "pending" }
+          : archive,
+    };
+  }
+  if (
+    event.type === "controller_conversation_archive_preflight_failed" &&
+    controllerConversationArchive(state).status === "pending" &&
+    typeof payload.code === "string" &&
+    typeof payload.message === "string"
+  ) {
+    return {
+      ...state,
+      controllerConversationArchive: {
+        ...controllerConversationArchive(state),
+        code: payload.code,
+        message: payload.message,
+      },
+    };
+  }
+  if (
+    event.type === "controller_conversation_archive_started" &&
+    state.status === "complete" &&
+    controllerConversationArchive(state).status === "pending" &&
+    typeof payload.conversation_url === "string" &&
+    state.conversationUrl !== null &&
+    sameChatGptConversationUrl(payload.conversation_url, state.conversationUrl)
+  ) {
+    return {
+      ...state,
+      controllerConversationArchive: {
+        ...controllerConversationArchive(state),
+        status: "started",
+        code: null,
+        message: null,
+      },
+    };
+  }
+  if (
+    event.type === "controller_conversation_archived" &&
+    controllerConversationArchive(state).status === "started" &&
+    typeof payload.conversation_url === "string" &&
+    state.conversationUrl !== null &&
+    sameChatGptConversationUrl(payload.conversation_url, state.conversationUrl) &&
+    payload.proof === "conversation_url_changed" &&
+    typeof payload.post_action_url === "string" &&
+    payload.post_action_url.startsWith("https://chatgpt.com/") &&
+    !sameChatGptConversationUrl(payload.post_action_url, state.conversationUrl)
+  ) {
+    return {
+      ...state,
+      controllerConversationArchive: {
+        ...controllerConversationArchive(state),
+        status: "archived",
+        proof: "conversation_url_changed",
+        postActionUrl: payload.post_action_url,
+      },
+    };
+  }
+  if (
+    event.type === "controller_conversation_archive_ambiguous" &&
+    controllerConversationArchive(state).status === "started" &&
+    typeof payload.code === "string" &&
+    typeof payload.message === "string"
+  ) {
+    return {
+      ...state,
+      controllerConversationArchive: {
+        ...controllerConversationArchive(state),
+        status: "ambiguous",
+        code: payload.code,
+        message: payload.message,
+      },
+    };
+  }
+  if (
+    event.type === "controller_conversation_archive_failed" &&
+    controllerConversationArchive(state).status === "pending" &&
+    typeof payload.code === "string" &&
+    typeof payload.message === "string"
+  ) {
+    return {
+      ...state,
+      controllerConversationArchive: {
+        ...controllerConversationArchive(state),
+        status: "failed",
+        code: payload.code,
+        message: payload.message,
+      },
     };
   }
   if (event.type === "run_blocked" && typeof payload.reason === "string") {

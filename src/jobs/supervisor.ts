@@ -111,15 +111,68 @@ export class JobSupervisor {
     release: () => void,
   ): Promise<JobStatus> {
     let terminal: JobStatus;
-    let progressWrites = Promise.resolve();
+    type ProgressUpdate = Partial<
+      Pick<JobStatus, "pid" | "model" | "provider" | "phase" | "lastProgressAt">
+    >;
+    let pendingProgress: ProgressUpdate | undefined;
+    let progressWriter: Promise<void> | undefined;
+    let progressWriteFailed = false;
+    let progressWriteFailure: unknown;
+    let acceptsProgress = true;
+
+    const ensureProgressWriter = (): Promise<void> => {
+      if (progressWriteFailed) {
+        return Promise.reject(progressWriteFailure);
+      }
+      if (progressWriter !== undefined) {
+        return progressWriter;
+      }
+
+      const writer = (async () => {
+        while (pendingProgress !== undefined) {
+          const update = pendingProgress;
+          pendingProgress = undefined;
+          running.current = { ...running.current, ...update };
+          await this.options.statusStore.write(running.current);
+        }
+      })()
+        .catch((error: unknown) => {
+          progressWriteFailed = true;
+          progressWriteFailure = error;
+          pendingProgress = undefined;
+          throw error;
+        })
+        .finally(() => {
+          if (progressWriter === writer) {
+            progressWriter = undefined;
+          }
+          if (pendingProgress !== undefined && !progressWriteFailed) {
+            void ensureProgressWriter().catch(() => undefined);
+          }
+        });
+      progressWriter = writer;
+      return writer;
+    };
+
     const persistProgress = (
-      update: Partial<Pick<JobStatus, "pid" | "model" | "provider" | "phase" | "lastProgressAt">>,
+      update: ProgressUpdate,
     ): Promise<void> => {
-      progressWrites = progressWrites.then(async () => {
-        running.current = { ...running.current, ...update };
-        await this.options.statusStore.write(running.current);
-      });
-      return progressWrites;
+      if (!acceptsProgress) {
+        return Promise.resolve();
+      }
+      if (progressWriteFailed) {
+        return Promise.reject(progressWriteFailure);
+      }
+      pendingProgress = { ...pendingProgress, ...update };
+      return ensureProgressWriter();
+    };
+    const flushProgress = async (): Promise<void> => {
+      while (pendingProgress !== undefined || progressWriter !== undefined) {
+        await (progressWriter ?? ensureProgressWriter());
+      }
+      if (progressWriteFailed) {
+        throw progressWriteFailure;
+      }
     };
     try {
       const result = await this.runner.run(spec, {
@@ -137,10 +190,12 @@ export class JobSupervisor {
             ...(progress.provider === undefined ? {} : { provider: progress.provider }),
           }),
       });
-      await progressWrites;
+      acceptsProgress = false;
+      await flushProgress();
       terminal = this.withResult(running.current, result);
     } catch (error) {
-      await progressWrites.catch(() => undefined);
+      acceptsProgress = false;
+      await flushProgress().catch(() => undefined);
       const finishedAt = new Date().toISOString();
       terminal = {
         ...running.current,

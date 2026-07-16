@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.7 - 2026-07-16
+
+### Added
+
+- Add read-only operational surfaces for safe handoff and diagnosis: sanitized `runs`, causal `run doctor`, bounded `run watch`, metadata-only `run timeline`, explicit `run handoff`, durable-evidence `run verify`, controller-response `protocol lint`, machine-readable doctor/routing reports, and a non-mutating built-in-browser probe. These surfaces are strict allowlists and do not expose controller prompts, conversation URLs, job tasks/output, caller identities, task hashes, workdirs, runtime owner IDs, or untrusted exception text.
+- Add deterministic pagination for `inspect(job_ids)` evidence. Pro can request the next exact slice using a content hash and character offset without rerunning a job or allowing one job to consume every later evidence window.
+- Add opt-in `archiveControllerConversationOnComplete`. After a durable `complete`, CueLine may archive only the exact bound ChatGPT conversation while Pro is idle. The browser writes a durable checkpoint immediately before one Archive click; proven pre-click failures remain retryable, while a timeout, restart, missing checkpoint, navigation race, or missing proof becomes `ambiguous` and is never clicked again. `blocked` and `cancelled` runs are never archived.
+
+### Fixed
+
+- Require visible, actionable send and stop controls. Hidden, disabled, inert, ancestor-hidden, zero-geometry, localized, or residual controls no longer prove that a prompt can be sent or that Pro is still answering.
+- Refuse ambiguous ChatGPT tab discovery instead of selecting the first match. Exact conversation matching now canonicalizes only benign browser decoration and rejects lookalike hosts, credentials, nested paths, duplicate physical tabs, and navigation races.
+- Accept a fast completed response as post-click proof after a send timeout, while preserving the one-click rule whenever completion cannot be proven. Browser timing options and all Node timer values are validated before they can schedule a spin, overflow, or unsafe delay.
+- Preflight continuation, manual reconciliation, caller-result timestamps, runtime options, routing configuration, process workdirs, and controller commands before any durable mutation or browser/process action. Unknown fields, inherited object properties, invalid lanes/runners, unknown job targets, and action-incompatible fields now fail atomically.
+- Bound controller envelopes, dispatch size, job references, process stdout/stderr, controller event evidence, and accumulated notices. Truncation is explicit and deterministic; full local job evidence remains in the private job status store.
+- Make job status transitions durably atomic and terminally fenced. Concurrent, stale, status-first, event-first, and late-conflicting writers cannot regress or overwrite the first authoritative terminal result; process progress writes are coalesced without losing the final update.
+- Strictly validate persisted job status, runtime lease, retirement, takeover, and cancellation records, including identity, chronology, filenames, unknown fields, canonical timestamps, and authoritative run-event agreement. Corrupt optional evidence degrades diagnosis instead of becoming trusted state.
+- Keep CueLine state directories owner-only and refuse symlink/file substitutions. Caller work claims pin the canonical workdir identity; process jobs bind an absolute workdir before registration, so recovery cannot silently execute in another checkout.
+- Normalize multiline recovery evidence without erasing meaningful indentation, and validate conversation identity consistently across submission, observation, manual reconciliation, and archive recovery.
+- Fence runtime and lane-concurrency option records against caller mutation, and prevent unsafe process fallback or implicit route changes after a job has started.
+- Correct terminal status reporting: a completed, blocked, or cancelled run now reports `continueAllowed: false`; a pending post-completion archive has its own explicit `controller_archive_pending` / `settle_controller_archive` state.
+
+### Verification
+
+- Integrated 42 independently developed branches one at a time, running adversarial review and the full suite after every merge. Final integration passes 454/454 tests, TypeScript typecheck, plugin validation, fake smoke tests, and package-content checks.
+- Verified a disposable real ChatGPT Web Pro run without interruption or `Answer now`: one prompt, exact `complete` delivery `LIVE_CONTROLLER_ARCHIVE_ACCEPTANCE_PASS`, one durable archive-start event, one archived event, zero ambiguous/failed archive events, and the pre-existing user conversation remained open.
+
 ## 0.1.6 - 2026-07-15
 
 ### Added

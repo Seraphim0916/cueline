@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rename, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -165,6 +165,108 @@ test("the same caller can recover an active claim after losing the API response"
   assert.equal(events.filter((entry) => entry.type === "caller_work_claimed").length, 1);
 });
 
+test("caller work start rejects a workdir symlink retargeted after claim", async () => {
+  const runId = "run_caller_workdir_identity";
+  const { home, workdir, job } = await fixture(runId);
+  const originalTarget = `${workdir}-original`;
+  const replacementTarget = `${workdir}-replacement`;
+  await rename(workdir, originalTarget);
+  await mkdir(replacementTarget);
+  await symlink(originalTarget, workdir, "dir");
+
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-workdir-owner",
+  });
+  assert.equal(claim.resolvedWorkdir, await realpath(originalTarget));
+
+  await unlink(workdir);
+  await symlink(replacementTarget, workdir, "dir");
+  await assert.rejects(
+    startCueLineCallerJob(runId, job.jobId, proof(claim), { home }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CALLER_WORKDIR_IDENTITY_MISMATCH",
+  );
+
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.jobs[job.jobId]?.status, "pending");
+  assert.equal(state.jobs[job.jobId]?.callerWork?.claim?.startedAt, null);
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.some((entry) => entry.type === "caller_work_started"), false);
+});
+
+test("an unstarted legacy claim is upgraded to a directory-pinned claim", async () => {
+  const runId = "run_caller_legacy_workdir_upgrade";
+  const { home, workdir, job } = await fixture(runId);
+  const timestamp = "2026-07-15T00:00:00.000Z";
+  const now = () => new Date(timestamp);
+  const legacyClaim = {
+    claimId: "claim_33333333-3333-4333-8333-333333333333",
+    callerId: "codex-legacy-owner",
+    taskHash: jobSpecHash(job.spec),
+    workdir,
+    fencingToken: 1,
+    claimedAt: timestamp,
+    heartbeatAt: timestamp,
+    expiresAt: "2026-07-15T00:05:00.000Z",
+    ttlMs: 300_000,
+    startedAt: null,
+  };
+  const lease = await RuntimeLease.claim({ home, runId, now });
+  try {
+    const store = await loadPersistedRunStore(home, runId);
+    store.bindRuntimeOwner(lease.ownerId);
+    await store.append("caller_work_claimed", {
+      job_id: job.jobId,
+      claim: legacyClaim,
+    });
+    await store.snapshot();
+  } finally {
+    await lease.release();
+  }
+
+  await assert.rejects(
+    startCueLineCallerJob(
+      runId,
+      job.jobId,
+      {
+        claimId: legacyClaim.claimId,
+        callerId: legacyClaim.callerId,
+        fencingToken: legacyClaim.fencingToken,
+      },
+      { home, now },
+    ),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "CALLER_WORKDIR_IDENTITY_REQUIRED",
+  );
+  assert.equal(
+    (await readEvents(runPaths(home, runId).events)).some(
+      (entry) => entry.type === "caller_work_started",
+    ),
+    false,
+  );
+
+  const upgraded = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: legacyClaim.callerId,
+    now,
+  });
+
+  assert.equal(upgraded.outcome, "claimed");
+  assert.notEqual(upgraded.claimId, legacyClaim.claimId);
+  assert.equal(upgraded.fencingToken, 2);
+  assert.equal(upgraded.resolvedWorkdir, await realpath(workdir));
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(
+    state.jobs[job.jobId]?.callerWork?.claim?.workdirIdentity?.resolvedPath,
+    upgraded.resolvedWorkdir,
+  );
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.filter((entry) => entry.type === "caller_work_claimed").length, 2);
+  assert.equal(events.filter((entry) => entry.type === "caller_work_claim_released").length, 1);
+});
+
 test("caller work reducer rejects forged and out-of-order claim transitions", async () => {
   const { job, result } = await fixture("run_caller_claim_event_fencing");
   const timestamp = "2026-07-15T00:00:00.000Z";
@@ -173,6 +275,11 @@ test("caller work reducer rejects forged and out-of-order claim transitions", as
     callerId: "codex-event-owner",
     taskHash: jobSpecHash(job.spec),
     workdir: job.spec.workdir!,
+    workdirIdentity: {
+      resolvedPath: job.spec.workdir!,
+      device: "1",
+      inode: "2",
+    },
     fencingToken: 1,
     claimedAt: timestamp,
     heartbeatAt: timestamp,
@@ -209,6 +316,22 @@ test("caller work reducer rejects forged and out-of-order claim transitions", as
   );
   assert.equal(replaced.jobs[job.jobId]?.callerWork?.claim?.claimId, validClaim.claimId);
 
+  const forgedWorkdirStart = reduceRunState(
+    claimed,
+    event("caller_work_started", {
+      job_id: job.jobId,
+      claim_id: validClaim.claimId,
+      caller_id: validClaim.callerId,
+      fencing_token: validClaim.fencingToken,
+      task_hash: validClaim.taskHash,
+      workdir: validClaim.workdir,
+      workdir_identity: { ...validClaim.workdirIdentity, inode: "3" },
+      started_at: "2026-07-15T00:00:01.000Z",
+      expires_at: "2026-07-15T00:05:01.000Z",
+    }),
+  );
+  assert.equal(forgedWorkdirStart.jobs[job.jobId]?.status, "pending");
+
   const started = reduceRunState(
     claimed,
     event("caller_work_started", {
@@ -218,6 +341,7 @@ test("caller work reducer rejects forged and out-of-order claim transitions", as
       fencing_token: validClaim.fencingToken,
       task_hash: validClaim.taskHash,
       workdir: validClaim.workdir,
+      workdir_identity: validClaim.workdirIdentity,
       started_at: "2026-07-15T00:00:01.000Z",
       expires_at: "2026-07-15T00:05:01.000Z",
     }),
@@ -491,6 +615,126 @@ test("caller results reject invalid or reversed timestamps before durable mutati
   }
   const state = await loadCueLineRunState(runId, { home });
   assert.equal(state.jobs[job.jobId]?.status, "running");
+});
+
+test("caller result default timestamps are validated before durable submission intent", async () => {
+  const runId = "run_caller_result_default_timestamp_preflight";
+  const { home, job } = await fixture(runId);
+  const current = new Date("2026-07-15T00:00:00.000Z");
+  const now = () => current;
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-default-timestamp-owner",
+    now,
+  });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+  const before = await readEvents(runPaths(home, runId).events);
+
+  for (const timestamps of [
+    { startedAt: "2026-07-15T00:00:01.000Z" },
+    { finishedAt: "2026-07-14T23:59:59.999Z" },
+  ]) {
+    await assert.rejects(
+      submitCueLineCallerJobResult(
+        runId,
+        job.jobId,
+        {
+          status: "succeeded",
+          stdout: "must not create a half-written submission",
+          ...timestamps,
+        },
+        { home, claim: proof(claim), now },
+      ),
+      (error: unknown) =>
+        error instanceof CueLineError && error.code === "CALLER_JOB_RESULT_INVALID",
+    );
+  }
+
+  const after = await readEvents(runPaths(home, runId).events);
+  assert.deepEqual(after, before);
+  assert.equal(
+    after.some((entry) => entry.type === "caller_work_result_submission_started"),
+    false,
+  );
+  assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.status, "running");
+  assert.equal((await new JobStatusStore(home).read(job.jobId))?.status, "running");
+});
+
+test("successful caller output stays complete in job status but bounded in run events", async () => {
+  const runId = "run_caller_success_event_output_bound";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-large-success-owner",
+  });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home });
+  const stdout = `CALLER_STDOUT_SUMMARY\n${"S".repeat(30_000)}`;
+  const stderr = `CALLER_STDERR_TRACE_SENTINEL\n${"T".repeat(150_000)}`;
+
+  await submitCueLineCallerJobResult(
+    runId,
+    job.jobId,
+    { status: "succeeded", stdout, stderr },
+    { home, claim: proof(claim) },
+  );
+
+  const persisted = await new JobStatusStore(home).read(job.jobId);
+  assert.equal(persisted?.result?.stdout, stdout);
+  assert.equal(persisted?.result?.stderr, stderr);
+  const terminalEvent = (await readEvents(runPaths(home, runId).events)).findLast(
+    (entry) =>
+      entry.type === "job_status" &&
+      typeof entry.payload === "object" &&
+      entry.payload !== null &&
+      !Array.isArray(entry.payload) &&
+      (entry.payload as Record<string, unknown>).status === "succeeded",
+  );
+  const payload = terminalEvent?.payload as Record<string, unknown>;
+  assert.equal(typeof payload.output, "string");
+  assert.match(payload.output as string, /CALLER_STDOUT_SUMMARY/);
+  assert.match(payload.output as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.doesNotMatch(payload.output as string, /CALLER_STDERR_TRACE_SENTINEL/);
+  assert.ok((payload.output as string).length < 20_000);
+});
+
+test("failed caller output and error stay complete in job status but bounded in run events", async () => {
+  const runId = "run_caller_failure_event_output_bound";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-large-failure-owner",
+  });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home });
+  const stdout = `PARTIAL_WORK\n${"P".repeat(30_000)}`;
+  const stderr = `FAILURE_TRACE\n${"F".repeat(150_000)}`;
+  const error = `FAILURE_REASON\n${"E".repeat(40_000)}`;
+
+  await submitCueLineCallerJobResult(
+    runId,
+    job.jobId,
+    { status: "failed", stdout, stderr, error, exitCode: 1 },
+    { home, claim: proof(claim) },
+  );
+
+  const persisted = await new JobStatusStore(home).read(job.jobId);
+  assert.equal(persisted?.result?.stdout, stdout);
+  assert.equal(persisted?.result?.stderr, stderr);
+  assert.equal(persisted?.error, error);
+  const terminalEvent = (await readEvents(runPaths(home, runId).events)).findLast(
+    (entry) =>
+      entry.type === "job_status" &&
+      typeof entry.payload === "object" &&
+      entry.payload !== null &&
+      !Array.isArray(entry.payload) &&
+      (entry.payload as Record<string, unknown>).status === "ambiguous",
+  );
+  const payload = terminalEvent?.payload as Record<string, unknown>;
+  assert.equal(typeof payload.output, "string");
+  assert.equal(typeof payload.error, "string");
+  assert.match(payload.output as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.match(payload.error as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.ok((payload.output as string).length < 20_000);
+  assert.ok((payload.error as string).length < 20_000);
 });
 
 test("a non-success result after caller work starts is terminally ambiguous", async () => {

@@ -39,6 +39,22 @@ export interface BrowserTurnHooks {
   onCheckpoint?: (checkpoint: BrowserTurnCheckpoint) => Promise<void>;
 }
 
+export interface BrowserConversationArchiveInput {
+  conversationUrl: string;
+  signal?: AbortSignal;
+}
+
+export interface BrowserConversationArchiveEvidence {
+  conversationUrl: string;
+  proof: "conversation_url_changed";
+  postActionUrl: string;
+}
+
+export interface BrowserConversationArchiveHooks {
+  /** Durable write-ahead checkpoint that must finish before the one Archive click. */
+  onBeforeArchiveClick?: () => Promise<void>;
+}
+
 export interface BrowserAdapter {
   /**
    * Declares that `controller_turn_requested` is durably recorded before any
@@ -51,4 +67,9 @@ export interface BrowserAdapter {
   observeTurn?(input: BrowserTurnInput): Promise<ControllerTurn | undefined>;
   sendTurn(input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<ControllerTurn>;
   recoverTurn?(input: BrowserTurnInput): Promise<ControllerTurn>;
+  /** Archive one exact completed controller conversation. Implementations must never retry the archive click. */
+  archiveConversation?(
+    input: BrowserConversationArchiveInput,
+    hooks?: BrowserConversationArchiveHooks,
+  ): Promise<BrowserConversationArchiveEvidence>;
 }

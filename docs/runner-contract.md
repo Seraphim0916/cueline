@@ -10,8 +10,8 @@ The ChatGPT web controller only emits a text command. It does not inspect the re
 
 Caller work requires an absolute workdir and follows one fenced lifecycle:
 
-1. `claimCueLineCallerJob` atomically binds `runId + jobId + taskHash + workdir + callerId + fencingToken`. The same caller may recover the same active proof after losing an API response; a different caller is rejected.
-2. Before start, the caller may heartbeat or release the claim. An expired unstarted claim is formally released and can be reclaimed with a higher fencing token.
+1. `claimCueLineCallerJob` atomically binds `runId + jobId + taskHash + workdir + canonical directory identity + callerId + fencingToken`. The returned `resolvedWorkdir` is the exact canonical path the caller must use. The same caller may recover the same active proof after losing an API response; a different caller is rejected.
+2. Before start, the caller may heartbeat or release the claim. `startCueLineCallerJob` rechecks the canonical path, device, and inode before authorizing mutation, so a replaced directory or retargeted symlink is rejected. An unstarted legacy claim without directory identity is append-only released and reissued to the same caller with a higher fencing token; an expired unstarted claim follows the same fenced reclaim pattern.
 3. `startCueLineCallerJob` must succeed immediately before the first mutation. The exact owner heartbeats long work with `heartbeatCueLineCallerJob`.
 4. `submitCueLineCallerJobResult` requires the exact active proof. Wrong or old proof is rejected; a terminal job cannot be executed or overwritten again.
 5. Once started, release is forbidden. A crash or expiry becomes `ambiguous`, and CueLine never automatically retries that work.
@@ -54,7 +54,8 @@ interface RunnerSpec {
 - `CUELINE_DEPTH=1` is injected into the child.
 - A pre-existing `CUELINE_DEPTH` in the process or job environment rejects nested routing.
 - Standard input is closed unless the route explicitly selects stdin task input; stdout and stderr are captured as UTF-8 text.
-- Full stdout and stderr are persisted separately. Successful non-empty stdout is the preferred controller evidence; combined output remains diagnostic status only.
+- Each stream keeps up to 512,000 characters. Output within that bound is persisted in full. Larger output preserves its head and tail around an explicit truncation marker, with exact `stdoutTruncatedChars` or `stderrTruncatedChars` metadata, so a noisy worker cannot grow CueLine memory and status JSON without limit.
+- Stdout and stderr are persisted separately. Successful non-empty stdout is the preferred controller evidence; combined output remains diagnostic status only.
 - Exit code 0 is `succeeded`; a non-zero exit or spawn error is `failed`.
 - At timeout CueLine sends `SIGTERM`, then schedules `SIGKILL` after 250 ms if needed; the result is `timed_out`.
 - Cancellation uses the same owned-process termination path. `advise` becomes `cancelled`; started `work` becomes `ambiguous`.

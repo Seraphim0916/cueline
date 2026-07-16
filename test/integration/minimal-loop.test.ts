@@ -28,11 +28,16 @@ import { jobId } from "../../src/core/ids.js";
 import {
   continueControllerLoop as continueControllerLoopRaw,
   runControllerLoop as runControllerLoopRaw,
+  validateControllerRuntimeOptions,
 } from "../../src/core/controller-loop.js";
-import { observationFor } from "../../src/core/controller-turn.js";
+import {
+  observationFor,
+  requestControllerCommand,
+} from "../../src/core/controller-turn.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
 import { CUELINE_PROTOCOL, type ControllerJobSpec } from "../../src/protocol/types.js";
 import { JobStatusStore, type JobStatus } from "../../src/jobs/status.js";
+import type { RoutingConfig } from "../../src/router/types.js";
 import type { RunnerSpec } from "../../src/runners/runner-adapter.js";
 import { createEventLog, readEvents } from "../../src/state/event-log.js";
 import {
@@ -83,6 +88,35 @@ function reply(
       source: "composer_and_response",
     },
   });
+}
+
+interface EvidenceWindowView {
+  field: "output" | "error";
+  offset: number;
+  end: number;
+  total_chars: number;
+  next_offset: number | null;
+  content_hash: string;
+}
+
+function observationFromPrompt(prompt: string): {
+  jobs: Array<{
+    job_id: string;
+    output?: string;
+    error?: string;
+    evidence_window?: EvidenceWindowView;
+  }>;
+} {
+  const match = /<CueLineObservation>\n([\s\S]*?)\n<\/CueLineObservation>/.exec(prompt);
+  assert.ok(match?.[1], "controller prompt did not contain an observation");
+  return JSON.parse(match[1]) as {
+    jobs: Array<{
+      job_id: string;
+      output?: string;
+      error?: string;
+      evidence_window?: EvidenceWindowView;
+    }>;
+  };
 }
 
 function terminalStatus(id: string, output = "WORKER_OK"): JobStatus {
@@ -192,6 +226,7 @@ test("controller dispatches one job, observes it, then completes", async () => {
   assert.equal(result.finalDeliveryText, "CUELINE_OK");
   assert.equal(result.conversationUrl, "https://chatgpt.com/c/cueline-test");
   assert.equal(browser.calls.length, 2);
+  assert.equal(browser.archiveCalls.length, 0);
   assert.equal(supervisor.starts.length, 1);
   assert.match(browser.calls[1]?.prompt ?? "", /WORKER_OK/);
   const modelEvents = (await readEvents(runPaths(stateHome, runId).events))
@@ -217,6 +252,323 @@ test("controller dispatches one job, observes it, then completes", async () => {
       },
     ],
   );
+});
+
+test("opt-in archives the exact controller conversation once after completion is durable", async () => {
+  const runId = "run_archive_controller_on_complete";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/archive-controller-on-complete";
+  const browser = new FakeBrowserAdapter([
+    reply(
+      () => ({ action: "complete", final_delivery_text: "ARCHIVE_COMPLETE" }),
+      conversationUrl,
+    ),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Complete, then archive this controller conversation",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  } as Parameters<typeof runControllerLoop>[0]);
+
+  assert.equal(result.status, "complete");
+  assert.deepEqual(browser.archiveCalls, [conversationUrl]);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  const completedIndex = events.findIndex((event) => event.type === "run_completed");
+  const startedIndex = events.findIndex(
+    (event) => event.type === "controller_conversation_archive_started",
+  );
+  const archivedIndex = events.findIndex(
+    (event) => event.type === "controller_conversation_archived",
+  );
+  assert.ok(completedIndex >= 0);
+  assert.ok(startedIndex > completedIndex);
+  assert.ok(archivedIndex > startedIndex);
+});
+
+test("opt-in never archives a blocked controller run", async () => {
+  const runId = "run_archive_controller_blocked";
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "blocked", reason: "Missing required evidence" })),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Block if required evidence is unavailable",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.state.controllerConversationArchive.status, "waiting_for_completion");
+  assert.equal(browser.archiveCalls.length, 0);
+});
+
+test("an unsupported archive adapter fails deterministically without changing completion", async () => {
+  const runId = "run_archive_controller_unsupported";
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "complete", final_delivery_text: "COMPLETE_WITHOUT_ARCHIVE" })),
+  ]);
+  Object.defineProperty(browser, "archiveConversation", { value: undefined });
+
+  const result = await runControllerLoop({
+    request: "Complete with an adapter that cannot archive",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "COMPLETE_WITHOUT_ARCHIVE");
+  assert.equal(result.state.controllerConversationArchive.status, "failed");
+  assert.equal(
+    result.state.controllerConversationArchive.code,
+    "CONTROLLER_CONVERSATION_ARCHIVE_UNSUPPORTED",
+  );
+  assert.equal(browser.archiveCalls.length, 0);
+});
+
+test("a proven pre-click archive failure remains retryable and later clicks once", async () => {
+  const runId = "run_archive_controller_preclick_retry";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/archive-controller-preclick-retry";
+  const firstBrowser: BrowserAdapter = {
+    async sendTurn(input) {
+      return reply(
+        () => ({ action: "complete", final_delivery_text: "ARCHIVE_AFTER_RETRY" }),
+        conversationUrl,
+      )(input);
+    },
+    async archiveConversation() {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_UNAVAILABLE",
+        "The archive controls are not hydrated yet.",
+      );
+    },
+  };
+
+  const first = await runControllerLoop({
+    request: "Retry only a proven pre-click archive failure",
+    runId,
+    home: stateHome,
+    browser: firstBrowser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+
+  assert.equal(first.status, "complete");
+  assert.equal(first.state.controllerConversationArchive.status, "pending");
+  assert.equal(
+    first.state.controllerConversationArchive.code,
+    "CONTROLLER_CONVERSATION_ARCHIVE_UNAVAILABLE",
+  );
+
+  const recoveryBrowser = new FakeBrowserAdapter([]);
+  const recovered = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser: recoveryBrowser,
+  });
+
+  assert.equal(recovered.state.controllerConversationArchive.status, "archived");
+  assert.deepEqual(recoveryBrowser.archiveCalls, [conversationUrl]);
+});
+
+test("an adapter that skips the pre-click checkpoint becomes ambiguous and cannot retry", async () => {
+  const runId = "run_archive_controller_checkpoint_missing";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/archive-controller-checkpoint-missing";
+  const browser: BrowserAdapter = {
+    async sendTurn(input) {
+      return reply(
+        () => ({ action: "complete", final_delivery_text: "CHECKPOINT_REQUIRED" }),
+        conversationUrl,
+      )(input);
+    },
+    async archiveConversation(input) {
+      return {
+        conversationUrl: input.conversationUrl,
+        proof: "conversation_url_changed",
+        postActionUrl: "https://chatgpt.com/",
+      };
+    },
+  };
+
+  const result = await runControllerLoop({
+    request: "Refuse an adapter that can click without write-ahead evidence",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.state.controllerConversationArchive.status, "ambiguous");
+  assert.equal(
+    result.state.controllerConversationArchive.code,
+    "CONTROLLER_CONVERSATION_ARCHIVE_CHECKPOINT_MISSING",
+  );
+
+  const recoveryBrowser = new FakeBrowserAdapter([]);
+  const recovered = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser: recoveryBrowser,
+  });
+  assert.equal(recovered.state.controllerConversationArchive.status, "ambiguous");
+  assert.equal(recoveryBrowser.archiveCalls.length, 0);
+});
+
+test("an ambiguous controller archive remains complete and is never retried", async () => {
+  const runId = "run_archive_controller_ambiguous";
+  const stateHome = await home();
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "complete", final_delivery_text: "ARCHIVE_AMBIGUOUS" })),
+  ]);
+  browser.archiveError = new Error("archive click timed out");
+
+  const result = await runControllerLoop({
+    request: "Complete, then archive once",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.state.controllerConversationArchive.status, "ambiguous");
+  assert.equal(browser.archiveCalls.length, 1);
+
+  const recoveryBrowser = new FakeBrowserAdapter([]);
+  const recovered = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    browser: recoveryBrowser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+  assert.equal(recovered.status, "complete");
+  assert.equal(recovered.state.controllerConversationArchive.status, "ambiguous");
+  assert.equal(recoveryBrowser.archiveCalls.length, 0);
+});
+
+test("a durable pending archive resumes once after restart", async () => {
+  const runId = "run_archive_controller_resume_pending";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/archive-controller-resume-pending";
+  await startCueLineRun({
+    request: "Persist an archive-on-complete run",
+    runId,
+    home: stateHome,
+    archiveControllerConversationOnComplete: true,
+  });
+  const lease = await RuntimeLease.claim({ home: stateHome, runId });
+  try {
+    const store = await RunStore.load({
+      home: stateHome,
+      runId,
+      initialState: initialRunState(runId, ""),
+      reducer: reduceRunState,
+    });
+    store.bindRuntimeOwner(lease.ownerId);
+    await store.append("controller_conversation_bound", {
+      conversation_url: conversationUrl,
+    });
+    await store.append("run_completed", { final_delivery_text: "RESUME_ARCHIVE" });
+    await store.snapshot();
+  } finally {
+    await lease.release();
+  }
+
+  const pendingStatus = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(pendingStatus.phase, "controller_archive_pending");
+  assert.equal(pendingStatus.safeNextAction, "settle_controller_archive");
+  assert.equal(pendingStatus.controller.archive.status, "pending");
+
+  const wrongPolicyBrowser = new FakeBrowserAdapter([]);
+  await assert.rejects(
+    continueCueLineRun({
+      runId,
+      home: stateHome,
+      browser: wrongPolicyBrowser,
+      archiveControllerConversationOnComplete: false,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_POLICY_MISMATCH",
+  );
+  assert.equal(wrongPolicyBrowser.archiveCalls.length, 0);
+
+  const browser = new FakeBrowserAdapter([]);
+  const result = await continueCueLineRun({ runId, home: stateHome, browser });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.state.controllerConversationArchive.status, "archived");
+  assert.deepEqual(browser.archiveCalls, [conversationUrl]);
+  const archivedStatus = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(archivedStatus.phase, "complete");
+  assert.equal(archivedStatus.safeNextAction, "return_result");
+  assert.equal(archivedStatus.continueAllowed, false);
+  assert.equal(archivedStatus.controller.archive.status, "archived");
+});
+
+test("a restart after archive start marks ambiguity without another click", async () => {
+  const runId = "run_archive_controller_resume_started";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/archive-controller-resume-started";
+  await startCueLineRun({
+    request: "Persist an interrupted archive attempt",
+    runId,
+    home: stateHome,
+    archiveControllerConversationOnComplete: true,
+  });
+  const lease = await RuntimeLease.claim({ home: stateHome, runId });
+  try {
+    const store = await RunStore.load({
+      home: stateHome,
+      runId,
+      initialState: initialRunState(runId, ""),
+      reducer: reduceRunState,
+    });
+    store.bindRuntimeOwner(lease.ownerId);
+    await store.append("controller_conversation_bound", {
+      conversation_url: conversationUrl,
+    });
+    await store.append("run_completed", { final_delivery_text: "INTERRUPTED_ARCHIVE" });
+    await store.append("controller_conversation_archive_started", {
+      conversation_url: conversationUrl,
+    });
+    await store.snapshot();
+  } finally {
+    await lease.release();
+  }
+
+  const browser = new FakeBrowserAdapter([]);
+  const result = await continueCueLineRun({ runId, home: stateHome, browser });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.state.controllerConversationArchive.status, "ambiguous");
+  assert.equal(
+    result.state.controllerConversationArchive.code,
+    "CONTROLLER_CONVERSATION_ARCHIVE_INTERRUPTED",
+  );
+  assert.equal(browser.archiveCalls.length, 0);
 });
 
 test("one accepted dispatch starts independent jobs before awaiting their completion", async () => {
@@ -848,6 +1200,38 @@ test("public caller prompt lists enabled lanes without process availability", as
   assert.equal(result.pendingJobs?.[0]?.jobKey, "caller_offline_lane");
 });
 
+test("public API validates an in-memory routing config before touching the browser", async () => {
+  let browserCalls = 0;
+  const browser: BrowserAdapter = {
+    async sendTurn(): Promise<ControllerTurn> {
+      browserCalls += 1;
+      throw new Error("BROWSER_MUST_NOT_BE_TOUCHED");
+    },
+  };
+  const routingConfig = {
+    version: 1,
+    lanes: {
+      default: {
+        enabled: true,
+        candidates: [{ id: "must-be-disabled", argv: ["unused"], enable: false }],
+      },
+    },
+  } as unknown as RoutingConfig;
+
+  await assert.rejects(
+    runCueLine({
+      request: "Reject a mistyped in-memory route",
+      runId: "run_invalid_in_memory_route",
+      home: await home(),
+      browser,
+      routingConfig,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "ROUTING_CONFIG_INVALID",
+  );
+  assert.equal(browserCalls, 0);
+});
+
 test("caller work dispatch creates a durable unstarted job awaiting an explicit claim", async () => {
   const browser = new FakeBrowserAdapter([
     reply(() => ({
@@ -1466,6 +1850,115 @@ test("process execution queues jobs behind per-lane concurrency limits", async (
   assert.equal(starts[2], ids[1]);
 });
 
+test("process execution ignores inherited lane concurrency values", async () => {
+  const runId = "run_inherited_lane_concurrency";
+  const spec = {
+    job_key: "inherited_limit",
+    lane: "triage",
+    mode: "advise" as const,
+    task: "Ignore a prototype-only concurrency value",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const starts: string[] = [];
+  const supervisor = {
+    async start(runnerSpec: RunnerSpec): Promise<JobStatus> {
+      starts.push(runnerSpec.jobId);
+      return terminalStatus(runnerSpec.jobId);
+    },
+    async waitForCompletion(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_WAIT: ${jobId}`);
+    },
+    async inspect(jobId: string): Promise<JobStatus> {
+      throw new Error(`UNEXPECTED_INSPECT: ${jobId}`);
+    },
+  };
+  const inherited = Object.create({ triage: 0 }) as Readonly<Record<string, number>>;
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [spec] })),
+    reply(() => ({ action: "complete", final_delivery_text: "INHERITED_IGNORED" })),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Ignore inherited runtime options",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+    executor: "process",
+    maxConcurrency: 1,
+    laneConcurrency: inherited,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.deepEqual(starts, [id]);
+});
+
+test("lane concurrency rejects non-record values before browser access", async () => {
+  for (const laneConcurrency of [null, [1]]) {
+    let browserCalls = 0;
+    const browser: BrowserAdapter = {
+      async sendTurn(input): Promise<ControllerTurn> {
+        browserCalls += 1;
+        return reply(() => ({ action: "complete", final_delivery_text: "UNREACHABLE" }))(input);
+      },
+    };
+
+    await assert.rejects(
+      runControllerLoop({
+        request: "Reject malformed runtime options",
+        home: await home(),
+        browser,
+        jobSupervisor: new FakeJobSupervisor([]),
+        resolveRunnerSpec: resolver,
+        executor: "process",
+        laneConcurrency: laneConcurrency as unknown as Readonly<Record<string, number>>,
+      }),
+      (error: unknown) =>
+        error instanceof CueLineError && error.code === "LANE_CONCURRENCY_INVALID",
+    );
+    assert.equal(browserCalls, 0);
+  }
+});
+
+test("lane concurrency is snapshotted before controller callbacks can mutate it", async () => {
+  const runId = "run_mutated_lane_concurrency";
+  const spec = {
+    job_key: "stable_limit",
+    lane: "triage",
+    mode: "advise" as const,
+    task: "Use the validated runtime option snapshot",
+  };
+  const limits: Record<string, number> = { triage: 1 };
+  let browserCalls = 0;
+  const browser: BrowserAdapter = {
+    async sendTurn(input): Promise<ControllerTurn> {
+      browserCalls += 1;
+      if (browserCalls === 1) {
+        limits.triage = 0;
+        return reply(() => ({ action: "dispatch", jobs: [spec] }))(input);
+      }
+      return reply(() => ({ action: "complete", final_delivery_text: "SNAPSHOT_OK" }))(input);
+    },
+  };
+
+  const result = await runControllerLoop({
+    request: "Snapshot mutable runtime options",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: new FakeJobSupervisor([terminalStatus(jobId(runId, spec.job_key, spec))]),
+    resolveRunnerSpec: resolver,
+    executor: "process",
+    maxConcurrency: 1,
+    laneConcurrency: limits,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "SNAPSHOT_OK");
+  assert.equal(limits.triage, 0);
+});
+
 test("a second session cannot continue a legacy running run without ownership evidence", async () => {
   const runId = "run_active_owner";
   const stateHome = await home();
@@ -1881,6 +2374,38 @@ test("job cancellation remains pending until a supervisor accepts it", async () 
   assert.equal(attempts, 2);
 });
 
+test("cancellation polling rejects timer values that would spin or overflow", () => {
+  for (const intervalMs of [0, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+    assert.throws(
+      () =>
+        new CancellationWatcher({
+          home: "/tmp/cueline-invalid-cancellation-timer",
+          runId: "run_invalid_cancellation_timer",
+          intervalMs,
+          onRun() {},
+          onJob() {},
+          onError() {},
+        }),
+      (error: unknown) =>
+        error instanceof CueLineError &&
+        error.code === "CANCELLATION_POLL_INTERVAL_INVALID",
+      String(intervalMs),
+    );
+  }
+});
+
+test("controller runtime rejects an invalid heartbeat interval before ownership", () => {
+  assert.throws(
+    () =>
+      validateControllerRuntimeOptions({
+        runtimeHeartbeatIntervalMs: 0,
+      }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "RUNTIME_HEARTBEAT_INTERVAL_INVALID",
+  );
+});
+
 test("a failed run with a live owner cannot be continued by another session", async () => {
   const runId = "run_failed_but_owned";
   const stateHome = await home();
@@ -2125,6 +2650,89 @@ test("repairs invalid controller output at most twice", async () => {
   );
   assert.equal(browser.calls.length, 3);
   assert.deepEqual(browser.calls.map((call) => call.repairAttempt), [undefined, 1, 2]);
+});
+
+test("an action-incompatible field is rejected and repaired before command acceptance", async () => {
+  const runId = "run_strict_action_fields";
+  const stateHome = await home();
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "wait",
+      jobs: [
+        {
+          job_key: "must_not_register",
+          lane: "default",
+          mode: "advise",
+          task: "This field is invalid for wait.",
+        },
+      ],
+    })),
+    reply((input) => {
+      assert.equal(input.repairAttempt, 1);
+      assert.match(input.prompt, /CONTROL_COMMAND_FIELD_INVALID_FOR_ACTION/);
+      assert.match(input.prompt, /field 'jobs'.*action 'wait'/);
+      return { action: "complete", final_delivery_text: "STRICT_FIELDS_OK" };
+    }),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Reject a contradictory controller command",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "STRICT_FIELDS_OK");
+  assert.deepEqual(Object.keys(result.state.jobs), []);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_response_rejected" &&
+        (event.payload as Record<string, unknown>).code ===
+          "CONTROL_COMMAND_FIELD_INVALID_FOR_ACTION",
+    ).length,
+    1,
+  );
+  assert.equal(events.filter((event) => event.type === "controller_command_accepted").length, 1);
+});
+
+test("an oversized dispatch is repaired before any job is registered or started", async () => {
+  const runId = "run_dispatch_resource_bound";
+  const stateHome = await home();
+  const jobs = Array.from({ length: 65 }, (_, index) => ({
+    job_key: `review_${index}`,
+    lane: "triage",
+    mode: "advise" as const,
+    task: `Review item ${index}`,
+  }));
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs })),
+    reply((input) => {
+      assert.match(input.prompt, /CONTROL_DISPATCH_JOBS_LIMIT_EXCEEDED/);
+      return { action: "complete", final_delivery_text: "BOUND_REPAIRED" };
+    }),
+  ]);
+  const supervisor = new FakeJobSupervisor([]);
+
+  const result = await runControllerLoop({
+    request: "Bound one controller command",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+    executor: "process",
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "BOUND_REPAIRED");
+  assert.equal(supervisor.starts.length, 0);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.some((event) => event.type === "job_registered"), false);
 });
 
 test("a repeated deterministic dispatch never spawns a duplicate job", async () => {
@@ -3165,6 +3773,152 @@ test("manual submission confirmation atomically binds the first conversation URL
   assert.equal(replayed.state.pendingControllerTurns[0]?.manualSendConfirmed, true);
 });
 
+test("public continuation preflights deterministic failures before manual confirmation mutates the run", async () => {
+  const scenarios: Array<{
+    suffix: string;
+    code: string;
+    overrides: Partial<Parameters<typeof continueCueLineRun>[0]>;
+  }> = [
+    {
+      suffix: "invalid_limit",
+      code: "MAX_CONCURRENCY_INVALID",
+      overrides: { maxConcurrency: 0 },
+    },
+    {
+      suffix: "invalid_cancellation_poll",
+      code: "CANCELLATION_POLL_INTERVAL_INVALID",
+      overrides: { cancellationPollIntervalMs: 0 },
+    },
+    {
+      suffix: "overflowing_run_timeout",
+      code: "RUN_TIMEOUT_INVALID",
+      overrides: { runTimeoutMs: 2_147_483_648 },
+    },
+    {
+      suffix: "invalid_process_timeout",
+      code: "PROCESS_TIMEOUT_INVALID",
+      overrides: { defaultTimeoutMs: 0 },
+    },
+    {
+      suffix: "nested",
+      code: "NESTED_ROUTING_REJECTED",
+      overrides: { environment: { ...process.env, CUELINE_DEPTH: "1" } },
+    },
+    {
+      suffix: "executor_mismatch",
+      code: "RUN_EXECUTOR_MISMATCH",
+      overrides: { executor: "process", allowProcessExecution: true },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const runId = `run_continue_preflight_${scenario.suffix}`;
+    const requestId = `msg_continue_preflight_${scenario.suffix}`;
+    const conversationUrl = `https://chatgpt.com/c/continue-preflight-${scenario.suffix}`;
+    const stateHome = await home();
+    const store = await RunStore.create({
+      home: stateHome,
+      runId,
+      initialState: initialRunState(runId, ""),
+      reducer: reduceRunState,
+    });
+    await store.append("run_created", { request: "Fail before confirming a manual send" });
+    await store.append("controller_turn_requested", {
+      round: 1,
+      request_id: requestId,
+      prompt: "manually sent controller prompt",
+      prompt_hash: `preflight-${scenario.suffix}`,
+    });
+    await store.append("run_failed", {
+      code: "CONTROLLER_PROMPT_NOT_READY",
+      request_id: requestId,
+      stage: "pre_submit",
+      submission_state: "definitely_not_sent",
+    });
+    await store.snapshot();
+
+    await assert.rejects(
+      continueCueLineRun({
+        runId,
+        home: stateHome,
+        reconcileRequestId: requestId,
+        manualSendConfirmed: true,
+        conversationUrl,
+        browser: new FakeBrowserAdapter([]),
+        routingConfig: {
+          version: 1,
+          lanes: {
+            default: {
+              enabled: true,
+              candidates: [
+                {
+                  id: "node",
+                  argv: [process.execPath, "-e", "process.exit(0)"],
+                  task_input: "stdin",
+                },
+              ],
+            },
+          },
+        },
+        ...scenario.overrides,
+      }),
+      (error: unknown) => error instanceof CueLineError && error.code === scenario.code,
+    );
+
+    const eventTypes = (await readEvents(runPaths(stateHome, runId).events)).map(
+      (event) => event.type,
+    );
+    assert.equal(
+      eventTypes.includes("controller_turn_manual_submission_confirmed"),
+      false,
+      scenario.suffix,
+    );
+    assert.equal(eventTypes.includes("controller_conversation_bound"), false, scenario.suffix);
+  }
+});
+
+test("manual submission confirmation preserves a canonically equivalent conversation URL", async () => {
+  const runId = "run_manual_canonical_url";
+  const requestId = "msg_manual_canonical_url";
+  const conversationUrl = "https://chatgpt.com/c/manual-canonical-url";
+  const equivalentUrl = `${conversationUrl}/?utm_source=cueline#latest`;
+  const stateHome = await home();
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Accept only the same canonical conversation" });
+  await store.append("controller_conversation_bound", {
+    conversation_url: conversationUrl,
+  });
+  await store.append("controller_turn_requested", {
+    round: 1,
+    request_id: requestId,
+    prompt: "manually submitted prompt",
+    prompt_hash: "manual-canonical-url-hash",
+  });
+
+  const confirmation = await confirmManualControllerSubmission(runId, {
+    home: stateHome,
+    requestId,
+    conversationUrl: equivalentUrl,
+  });
+
+  assert.equal(confirmation.outcome, "confirmed");
+  assert.equal(confirmation.conversationUrl, conversationUrl);
+  const replayed = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  assert.equal(replayed.state.conversationUrl, conversationUrl);
+  assert.equal(replayed.state.pendingControllerTurns[0]?.conversationUrl, conversationUrl);
+  assert.equal(replayed.state.pendingControllerTurns[0]?.manualSendConfirmed, true);
+});
+
 test("rejects a wrong manual-recovery envelope without repair or resend", async () => {
   const runId = "run_manual_attachment_wrong_identity";
   const requestId = "msg_manual_attachment_wrong_identity";
@@ -4001,6 +4755,95 @@ test("inspect refreshes a background job from persisted supervisor status withou
   assert.deepEqual(supervisor.waits, []);
 });
 
+test("unknown inspect targets are repaired before any partial inspection", async () => {
+  const runId = "run_inspect_unknown_target";
+  const stateHome = await home();
+  const spec = {
+    job_key: "known_report",
+    lane: "default",
+    mode: "advise",
+    task: "Return one known report",
+  } as const;
+  const id = jobId(runId, spec.job_key, spec);
+  const completed = terminalStatus(id, "KNOWN_REPORT_OK");
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [spec] })),
+    reply(() => ({ action: "inspect", job_ids: [id, "job_missing_target"] })),
+    reply((input) => {
+      assert.equal(input.repairAttempt, 1);
+      assert.match(input.prompt, /CONTROL_JOB_TARGET_UNKNOWN/);
+      assert.match(input.prompt, /job_missing_target/);
+      return { action: "inspect", job_ids: [id] };
+    }),
+    reply((input) => {
+      assert.match(input.prompt, /KNOWN_REPORT_OK/);
+      return { action: "complete", final_delivery_text: "TARGET_REPAIR_OK" };
+    }),
+  ]);
+  const supervisor = new FakeJobSupervisor([completed], [completed]);
+
+  const result = await runControllerLoop({
+    request: "Reject unknown job targets atomically",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "TARGET_REPAIR_OK");
+  assert.deepEqual(supervisor.inspections, [id]);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_response_rejected" &&
+        (event.payload as Record<string, unknown>).code === "CONTROL_JOB_TARGET_UNKNOWN",
+    ).length,
+    1,
+  );
+  assert.equal(events.filter((event) => event.type === "controller_command_accepted").length, 3);
+});
+
+test("unknown valid wait targets are atomic before any wait begins", async () => {
+  const runId = "run_wait_unknown_target";
+  const spec = {
+    job_key: "known_wait",
+    lane: "default",
+    mode: "advise",
+    task: "Return one known result",
+  } as const;
+  const id = jobId(runId, spec.job_key, spec);
+  const completed = terminalStatus(id, "KNOWN_WAIT_OK");
+  const unknownId = "job_missing_target";
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [spec] })),
+    reply(() => ({ action: "wait", job_ids: [id, unknownId] })),
+    reply((input) => {
+      assert.equal(input.repairAttempt, 1);
+      assert.match(input.prompt, /CONTROL_JOB_TARGET_UNKNOWN/);
+      assert.match(input.prompt, /job_missing_target/);
+      return { action: "wait", job_ids: [id] };
+    }),
+    reply(() => ({ action: "complete", final_delivery_text: "WAIT_TARGET_REPAIR_OK" })),
+  ]);
+  const supervisor = new FakeJobSupervisor([completed], [completed]);
+
+  const result = await runControllerLoop({
+    request: "Reject unknown wait targets atomically",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "WAIT_TARGET_REPAIR_OK");
+  assert.deepEqual(supervisor.waits, []);
+});
+
 test("controller prompt keeps worker-supplied control markers inside escaped JSON evidence", async () => {
   const runId = "run_untrusted_output";
   const spec = {
@@ -4046,6 +4889,7 @@ test("controller feedback prefers successful stdout and bounds oversized worker 
   const status = terminalStatus(id, `FINAL_SUMMARY\n${"S".repeat(30_000)}`);
   status.result!.stderr = `TRACE_SENTINEL\n${"T".repeat(150_000)}`;
   status.result!.output = `${status.result!.stdout}\n${status.result!.stderr}`;
+  const runHome = await home();
   const browser = new FakeBrowserAdapter([
     reply(() => ({ action: "dispatch", jobs: [spec] })),
     reply((input) => {
@@ -4060,13 +4904,27 @@ test("controller feedback prefers successful stdout and bounds oversized worker 
   const result = await runControllerLoop({
     request: "Review compact evidence",
     runId,
-    home: await home(),
+    home: runHome,
     browser,
     jobSupervisor: new FakeJobSupervisor([status]),
     resolveRunnerSpec: resolver,
   });
 
   assert.equal(result.finalDeliveryText, "COMPACT");
+  const terminalEvent = (await readEvents(runPaths(runHome, runId).events)).findLast(
+    (entry) =>
+      entry.type === "job_status" &&
+      typeof entry.payload === "object" &&
+      entry.payload !== null &&
+      !Array.isArray(entry.payload) &&
+      (entry.payload as Record<string, unknown>).status === "succeeded",
+  );
+  const eventOutput = (terminalEvent?.payload as Record<string, unknown>)?.output;
+  assert.equal(typeof eventOutput, "string");
+  assert.match(eventOutput as string, /FINAL_SUMMARY/);
+  assert.match(eventOutput as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.doesNotMatch(eventOutput as string, /TRACE_SENTINEL/);
+  assert.ok((eventOutput as string).length < 20_000);
 });
 
 test("controller evidence budget is global across multiple large jobs", async () => {
@@ -4107,6 +4965,58 @@ test("controller evidence budget is global across multiple large jobs", async ()
   assert.equal(result.finalDeliveryText, "GLOBAL_BUDGET_OK");
 });
 
+test("controller prompt bounds accumulated notices and keeps the newest evidence", async () => {
+  const runId = "run_bounded_controller_notices";
+  const requestId = "msg_bounded_controller_notices";
+  const spec = {
+    job_key: "large_result",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Return a large local report",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const state = initialRunState(runId, "Review bounded notices");
+  state.jobs[id] = {
+    jobId: id,
+    jobKey: spec.job_key,
+    required: true,
+    spec,
+    status: "succeeded",
+    output: `LARGE_RESULT\n${"R".repeat(30_000)}`,
+    error: null,
+  };
+  state.notices = Array.from(
+    { length: 20 },
+    (_, index) => `NOTICE_${String(index + 1).padStart(2, "0")}_${"N".repeat(600)}`,
+  );
+  const store = await RunStore.create({
+    home: await home(),
+    runId,
+    initialState: state,
+    reducer: reduceRunState,
+  });
+  const browser = new FakeBrowserAdapter([
+    reply((input) => {
+      assert.ok(input.prompt.length < 20_000, `prompt was ${input.prompt.length} chars`);
+      assert.match(input.prompt, /NOTICE_20_/);
+      assert.doesNotMatch(input.prompt, /NOTICE_01_/);
+      assert.match(input.prompt, /controller notices truncated or omitted/);
+      return { action: "complete", final_delivery_text: "NOTICE_BUDGET_OK" };
+    }),
+  ]);
+
+  const command = await requestControllerCommand(
+    store,
+    browser,
+    observationFor(state, 1, requestId),
+    { runId, round: 1, requestId },
+    0,
+    [],
+  );
+
+  assert.equal(command?.action, "complete");
+});
+
 test("caller inspect prioritizes every requested job before unrelated successful output", () => {
   const runId = "run_caller_inspect_priority";
   const state = initialRunState(runId, "Inspect one exact caller result", "caller");
@@ -4138,6 +5048,255 @@ test("caller inspect prioritizes every requested job before unrelated successful
   const target = observation.jobs.find((job) => job.job_id === targetId);
   assert.match(target?.output ?? "", /TARGET_INSPECT_EVIDENCE/);
   assert.ok((target?.output?.length ?? 0) > 7_500, "inspect output should receive priority");
+});
+
+test("controller evidence exposes a deterministic next offset for the omitted tail", () => {
+  const runId = "run_evidence_window";
+  const state = initialRunState(runId, "Page one exact large result", "caller");
+  const spec = {
+    job_key: "large_result",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Return a large report",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const fullOutput = `PAGE_HEAD\n${"A".repeat(14_000)}\nTAIL_PAGE_SENTINEL`;
+  state.jobs[id] = {
+    jobId: id,
+    jobKey: spec.job_key,
+    required: true,
+    spec,
+    status: "succeeded",
+    output: fullOutput,
+    error: null,
+  };
+
+  const first = observationFor(state, 2, "msg_window_first");
+  const firstJob = first.jobs[0] as (typeof first.jobs)[number] & {
+    evidence_window?: EvidenceWindowView;
+  };
+  assert.match(firstJob.output ?? "", /PAGE_HEAD/);
+  assert.doesNotMatch(firstJob.output ?? "", /TAIL_PAGE_SENTINEL/);
+  assert.equal(firstJob.evidence_window?.offset, 0);
+  assert.equal(firstJob.evidence_window?.total_chars, fullOutput.length);
+  const nextOffset = firstJob.evidence_window?.next_offset;
+  assert.equal(typeof nextOffset, "number");
+  assert.ok((nextOffset ?? 0) > 0);
+
+  state.inspectionJobIds = [id];
+  state.inspectionEvidenceOffset = nextOffset!;
+  (state as typeof state & { inspectionEvidenceHash: string | null }).inspectionEvidenceHash =
+    firstJob.evidence_window!.content_hash;
+  const second = observationFor(state, 3, "msg_window_second");
+  const secondJob = second.jobs[0] as (typeof second.jobs)[number] & {
+    evidence_window?: EvidenceWindowView;
+  };
+  assert.ok(secondJob.output?.startsWith(fullOutput.slice(nextOffset!, nextOffset! + 40)));
+  assert.match(secondJob.output ?? "", /TAIL_PAGE_SENTINEL/);
+  assert.equal(secondJob.evidence_window?.offset, nextOffset);
+  assert.equal(secondJob.evidence_window?.end, fullOutput.length);
+  assert.equal(secondJob.evidence_window?.next_offset, null);
+});
+
+test("evidence offsets advance in raw characters after JSON safety escaping", () => {
+  const runId = "run_encoded_evidence_window";
+  const state = initialRunState(runId, "Page encoded evidence", "caller");
+  const spec = {
+    job_key: "encoded_result",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Return markup-heavy output",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const fullOutput = `${"<".repeat(5_000)}ENCODED_TAIL_SENTINEL`;
+  state.jobs[id] = {
+    jobId: id,
+    jobKey: spec.job_key,
+    required: true,
+    spec,
+    status: "succeeded",
+    output: fullOutput,
+    error: null,
+  };
+  state.inspectionJobIds = [id];
+
+  let offset = 0;
+  let evidenceHash: string | null = null;
+  let foundTail = false;
+  for (let page = 0; page < 5; page += 1) {
+    state.inspectionEvidenceOffset = offset;
+    state.inspectionEvidenceHash = evidenceHash;
+    const observation = observationFor(state, page + 2, `msg_encoded_${page}`);
+    const job = observation.jobs[0] as (typeof observation.jobs)[number] & {
+      evidence_window?: EvidenceWindowView;
+    };
+    assert.equal(job.evidence_window?.offset, offset);
+    if (job.output?.includes("ENCODED_TAIL_SENTINEL")) {
+      foundTail = true;
+      assert.equal(job.evidence_window?.next_offset, null);
+      break;
+    }
+    const next = job.evidence_window?.next_offset;
+    assert.equal(typeof next, "number");
+    assert.ok((next ?? 0) > offset, "encoded evidence cursor did not advance");
+    evidenceHash = job.evidence_window!.content_hash;
+    offset = next!;
+  }
+  assert.equal(foundTail, true);
+});
+
+test("failed-job error evidence pages safely and an oversized offset clamps to the end", () => {
+  const runId = "run_failed_evidence_window";
+  const state = initialRunState(runId, "Page a failed job's diagnostics", "caller");
+  const spec = {
+    job_key: "failed_result",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Return bounded failure diagnostics",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const fullError = `ERROR_HEAD\n${"E".repeat(14_000)}\nERROR_TAIL_SENTINEL`;
+  state.jobs[id] = {
+    jobId: id,
+    jobKey: spec.job_key,
+    required: true,
+    spec,
+    status: "failed",
+    output: "partial output",
+    error: fullError,
+  };
+  state.inspectionJobIds = [id];
+
+  const first = observationFor(state, 2, "msg_failed_first");
+  const firstJob = first.jobs[0] as (typeof first.jobs)[number] & {
+    evidence_window?: EvidenceWindowView;
+  };
+  assert.equal(firstJob.evidence_window?.field, "error");
+  assert.doesNotMatch(firstJob.error ?? "", /ERROR_TAIL_SENTINEL/);
+  const next = firstJob.evidence_window?.next_offset;
+  assert.equal(typeof next, "number");
+
+  state.inspectionEvidenceOffset = next!;
+  (state as typeof state & { inspectionEvidenceHash: string | null }).inspectionEvidenceHash =
+    firstJob.evidence_window!.content_hash;
+  const second = observationFor(state, 3, "msg_failed_second");
+  const secondJob = second.jobs[0] as (typeof second.jobs)[number] & {
+    evidence_window?: EvidenceWindowView;
+  };
+  assert.match(secondJob.error ?? "", /ERROR_TAIL_SENTINEL/);
+  assert.equal(secondJob.evidence_window?.next_offset, null);
+
+  state.inspectionEvidenceOffset = fullError.length + 99;
+  const beyond = observationFor(state, 4, "msg_failed_beyond");
+  const beyondJob = beyond.jobs[0] as (typeof beyond.jobs)[number] & {
+    evidence_window?: EvidenceWindowView;
+  };
+  assert.equal(beyondJob.evidence_window?.offset, fullError.length);
+  assert.equal(beyondJob.evidence_window?.end, fullError.length);
+  assert.equal(beyondJob.evidence_window?.next_offset, null);
+  assert.ok(beyond.notices.some((notice) => /exceeded.*clamped to the end/.test(notice)));
+});
+
+test("a changed evidence body invalidates the old offset instead of mixing pages", () => {
+  const runId = "run_changed_evidence_window";
+  const state = initialRunState(runId, "Do not mix evidence versions", "caller");
+  const spec = {
+    job_key: "changing_result",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Return versioned evidence",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const oldOutput = `OLD_HEAD\n${"O".repeat(14_000)}\nOLD_TAIL`;
+  state.jobs[id] = {
+    jobId: id,
+    jobKey: spec.job_key,
+    required: true,
+    spec,
+    status: "succeeded",
+    output: oldOutput,
+    error: null,
+  };
+  const first = observationFor(state, 2, "msg_changed_first");
+  const firstWindow = first.jobs[0]!.evidence_window!;
+  state.inspectionJobIds = [id];
+  state.inspectionEvidenceOffset = firstWindow.next_offset!;
+  state.inspectionEvidenceHash = firstWindow.content_hash;
+
+  state.jobs[id]!.output = `NEW_HEAD\n${"N".repeat(14_000)}\nNEW_TAIL`;
+  const changed = observationFor(state, 3, "msg_changed_second");
+  const changedJob = changed.jobs[0]!;
+  assert.equal(changedJob.evidence_window?.offset, 0);
+  assert.match(changedJob.output ?? "", /^NEW_HEAD/);
+  assert.notEqual(changedJob.evidence_window?.content_hash, firstWindow.content_hash);
+  assert.ok(
+    changed.notices.some((notice) => /evidence changed.*offset reset to 0/.test(notice)),
+  );
+});
+
+test("a paginated inspect reveals the tail without starting the job twice", async () => {
+  const runId = "run_paginated_inspect_loop";
+  const spec = {
+    job_key: "paged_report",
+    lane: "default",
+    mode: "advise",
+    task: "Return a report larger than one controller evidence window",
+  } as const;
+  const id = jobId(runId, spec.job_key, spec);
+  const status = terminalStatus(
+    id,
+    `REPORT_HEAD\n${"R".repeat(15_000)}\nPAGINATED_TAIL_SENTINEL`,
+  );
+  let requestedOffset: number | undefined;
+  let requestedHash: string | undefined;
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [spec] })),
+    reply((input) => {
+      const job = observationFromPrompt(input.prompt).jobs[0]!;
+      assert.doesNotMatch(job.output ?? "", /PAGINATED_TAIL_SENTINEL/);
+      requestedOffset = job.evidence_window?.next_offset ?? undefined;
+      requestedHash = job.evidence_window?.content_hash;
+      assert.equal(typeof requestedOffset, "number");
+      return {
+        action: "inspect",
+        job_ids: [id],
+        evidence_offset: requestedOffset,
+        evidence_hash: "0".repeat(64),
+      };
+    }),
+    reply((input) => {
+      assert.equal(input.repairAttempt, 1);
+      assert.match(input.prompt, /CONTROL_INSPECT_EVIDENCE_HASH_MISMATCH/);
+      return {
+        action: "inspect",
+        job_ids: [id],
+        evidence_offset: requestedOffset,
+        evidence_hash: requestedHash,
+      };
+    }),
+    reply((input) => {
+      const job = observationFromPrompt(input.prompt).jobs[0]!;
+      assert.equal(job.evidence_window?.offset, requestedOffset);
+      assert.match(job.output ?? "", /PAGINATED_TAIL_SENTINEL/);
+      assert.equal(job.evidence_window?.next_offset, null);
+      return { action: "complete", final_delivery_text: "PAGINATED_INSPECT_OK" };
+    }),
+  ]);
+  const supervisor = new FakeJobSupervisor([status], [status]);
+
+  const result = await runControllerLoop({
+    request: "Review every page without rerunning work",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "PAGINATED_INSPECT_OK");
+  assert.equal(supervisor.starts.length, 1);
+  assert.deepEqual(supervisor.inspections, [id]);
 });
 
 test("controller evidence budget applies after JSON safety escaping", async () => {

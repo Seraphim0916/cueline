@@ -28,14 +28,22 @@ A stale or mismatched value is rejected. CueLine parses only the **last complete
       "job_key": "review",
       "required": true,
       "status": "succeeded",
-      "output": "Review evidence"
+      "output": "Review evidence",
+      "evidence_window": {
+        "field": "output",
+        "offset": 0,
+        "end": 15,
+        "total_chars": 15,
+        "next_offset": null,
+        "content_hash": "61f2be400c13cff37284a92d51a9e4c3445bf8bbf67b8b8e92e5e1e4e1b337de"
+      }
     }
   ],
   "notices": []
 }
 ```
 
-Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, or `ambiguous`. Successful jobs with non-empty stdout use stdout as controller evidence instead of a combined stdout/stderr stream. Failed and timed-out jobs retain bounded diagnostic error evidence. All job evidence in one controller observation shares a global 12,000-character budget; omitted content is reported once with the exact omitted count. After an accepted `inspect(job_ids)`, the named jobs receive that budget before unrelated jobs. Full stdout/stderr remain in local job status, and only the most recent 20 notices are sent. The local event log remains the recovery record.
+Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, or `ambiguous`. Successful jobs with non-empty stdout use stdout as controller evidence instead of a combined stdout/stderr stream. Failed and timed-out jobs retain bounded diagnostic error evidence. All job evidence in one controller observation shares a global 12,000-character budget; omitted content is reported once with the exact omitted count. `evidence_window` identifies the preferred field and its raw-character `offset`, exclusive `end`, `total_chars`, deterministic `next_offset`, and SHA-256 `content_hash`. Full stdout/stderr remain in local job status, and only the most recent 20 notices are sent. The local event log remains the recovery record.
 
 ## Command envelope
 
@@ -53,6 +61,14 @@ Job states are `pending`, `running`, `succeeded`, `failed`, `timed_out`, `cancel
 ```
 
 Text outside the envelope is not executed. CueLine does not request or consume private chain-of-thought; concise user-facing rationale may stay outside the envelope.
+
+Each action has an exact field set. Unknown top-level fields and fields defined for a different action are rejected before the command is accepted; CueLine never silently drops them and then executes a different interpretation.
+
+One control envelope is limited to 131,072 characters before JSON parsing. A
+single `dispatch` may contain at most 64 jobs, and `wait` or `inspect` may name
+at most 256 job IDs. Omit `job_ids` to select all current jobs instead of
+building an oversized reference list. Exceeding a bound requests a repaired
+command with the same pending identity; no job is registered or started.
 
 ## Actions
 
@@ -81,19 +97,34 @@ Schedules one or more local jobs.
 }
 ```
 
-`job_key` must be unique inside the command and match the supported identifier form. `mode` is `advise` or `work`. Optional fields are `required`, `timeout_ms`, `runner`, `workdir`, and `background`. `runner_id` is invalid and produces an explicit correction to use `runner`. The local runtime—not ChatGPT—resolves the configured executable. `lane` must be a listed available lane; a runner ID is not a lane name. When `runner` is supplied, it must name an enabled, available candidate in the selected lane. CueLine validates every new route in the dispatch before registering or starting any job. One invalid route rejects the whole command and requests a corrected envelope with the same pending identity. Repeating an already persisted deterministic job is ignored rather than executed again.
+`job_key` must be unique inside the command and match the supported identifier form. `mode` is `advise` or `work`. Optional fields are `required`, `timeout_ms`, `runner`, `workdir`, and `background`. `prompt` is invalid and produces an explicit correction to use `task`; `runner_id` likewise produces a correction to use `runner`. The local runtime—not ChatGPT—resolves the configured executable. `lane` must be a listed available lane; a runner ID is not a lane name. When `runner` is supplied, it must name an enabled, available candidate in the selected lane. CueLine validates every new route in the dispatch before registering or starting any job. One invalid route rejects the whole command and requests a corrected envelope with the same pending identity. Repeating an already persisted deterministic job is ignored rather than executed again.
 
 The default executor is `caller`. It persists pending `advise` jobs and returns them as `awaiting_caller`. A caller `work` job must include an absolute `workdir`; it returns as `awaiting_caller_work` without executing. The current Codex must acquire a claim bound to run/job/task hash/workdir/caller/fencing token, durably start it before mutation, heartbeat long work, and submit the result with the exact proof. A non-success after start is reported as `ambiguous`, not as proof that no side effect occurred. A `dispatch` alone never means local work started. The web controller has no local tool access or implicit knowledge of local paths/repository layout. Local evidence must include absolute paths, relevant code excerpts, exact code/error identifiers, and an explicit request for any missing local evidence.
 
-The `process` executor requires both `executor: "process"` and `allowProcessExecution: true`; each non-terminal continuation repeats the second authorization. Independent `advise` jobs run with a default global concurrency of two and a default per-lane limit of two (both configurable). If any job is `work`, the entire batch remains serial in command order.
+The `process` executor requires both `executor: "process"` and `allowProcessExecution: true`; each non-terminal continuation repeats the second authorization. A supplied process `workdir` must be absolute. When omitted, CueLine writes the local runtime's resolved absolute workspace into the accepted command before hashing, registration, or execution. This keeps replay bound to the same directory after a restart. Independent `advise` jobs run with a default global concurrency of two and a default per-lane limit of two (both configurable). If any job is `work`, the entire batch remains serial in command order.
 
 ### `wait`
 
-Waits for selected running jobs (`job_ids`) or all current running jobs when omitted. `wait_ms` is part of the v0.1 schema but does not override the supervisor's job timeout.
+Waits for selected running jobs (`job_ids`) or all current running jobs when omitted. When present, `job_ids` must be a non-empty, unique list of valid IDs that exactly match jobs in the current run. One unknown target rejects the whole command with `CONTROL_JOB_TARGET_UNKNOWN` before any wait begins. `wait_ms` is part of the v0.1 schema but does not override the supervisor's job timeout.
 
 ### `inspect`
 
-Asks CueLine to present the currently persisted job state on the next round. Named `job_ids` receive the bounded evidence budget before unrelated jobs, so a completed result is not reduced to status merely because earlier jobs consumed the prompt budget. It does not grant the web controller a new local inspection tool.
+Asks CueLine to present the currently persisted job state on the next round. Named `job_ids` must form a non-empty, unique list that exactly matches jobs in the current run and receives the bounded evidence budget before unrelated jobs. One unknown target rejects the entire command before any selected job is inspected. To read a truncated tail, select exactly one job and copy its non-null `evidence_window.next_offset` verbatim:
+
+```json
+{
+  "protocol": "cueline/0.1",
+  "run_id": "run-example",
+  "round": 3,
+  "request_id": "msg-example-3",
+  "action": "inspect",
+  "job_ids": ["job-example"],
+  "evidence_offset": 11842,
+  "evidence_hash": "61f2be400c13cff37284a92d51a9e4c3445bf8bbf67b8b8e92e5e1e4e1b337de"
+}
+```
+
+`evidence_offset` is a raw-character cursor from 0 through 1,000,000,000. It is valid only with one explicit job ID and the exact lowercase SHA-256 `evidence_hash` copied from that window's `content_hash`. CueLine validates and persists the pair, returns the next bounded window, and never reruns the job. If evidence changes before validation, the command is rejected for repair; if a process refresh changes it after validation, the next observation resets to offset 0 with a notice. An offset beyond unchanged evidence is clamped to the end and reported. This action does not grant the web controller a new local inspection tool.
 
 ### `complete`
 
@@ -105,6 +136,6 @@ Ends the run with a non-empty `reason` and optional `final_delivery_text`. Like 
 
 ## Validation and repair
 
-CueLine rejects missing markers, malformed JSON, invalid actions, stale identity, invalid supported-field values, duplicate `job_key` values, and unavailable pre-spawn routes with stable error codes. Only the supported fields retained by runtime validation can affect execution. CueLine then sends a validation error back to the same conversation with the same pending identity. By default, two repair attempts are allowed; exhaustion fails the local run rather than guessing a command.
+CueLine rejects missing markers, malformed JSON, invalid actions, stale identity, unknown or action-incompatible fields, invalid supported-field values, empty/duplicate/malformed `job_ids`, duplicate `job_key` values, and unavailable pre-spawn routes with stable error codes. Only the exact fields for the selected action can affect execution. CueLine then sends a validation error back to the same conversation with the same pending identity. By default, two repair attempts are allowed; exhaustion fails the local run rather than guessing a command.
 
 The JSON Schema files under `schemas/` are publication references. Runtime structural validation is implemented locally and does not require a schema package.

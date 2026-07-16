@@ -1,11 +1,18 @@
 import type {
   BrowserAdapter,
+  BrowserConversationArchiveEvidence,
+  BrowserConversationArchiveHooks,
+  BrowserConversationArchiveInput,
   BrowserTurnHooks,
   BrowserTurnInput,
   ComposerPromptState,
   ControllerModelEvidence,
   ControllerTurn,
 } from "../browser-adapter.js";
+import {
+  isExactChatGptConversationUrl as isConversationUrl,
+  sameChatGptConversationUrl,
+} from "../../core/conversation-url.js";
 import { CueLineError } from "../../core/errors.js";
 import {
   readPageChatState,
@@ -16,18 +23,32 @@ import {
   type IabTab,
   type PageChatState,
 } from "./bootstrap.js";
-import { CHATGPT_URL, COMPOSER_TEXTBOX_NAMES, SEND_BUTTON_NAMES } from "./selectors.js";
-import { hasExactControllerEnvelopeIdentity, isProLabel, isProModelSlug,
-  normalizedConversationUrl, normalizedMessageText } from "./recovery-evidence.js";
+import {
+  ARCHIVE_MENUITEM_NAMES,
+  CHATGPT_URL,
+  COMPOSER_TEXTBOX_NAMES,
+  SEND_BUTTON_NAMES,
+} from "./selectors.js";
+import {
+  hasExactControllerEnvelopeIdentity,
+  isProLabel,
+  isProModelSlug,
+  normalizedMessageText,
+} from "./recovery-evidence.js";
 import { captureConversationUrlAfterSubmit } from "./submission-url.js";
+import { findVisibleSendButtonCoordinates } from "./send-button.js";
 import { acquireChatGptTab, isTabUnavailableError } from "./tab-discovery.js";
+import { validatedTimingOption } from "./timing-options.js";
 import type { ExpectedControllerIdentity } from "../../protocol/types.js";
 
 export interface CodexIabAdapterOptions {
   browser?: IabBrowser;
   conversationUrl?: string;
+  /** Positive integer no greater than Node's maximum timer delay. */
   timeoutMs?: number;
+  /** Positive integer no greater than Node's maximum timer delay. */
   pollIntervalMs?: number;
+  /** Non-negative integer no greater than Node's maximum timer delay. */
   stableMs?: number;
 }
 
@@ -42,7 +63,8 @@ const MODEL_LABEL_READ_ATTEMPTS = 50;
 const MODEL_LABEL_RETRY_INTERVAL_MS = 100;
 const COMPOSER_READY_TIMEOUT_MS = 30_000;
 const COMPOSER_READY_STABLE_MS = 250;
-
+const CONVERSATION_OPTIONS_SELECTOR = '[data-testid="conversation-options-button"]';
+const ARCHIVE_PROOF_TIMEOUT_MS = 10_000;
 type TurnStage = "pre_submit" | "submitting" | "submitted";
 
 interface TurnAttemptContext {
@@ -97,54 +119,11 @@ async function findUniqueLocator(
   return undefined;
 }
 
-async function findVisibleSendButtonCoordinates(
-  tab: IabTab,
-): Promise<{ x: number; y: number } | undefined> {
-  if (!tab.cua?.click) return undefined;
-  const target = await tab.playwright.evaluate(
-    ({ sendButtonNames }) => {
-      const normalize = (value: unknown): string =>
-        String(value ?? "").trim().replace(/\s+/g, " ");
-      const candidates = Array.from(document.querySelectorAll("button")).filter((element) => {
-        const button = element as HTMLButtonElement;
-        const style = window.getComputedStyle(button);
-        const rect = button.getBoundingClientRect();
-        const label = normalize(
-          button.getAttribute("aria-label") ?? button.innerText ?? button.textContent,
-        );
-        return (
-          sendButtonNames.some((name) => name === label) &&
-          !button.disabled &&
-          button.getAttribute("aria-disabled") !== "true" &&
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rect.width > 0 &&
-          rect.height > 0 &&
-          rect.right > 0 &&
-          rect.bottom > 0 &&
-          rect.left < window.innerWidth &&
-          rect.top < window.innerHeight
-        );
-      });
-      if (candidates.length !== 1) return null;
-      const rect = candidates[0]!.getBoundingClientRect();
-      return {
-        x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2,
-      };
-    },
-    { sendButtonNames: [...SEND_BUTTON_NAMES] },
-  ).catch(() => null);
-  if (
-    target === null ||
-    !Number.isFinite(target.x) ||
-    !Number.isFinite(target.y) ||
-    target.x < 0 ||
-    target.y < 0
-  ) {
-    return undefined;
-  }
-  return { x: Math.round(target.x), y: Math.round(target.y) };
+async function isActionableLocator(locator: IabLocator): Promise<boolean> {
+  if ((await locator.count()) !== 1) return false;
+  if (locator.isVisible && !(await locator.isVisible())) return false;
+  if (locator.isEnabled && !(await locator.isEnabled())) return false;
+  return true;
 }
 
 async function findHydratedComposer(tab: IabTab): Promise<IabLocator | undefined> {
@@ -156,10 +135,6 @@ async function findHydratedComposer(tab: IabTab): Promise<IabLocator | undefined
   } catch {
     return undefined;
   }
-}
-
-function isConversationUrl(url: string): boolean {
-  return /^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+/.test(url);
 }
 
 function ambiguousSubmissionError(error: unknown): CueLineError {
@@ -228,10 +203,34 @@ class CodexIabAdapter implements BrowserAdapter {
   #conversationUrl: string | undefined;
 
   constructor(options: CodexIabAdapterOptions) {
+    if (
+      options.conversationUrl !== undefined &&
+      !isConversationUrl(options.conversationUrl)
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_URL_REQUIRED",
+        "CueLine requires an exact ChatGPT /c/<conversation-id> URL for an existing controller conversation.",
+      );
+    }
     this.#options = {
-      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
-      stableMs: options.stableMs ?? DEFAULT_STABLE_MS,
+      timeoutMs: validatedTimingOption(
+        "timeoutMs",
+        options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        1,
+        "IAB_TIMEOUT_INVALID",
+      ),
+      pollIntervalMs: validatedTimingOption(
+        "pollIntervalMs",
+        options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+        1,
+        "IAB_POLL_INTERVAL_INVALID",
+      ),
+      stableMs: validatedTimingOption(
+        "stableMs",
+        options.stableMs ?? DEFAULT_STABLE_MS,
+        0,
+        "IAB_STABLE_WINDOW_INVALID",
+      ),
       ...(options.browser === undefined ? {} : { browser: options.browser }),
       ...(options.conversationUrl === undefined ? {} : { conversationUrl: options.conversationUrl }),
     };
@@ -251,7 +250,7 @@ class CodexIabAdapter implements BrowserAdapter {
         if (
           cachedUrl.startsWith(CHATGPT_URL) &&
           (expected === undefined ||
-            normalizedConversationUrl(cachedUrl) === normalizedConversationUrl(expected))
+            sameChatGptConversationUrl(cachedUrl, expected))
         ) {
           return this.#tab;
         }
@@ -307,12 +306,16 @@ class CodexIabAdapter implements BrowserAdapter {
     return label;
   }
 
-  async #submissionStarted(tab: IabTab, previousUrl: string): Promise<boolean> {
+  async #submissionStarted(
+    tab: IabTab,
+    previousUrl: string,
+    baseline: PageChatState,
+  ): Promise<boolean> {
     const currentUrl = (await tab.url().catch(() => previousUrl)) ?? previousUrl;
     if (!isConversationUrl(previousUrl) && isConversationUrl(currentUrl)) {
       return true;
     }
-    return (
+    const state =
       await readPageChatState(tab).catch(() => ({
         pageUrl: "",
         isAnswering: false,
@@ -321,8 +324,17 @@ class CodexIabAdapter implements BrowserAdapter {
         assistantModelSlug: null,
         lastUserText: null,
         lastMessageRole: null,
-      }))
-    ).isAnswering;
+    }));
+    if (
+      isConversationUrl(previousUrl) &&
+      !sameChatGptConversationUrl(state.pageUrl, previousUrl)
+    ) {
+      return false;
+    }
+    return (
+      state.isAnswering ||
+      state.assistantMessageCount > baseline.assistantMessageCount
+    );
   }
 
   async #resolveSendTarget(tab: IabTab): Promise<SendTarget> {
@@ -336,7 +348,11 @@ class CodexIabAdapter implements BrowserAdapter {
     );
   }
 
-  async #clickSend(tab: IabTab, target: SendTarget): Promise<void> {
+  async #clickSend(
+    tab: IabTab,
+    target: SendTarget,
+    baseline: PageChatState,
+  ): Promise<void> {
     const previousUrl = (await tab.url()) ?? "";
     try {
       if (target.kind === "locator") {
@@ -346,7 +362,7 @@ class CodexIabAdapter implements BrowserAdapter {
         await tab.playwright.waitForTimeout(100);
       }
     } catch (error) {
-      if (await this.#submissionStarted(tab, previousUrl)) return;
+      if (await this.#submissionStarted(tab, previousUrl, baseline)) return;
       if (isTabUnavailableError(error)) throw error;
       throw ambiguousSubmissionError(error);
     }
@@ -449,10 +465,7 @@ class CodexIabAdapter implements BrowserAdapter {
     expectedIdentity: ExpectedControllerIdentity,
   ): Promise<PageChatState | undefined> {
     const state = await readPageChatState(tab);
-    if (
-      normalizedConversationUrl(state.pageUrl) !==
-      normalizedConversationUrl(expectedConversationUrl)
-    ) {
+    if (!sameChatGptConversationUrl(state.pageUrl, expectedConversationUrl)) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
         "The response evidence was read from a different ChatGPT conversation DOM.",
@@ -657,7 +670,7 @@ class CodexIabAdapter implements BrowserAdapter {
     const sendTarget = await this.#resolveSendTarget(tab);
     await this.#emitCheckpoint(tab, context, hooks, "submitting");
     context.stage = "submitting";
-    await this.#clickSend(tab, sendTarget);
+    await this.#clickSend(tab, sendTarget, context.baseline);
     if (requireRecoverableCheckpoint) {
       this.#conversationUrl = await captureConversationUrlAfterSubmit(
         tab,
@@ -886,10 +899,7 @@ class CodexIabAdapter implements BrowserAdapter {
         );
     if (completed === undefined) return undefined;
     const recoveredUrl = (await tab.url()) ?? "";
-    if (
-      normalizedConversationUrl(recoveredUrl) !==
-      normalizedConversationUrl(this.#conversationUrl)
-    ) {
+    if (!sameChatGptConversationUrl(recoveredUrl, this.#conversationUrl)) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
         "The recovered response is no longer on the exact persisted ChatGPT conversation URL.",
@@ -938,6 +948,139 @@ class CodexIabAdapter implements BrowserAdapter {
     } catch (error) {
       throw this.#reconciliationFailure(error, input);
     }
+  }
+
+  async archiveConversation(
+    input: BrowserConversationArchiveInput,
+    hooks: BrowserConversationArchiveHooks = {},
+  ): Promise<BrowserConversationArchiveEvidence> {
+    throwIfCancelled(input.signal);
+    if (!isConversationUrl(input.conversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_URL_REQUIRED",
+        "Archiving requires one exact ChatGPT /c/<conversation-id> URL.",
+      );
+    }
+    if (
+      this.#conversationUrl !== undefined &&
+      !sameChatGptConversationUrl(this.#conversationUrl, input.conversationUrl)
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_MISMATCH",
+        "The archive request does not match the adapter's bound controller conversation.",
+      );
+    }
+    this.#conversationUrl = input.conversationUrl;
+    const tab = await this.#getTab();
+    const pageUrl = (await tab.url()) ?? "";
+    if (!sameChatGptConversationUrl(pageUrl, input.conversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_MISMATCH",
+        "The active ChatGPT tab is not the completed controller conversation.",
+      );
+    }
+    const pageState = await readPageChatState(tab);
+    if (!sameChatGptConversationUrl(pageState.pageUrl, input.conversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_MISMATCH",
+        "The ChatGPT page changed before archive controls could be opened.",
+      );
+    }
+    if (pageState.isAnswering) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_PRO_ACTIVE",
+        "ChatGPT Pro is still answering. Refusing to open or archive the conversation.",
+      );
+    }
+    if (!tab.playwright.locator) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_UNAVAILABLE",
+        "The browser cannot locate ChatGPT's conversation options button.",
+      );
+    }
+    const optionsButton = tab.playwright.locator(CONVERSATION_OPTIONS_SELECTOR);
+    if (!(await isActionableLocator(optionsButton))) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_UNAVAILABLE",
+        "ChatGPT's conversation options button is missing, hidden, disabled, or ambiguous.",
+      );
+    }
+    await optionsButton.click({ timeoutMs: 10_000 });
+    const archiveItem = await findUniqueLocator(
+      tab,
+      "menuitem",
+      ARCHIVE_MENUITEM_NAMES,
+    );
+    if (!archiveItem || !(await isActionableLocator(archiveItem))) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_UNAVAILABLE",
+        "ChatGPT's Archive menu item is missing, hidden, disabled, or ambiguous.",
+      );
+    }
+    const finalPageState = await readPageChatState(tab);
+    if (!sameChatGptConversationUrl(finalPageState.pageUrl, input.conversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_MISMATCH",
+        "The ChatGPT page changed before the archive click. Refusing to archive another conversation.",
+      );
+    }
+    if (finalPageState.isAnswering) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_PRO_ACTIVE",
+        "ChatGPT Pro started answering before the archive click. Refusing to archive the conversation.",
+      );
+    }
+
+    throwIfCancelled(input.signal);
+    await hooks.onBeforeArchiveClick?.();
+    throwIfCancelled(input.signal);
+    const checkpointPageState = await readPageChatState(tab);
+    if (!sameChatGptConversationUrl(checkpointPageState.pageUrl, input.conversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_MISMATCH",
+        "The ChatGPT page changed during the archive checkpoint. Refusing to archive another conversation.",
+      );
+    }
+    if (checkpointPageState.isAnswering) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_PRO_ACTIVE",
+        "ChatGPT Pro started answering during the archive checkpoint. Refusing to archive the conversation.",
+      );
+    }
+
+    let clickFailure: unknown;
+    try {
+      await archiveItem.click({ timeoutMs: 10_000 });
+    } catch (error) {
+      clickFailure = error;
+    }
+
+    const deadline = Date.now() + Math.min(this.#options.timeoutMs, ARCHIVE_PROOF_TIMEOUT_MS);
+    while (true) {
+      throwIfCancelled(input.signal);
+      const postActionUrl = (await tab.url().catch(() => undefined)) ?? "";
+      if (
+        postActionUrl.startsWith(CHATGPT_URL) &&
+        !sameChatGptConversationUrl(postActionUrl, input.conversationUrl)
+      ) {
+        this.#tab = undefined;
+        return {
+          conversationUrl: input.conversationUrl,
+          proof: "conversation_url_changed",
+          postActionUrl,
+        };
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      await tab.playwright.waitForTimeout(
+        Math.min(this.#options.pollIntervalMs, remainingMs),
+      );
+    }
+    throw new CueLineError(
+      "CONTROLLER_CONVERSATION_ARCHIVE_AMBIGUOUS",
+      "ChatGPT did not expose durable proof that the controller conversation was archived. Refusing another archive click.",
+      { cause: clickFailure },
+    );
   }
 }
 

@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { CueLineError } from "../../src/core/errors.js";
-import { JobStatusStore } from "../../src/jobs/status.js";
+import {
+  JobStatusStore,
+  parseJobStatus,
+  type JobStatus,
+} from "../../src/jobs/status.js";
 import { JobSupervisor } from "../../src/jobs/supervisor.js";
 import type {
   RunnerAdapter,
@@ -27,6 +31,25 @@ function cleanEnvironment(): NodeJS.ProcessEnv {
 
 function registry(): RunnerRegistry {
   return new RunnerRegistry([{ id: "node", executable: process.execPath }]);
+}
+
+class MemoryJobStatusStore extends JobStatusStore {
+  readonly writes: JobStatus[] = [];
+  latest: JobStatus | undefined;
+
+  constructor() {
+    super(tmpdir());
+  }
+
+  override async write(status: JobStatus): Promise<void> {
+    const snapshot = structuredClone(status);
+    this.writes.push(snapshot);
+    this.latest = snapshot;
+  }
+
+  override async read(jobId: string): Promise<JobStatus | undefined> {
+    return this.latest?.jobId === jobId ? structuredClone(this.latest) : undefined;
+  }
 }
 
 function spec(jobId: string, script: string, overrides: Partial<RunnerSpec> = {}): RunnerSpec {
@@ -52,6 +75,101 @@ function processIsAlive(pid: number): boolean {
     );
   }
 }
+
+test("job status store rejects structurally invalid JSON evidence", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-invalid-status-"));
+  const store = new JobStatusStore(directory);
+  const target = store.pathFor("malformed");
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "{}\n", "utf8");
+
+  await assert.rejects(store.read("malformed"), hasCode("JOB_STATUS_INVALID"));
+});
+
+test("job status parser rejects identity, chronology, and result contradictions", () => {
+  const timestamp = "2026-07-15T00:00:00.000Z";
+  const validResult = {
+    status: "succeeded",
+    exitCode: 0,
+    stdout: "ok",
+    stderr: "",
+    output: "ok",
+    emptyOutput: false,
+    timedOut: false,
+    cancelled: false,
+    ambiguousSideEffects: false,
+    retryable: false,
+    startedAt: timestamp,
+    finishedAt: timestamp,
+  };
+  const invalid = [
+    {
+      jobId: "other-job",
+      execution: "foreground",
+      status: "succeeded",
+      startedAt: timestamp,
+    },
+    {
+      jobId: "checked-job",
+      execution: "foreground",
+      status: "succeeded",
+      startedAt: "2026-07-15T00:00:01.000Z",
+      finishedAt: timestamp,
+    },
+    {
+      jobId: "checked-job",
+      execution: "foreground",
+      status: "running",
+      startedAt: timestamp,
+      result: validResult,
+    },
+    {
+      jobId: "checked-job",
+      execution: "foreground",
+      status: "failed",
+      startedAt: timestamp,
+      result: validResult,
+    },
+    {
+      jobId: "checked-job",
+      execution: "foreground",
+      status: "running",
+      startedAt: timestamp,
+      finishedAt: timestamp,
+    },
+    {
+      jobId: "checked-job",
+      execution: "foreground",
+      status: "timed_out",
+      startedAt: timestamp,
+      finishedAt: timestamp,
+      result: { ...validResult, status: "timed_out" },
+    },
+  ];
+
+  for (const value of invalid) {
+    assert.throws(
+      () => parseJobStatus(JSON.stringify(value), "checked-job"),
+      hasCode("JOB_STATUS_INVALID"),
+    );
+  }
+});
+
+test("job status store rejects invalid writes before creating a status file", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-invalid-status-write-"));
+  const store = new JobStatusStore(directory);
+  const invalid = {
+    jobId: "invalid-write",
+    execution: "foreground",
+    status: "succeeded",
+    startedAt: "not-a-timestamp",
+  } as Parameters<typeof store.write>[0];
+
+  await assert.rejects(store.write(invalid), hasCode("JOB_STATUS_INVALID"));
+  await assert.rejects(readFile(store.pathFor("invalid-write"), "utf8"), {
+    code: "ENOENT",
+  });
+});
 
 async function descendantProcessSpec(
   jobId: string,
@@ -99,10 +217,42 @@ test("runs a registered argv without a shell and captures stdout and stderr", as
   assert.equal(result.status, "succeeded");
   assert.equal(result.stdout, "OUT");
   assert.equal(result.stderr, "ERR");
+  assert.equal(result.stdoutTruncatedChars, undefined);
+  assert.equal(result.stderrTruncatedChars, undefined);
   assert.match(result.output, /OUT/);
   assert.match(result.output, /ERR/);
   assert.equal(result.emptyOutput, false);
   assert.equal(result.retryable, false);
+});
+
+test("bounds noisy process streams while preserving their head tail and omission count", async () => {
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+  const result = await runner.run(
+    spec(
+      "bounded-output",
+      [
+        'process.stdout.write("STDOUT_HEAD\\n" + "O".repeat(700_000) + "\\nSTDOUT_TAIL");',
+        'process.stderr.write("STDERR_HEAD\\n" + "E".repeat(700_000) + "\\nSTDERR_TAIL");',
+      ].join("\n"),
+      { timeoutMs: 5_000 },
+    ),
+  );
+
+  assert.equal(result.status, "succeeded");
+  assert.match(result.stdout, /^STDOUT_HEAD/);
+  assert.match(result.stdout, /STDOUT_TAIL$/);
+  assert.match(result.stderr, /^STDERR_HEAD/);
+  assert.match(result.stderr, /STDERR_TAIL$/);
+  assert.match(result.stdout, /\[truncated \d+ chars\]/);
+  assert.match(result.stderr, /\[truncated \d+ chars\]/);
+  assert.ok(result.stdout.length < 513_000, `stdout length was ${result.stdout.length}`);
+  assert.ok(result.stderr.length < 513_000, `stderr length was ${result.stderr.length}`);
+  assert.ok((result.stdoutTruncatedChars ?? 0) > 180_000);
+  assert.ok((result.stderrTruncatedChars ?? 0) > 180_000);
+  assert.match(result.output, /STDOUT_HEAD/);
+  assert.match(result.output, /STDOUT_TAIL/);
+  assert.match(result.output, /STDERR_HEAD/);
+  assert.match(result.output, /STDERR_TAIL/);
 });
 
 test("a failing diagnostic progress hook cannot break process supervision", async () => {
@@ -158,6 +308,26 @@ test("rejects nested routing before it can spawn", async () => {
     runner.run(spec("nested", "process.exit(0);")),
     hasCode("NESTED_ROUTING_REJECTED"),
   );
+});
+
+test("rejects process timeouts that Node timers cannot represent before spawn", async () => {
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+
+  for (const timeoutMs of [0, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+    let spawned = false;
+    await assert.rejects(
+      runner.run(
+        spec("invalid-timeout", "process.exit(0);", { timeoutMs }),
+        {
+          onSpawn() {
+            spawned = true;
+          },
+        },
+      ),
+      hasCode("PROCESS_TIMEOUT_INVALID"),
+    );
+    assert.equal(spawned, false, String(timeoutMs));
+  }
 });
 
 test("rejects argv executables that were not pre-registered", async () => {
@@ -357,6 +527,256 @@ test("persists distinct foreground and background job states", async () => {
   assert.equal((await supervisor.inspect("background")).status, "succeeded");
 });
 
+test("same-millisecond concurrent job status writes use distinct atomic temporaries", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-concurrent-"));
+  const store = new JobStatusStore(directory);
+  const originalNow = Date.now;
+  Date.now = () => 1_784_150_400_000;
+  try {
+    await Promise.all(
+      Array.from({ length: 64 }, (_, index) =>
+        store.write({
+          jobId: "same-millisecond",
+          execution: "foreground",
+          status: "running",
+          phase: `write_${index}`,
+          startedAt: "2026-07-15T00:00:00.000Z",
+        }),
+      ),
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+
+  const persisted = await store.read("same-millisecond");
+  assert.equal(persisted?.status, "running");
+  assert.match(persisted?.phase ?? "", /^write_\d+$/);
+  assert.deepEqual(await readdir(path.dirname(store.pathFor("same-millisecond"))), [
+    "same-millisecond.json",
+  ]);
+});
+
+test("durable job status writes preserve JSON omission of optional undefined fields", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-undefined-"));
+  const store = new JobStatusStore(directory);
+
+  await store.write(
+    {
+      jobId: "optional-undefined",
+      execution: "foreground",
+      status: "running",
+      phase: undefined,
+      startedAt: "2026-07-15T00:00:00.000Z",
+    } as unknown as JobStatus,
+  );
+
+  const persisted = await store.read("optional-undefined");
+  assert.equal(persisted?.status, "running");
+  assert.equal(Object.hasOwn(persisted ?? {}, "phase"), false);
+});
+
+test("a terminal job status cannot regress to a late running update", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-fence-"));
+  const store = new JobStatusStore(directory);
+  const terminal: JobStatus = {
+    jobId: "terminal-fence",
+    runId: "run_terminal_fence",
+    jobKey: "terminal_fence",
+    execution: "foreground",
+    status: "succeeded",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    result: {
+      status: "succeeded",
+      stdout: "TERMINAL_PROOF",
+      stderr: "",
+      output: "TERMINAL_PROOF",
+      exitCode: 0,
+      timedOut: false,
+      cancelled: false,
+      ambiguousSideEffects: false,
+      emptyOutput: false,
+      retryable: false,
+      startedAt: "2026-07-15T00:00:00.000Z",
+      finishedAt: "2026-07-15T00:01:00.000Z",
+    },
+  };
+
+  await store.write(terminal);
+  await assert.rejects(
+    store.write({
+      jobId: terminal.jobId,
+      runId: "run_terminal_fence",
+      jobKey: "terminal_fence",
+      execution: "foreground",
+      status: "running",
+      phase: "late_progress",
+      startedAt: terminal.startedAt,
+    }),
+    hasCode("JOB_STATUS_ALREADY_TERMINAL"),
+  );
+
+  assert.deepEqual(await store.read(terminal.jobId), terminal);
+  assert.deepEqual(
+    JSON.parse(await readFile(store.pathFor(terminal.jobId), "utf8")),
+    terminal,
+  );
+});
+
+test("concurrent running updates cannot outlive the first durable terminal status", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-race-"));
+  const store = new JobStatusStore(directory);
+  const terminal: JobStatus = {
+    jobId: "terminal-race",
+    execution: "foreground",
+    status: "failed",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    error: "FIRST_TERMINAL_WINS",
+  };
+
+  const writes = await Promise.allSettled([
+    ...Array.from({ length: 64 }, (_, index) =>
+      store.write({
+        jobId: terminal.jobId,
+        execution: "foreground",
+        status: "running",
+        phase: `late_${index}`,
+        startedAt: terminal.startedAt,
+      }),
+    ),
+    store.write(terminal),
+  ]);
+
+  for (const write of writes) {
+    if (write.status === "rejected") {
+      assert.equal(hasCode("JOB_STATUS_ALREADY_TERMINAL")(write.reason), true);
+    }
+  }
+  assert.deepEqual(await store.read(terminal.jobId), terminal);
+  assert.deepEqual(
+    (await readdir(path.dirname(store.pathFor(terminal.jobId)))).sort(),
+    ["terminal-race.json", "terminal-race.terminal"],
+  );
+});
+
+test("terminal retries are idempotent but conflicting terminal evidence is rejected", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-conflict-"));
+  const store = new JobStatusStore(directory);
+  const terminal: JobStatus = {
+    jobId: "terminal-conflict",
+    execution: "foreground",
+    status: "failed",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    error: "ORIGINAL_FAILURE",
+  };
+
+  await store.write(terminal);
+  await store.write({ ...terminal });
+  await assert.rejects(
+    store.write({
+      jobId: terminal.jobId,
+      execution: terminal.execution,
+      status: "succeeded",
+      startedAt: terminal.startedAt,
+      finishedAt: "2026-07-15T00:01:00.000Z",
+    }),
+    hasCode("JOB_STATUS_TERMINAL_CONFLICT"),
+  );
+
+  assert.deepEqual(await store.read(terminal.jobId), terminal);
+});
+
+test("concurrent conflicting terminal writers commit exactly one immutable winner", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-winner-"));
+  const store = new JobStatusStore(directory);
+  const failed: JobStatus = {
+    jobId: "terminal-winner",
+    execution: "foreground",
+    status: "failed",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    error: "FAILED_WINNER",
+  };
+  const succeeded: JobStatus = {
+    jobId: "terminal-winner",
+    execution: "foreground",
+    status: "succeeded",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+  };
+
+  const attempts = await Promise.allSettled([
+    store.write(failed),
+    store.write(succeeded),
+  ]);
+  assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
+  const rejected = attempts.find((attempt) => attempt.status === "rejected");
+  assert.equal(
+    rejected?.status === "rejected" &&
+      hasCode("JOB_STATUS_TERMINAL_CONFLICT")(rejected.reason),
+    true,
+  );
+  const committed = await store.read("terminal-winner");
+  assert.deepEqual(committed, committed?.status === "failed" ? failed : succeeded);
+});
+
+test("legacy terminal files are fenced before a newer writer can regress them", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-legacy-"));
+  const store = new JobStatusStore(directory);
+  const terminal: JobStatus = {
+    jobId: "legacy-terminal",
+    execution: "foreground",
+    status: "ambiguous",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    error: "LEGACY_TERMINAL_PROOF",
+  };
+  await mkdir(path.dirname(store.pathFor(terminal.jobId)), { recursive: true });
+  await writeFile(store.pathFor(terminal.jobId), `${JSON.stringify(terminal)}\n`, "utf8");
+
+  await assert.rejects(
+    store.write({
+      jobId: terminal.jobId,
+      execution: "foreground",
+      status: "running",
+      startedAt: terminal.startedAt,
+    }),
+    hasCode("JOB_STATUS_ALREADY_TERMINAL"),
+  );
+  await unlink(store.pathFor(terminal.jobId));
+
+  assert.deepEqual(await store.read(terminal.jobId), terminal);
+});
+
+test("a supervisor cannot spawn a job whose durable status is already terminal", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-status-terminal-respawn-"));
+  const store = new JobStatusStore(directory);
+  let runnerCalls = 0;
+  const runner: RunnerAdapter = {
+    async run() {
+      runnerCalls += 1;
+      throw new Error("runner must not be reached");
+    },
+  };
+  const supervisor = new JobSupervisor(runner, { statusStore: store });
+  await store.write({
+    jobId: "terminal-respawn",
+    execution: "foreground",
+    status: "failed",
+    startedAt: "2026-07-15T00:00:00.000Z",
+    finishedAt: "2026-07-15T00:01:00.000Z",
+    error: "ALREADY_FINISHED",
+  });
+
+  await assert.rejects(
+    supervisor.start(spec("terminal-respawn", "process.exit(0);")),
+    hasCode("JOB_STATUS_ALREADY_TERMINAL"),
+  );
+  assert.equal(runnerCalls, 0);
+});
+
 test("supervisor persists run metadata and cancels an owned background job", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "cueline-cancel-status-"));
   const store = new JobStatusStore(directory);
@@ -458,4 +878,151 @@ test("supervisor marks started work ambiguous when post-spawn bookkeeping fails"
   assert.equal(terminal.pid, 424_242);
   assert.match(terminal.error ?? "", /status persistence failed after spawn/);
   assert.equal((await store.read("post-spawn-work"))?.status, "ambiguous");
+});
+
+test("supervisor coalesces burst progress before persisting the terminal result", async () => {
+  const store = new MemoryJobStatusStore();
+  const progressCount = 2_000;
+  const startedAt = new Date("2026-07-15T00:00:00.000Z");
+  const runner: RunnerAdapter = {
+    async run(_spec: RunnerSpec, hooks: RunnerRunHooks = {}) {
+      await hooks.onSpawn?.(432_100);
+      for (let index = 0; index < progressCount; index += 1) {
+        void hooks.onProgress?.({
+          phase: `output_${index}`,
+          at: new Date(startedAt.getTime() + index).toISOString(),
+          ...(index === 0 ? { provider: "openai" } : {}),
+          ...(index === progressCount - 1 ? { model: "gpt-5.6-sol" } : {}),
+        });
+      }
+      const finishedAt = new Date(startedAt.getTime() + progressCount).toISOString();
+      return {
+        status: "succeeded",
+        exitCode: 0,
+        stdout: "DONE",
+        stderr: "",
+        output: "DONE",
+        emptyOutput: false,
+        timedOut: false,
+        cancelled: false,
+        ambiguousSideEffects: false,
+        retryable: false,
+        startedAt: startedAt.toISOString(),
+        finishedAt,
+      };
+    },
+  };
+  const supervisor = new JobSupervisor(runner, { statusStore: store });
+
+  const terminal = await supervisor.start(spec("progress-burst", ""));
+
+  assert.equal(terminal.status, "succeeded");
+  assert.equal(terminal.phase, "completed");
+  assert.equal(terminal.pid, 432_100);
+  assert.equal(terminal.provider, "openai");
+  assert.equal(terminal.model, "gpt-5.6-sol");
+  assert.equal(
+    terminal.lastProgressAt,
+    new Date(startedAt.getTime() + progressCount).toISOString(),
+  );
+  assert.equal(store.writes.at(0)?.status, "running");
+  assert.equal(store.writes.at(-1)?.status, "succeeded");
+  assert.ok(
+    store.writes.length <= 5,
+    `expected burst progress to be coalesced, received ${store.writes.length} writes`,
+  );
+});
+
+test("supervisor ignores diagnostic progress emitted after a runner returns", async () => {
+  const store = new MemoryJobStatusStore();
+  let finishLateProgress: (() => void) | undefined;
+  const lateProgressFinished = new Promise<void>((resolve) => {
+    finishLateProgress = resolve;
+  });
+  const startedAt = "2026-07-15T00:00:00.000Z";
+  const finishedAt = "2026-07-15T00:00:01.000Z";
+  const runner: RunnerAdapter = {
+    async run(_spec: RunnerSpec, hooks: RunnerRunHooks = {}) {
+      await hooks.onSpawn?.(432_101);
+      setImmediate(() => {
+        void Promise.resolve(
+          hooks.onProgress?.({
+            phase: "late_output",
+            at: "2026-07-15T00:00:02.000Z",
+          }),
+        ).finally(() => finishLateProgress?.());
+      });
+      return {
+        status: "succeeded",
+        exitCode: 0,
+        stdout: "DONE",
+        stderr: "",
+        output: "DONE",
+        emptyOutput: false,
+        timedOut: false,
+        cancelled: false,
+        ambiguousSideEffects: false,
+        retryable: false,
+        startedAt,
+        finishedAt,
+      };
+    },
+  };
+  const supervisor = new JobSupervisor(runner, { statusStore: store });
+
+  const terminal = await supervisor.start(spec("late-progress", ""));
+  await lateProgressFinished;
+
+  assert.equal(terminal.status, "succeeded");
+  assert.equal((await store.read("late-progress"))?.status, "succeeded");
+  assert.equal(store.writes.at(-1)?.status, "succeeded");
+  assert.equal(store.writes.some((status) => status.phase === "late_output"), false);
+});
+
+test("supervisor reports a progress persistence failure instead of false success", async () => {
+  class FailingProgressStore extends MemoryJobStatusStore {
+    attempts = 0;
+
+    override async write(status: JobStatus): Promise<void> {
+      this.attempts += 1;
+      if (this.attempts === 3) {
+        throw new Error("progress persistence unavailable");
+      }
+      await super.write(status);
+    }
+  }
+
+  const store = new FailingProgressStore();
+  const runner: RunnerAdapter = {
+    async run(_spec: RunnerSpec, hooks: RunnerRunHooks = {}) {
+      await hooks.onSpawn?.(432_102);
+      void Promise.resolve(
+        hooks.onProgress?.({
+          phase: "producing_output",
+          at: "2026-07-15T00:00:00.500Z",
+        }),
+      ).catch(() => undefined);
+      return {
+        status: "succeeded",
+        exitCode: 0,
+        stdout: "DONE",
+        stderr: "",
+        output: "DONE",
+        emptyOutput: false,
+        timedOut: false,
+        cancelled: false,
+        ambiguousSideEffects: false,
+        retryable: false,
+        startedAt: "2026-07-15T00:00:00.000Z",
+        finishedAt: "2026-07-15T00:00:01.000Z",
+      };
+    },
+  };
+  const supervisor = new JobSupervisor(runner, { statusStore: store });
+
+  const terminal = await supervisor.start(spec("progress-write-failure", ""));
+
+  assert.equal(terminal.status, "failed");
+  assert.match(terminal.error ?? "", /progress persistence unavailable/);
+  assert.equal((await store.read("progress-write-failure"))?.status, "failed");
 });

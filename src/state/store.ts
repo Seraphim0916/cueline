@@ -1,4 +1,4 @@
-import { mkdir, open, stat } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { CueLineError } from "../core/errors.js";
@@ -12,13 +12,14 @@ import {
   type RunEvent,
 } from "./event-log.js";
 import { runPaths, type RunPaths } from "./paths.js";
+import { ensurePrivateDirectory } from "./private-directory.js";
 import {
   readRuntimeLease,
   readRuntimeOwnerRetirementCutoffs,
   withRuntimeLeaseMutation,
 } from "./runtime-lease.js";
 
-const STATE_PROTOCOL = "cueline/state/0.3";
+export const STATE_PROTOCOL = "cueline/state/0.3";
 
 export type RunReducer<State> = (state: State, event: RunEvent) => State;
 
@@ -66,6 +67,13 @@ async function syncDirectory(directory: string): Promise<void> {
     await handle.sync();
   } finally {
     await handle.close();
+  }
+}
+
+async function ensurePrivateRunDirectories(paths: RunPaths): Promise<void> {
+  for (const directory of [paths.runsDir, paths.runDir]) {
+    const created = await ensurePrivateDirectory(directory);
+    if (created !== undefined) await syncDirectory(path.dirname(created));
   }
 }
 
@@ -136,10 +144,7 @@ export class RunStore<State> {
 
   static async create<State>(options: RunStoreOptions<State>): Promise<RunStore<State>> {
     const paths = runPaths(options.home, options.runId);
-    const created = await mkdir(paths.runDir, { recursive: true });
-    if (created !== undefined) {
-      await syncDirectory(path.dirname(created));
-    }
+    await ensurePrivateRunDirectories(paths);
     if (await pathExists(`${paths.events}.segments`)) {
       throw runAlreadyExists(options.runId);
     }
@@ -171,6 +176,7 @@ export class RunStore<State> {
   ): Promise<RunStore<State>> {
     if (type.trim() === "") throw new Error("EVENT_TYPE_INVALID");
     const paths = runPaths(options.home, options.runId);
+    await ensurePrivateRunDirectories(paths);
     if (
       (await pathExists(paths.creationMarker)) ||
       (await pathExists(`${paths.events}.segments`))

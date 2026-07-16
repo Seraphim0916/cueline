@@ -31,6 +31,8 @@ export interface JobResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  stdoutTruncatedChars?: number;
+  stderrTruncatedChars?: number;
   output: string;
   emptyOutput: boolean;
   timedOut: boolean;

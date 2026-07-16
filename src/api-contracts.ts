@@ -1,5 +1,6 @@
 import type { BrowserAdapter } from "./browser/browser-adapter.js";
 import type { CodexIabAdapterOptions } from "./browser/codex-iab/chatgpt-client.js";
+import type { CueLineRunStatusSummary } from "./core/run-status.js";
 import type { RoutingConfig } from "./router/types.js";
 import type { JobResultStatus } from "./runners/runner-adapter.js";
 
@@ -24,11 +25,65 @@ export interface CueLineRuntimeOptions {
   allowProcessExecution?: boolean;
   maxConcurrency?: number;
   laneConcurrency?: Readonly<Record<string, number>>;
+  /** Opt in to archiving the exact ChatGPT controller conversation after a durable complete. */
+  archiveControllerConversationOnComplete?: boolean;
 }
 
 export interface StartCueLineRunOptions extends CueLineRuntimeOptions {
   request: string;
   runId?: string;
+}
+
+export type CueLineRunListEntry =
+  | {
+      runId: string;
+      readable: true;
+      status: CueLineRunStatusSummary["status"];
+      executor: CueLineRunStatusSummary["executor"];
+      phase: CueLineRunStatusSummary["phase"];
+      round: number;
+      pendingTurns: number;
+      activeJobs: number;
+      runtimeOwnership: CueLineRunStatusSummary["runtime"]["ownership"];
+      safeNextAction: CueLineRunStatusSummary["safeNextAction"];
+      lastEventSequence: number;
+      lastEventAt: string;
+    }
+  | {
+      runId: string;
+      readable: false;
+      errorCode: string;
+    };
+
+export type CueLineRunVerificationOutcome = "verified" | "degraded" | "unreadable";
+
+export interface CueLineRunVerificationFinding {
+  code: string;
+  severity: "warning" | "error";
+  surface: "marker" | "events" | "snapshot" | "runtime" | "jobs";
+  message: string;
+}
+
+export interface CueLineRunVerificationReport {
+  runId: string;
+  outcome: CueLineRunVerificationOutcome;
+  marker: "valid" | "missing" | "invalid";
+  eventLog:
+    | {
+        readable: true;
+        totalEvents: number;
+        authoritativeEvents: number;
+        lastSequence: number;
+      }
+    | {
+        readable: false;
+        totalEvents: 0;
+        authoritativeEvents: 0;
+        lastSequence: null;
+      };
+  snapshot: "missing" | "valid" | "stale" | "invalid";
+  runtimeOwnership: "missing" | "active" | "stale" | "released" | "invalid";
+  findings: CueLineRunVerificationFinding[];
 }
 
 export interface ContinueCueLineRunOptions extends CueLineRuntimeOptions {
@@ -81,6 +136,8 @@ export interface CueLineCallerWorkClaimResult extends CueLineCallerWorkClaimProo
   task: string;
   taskHash: string;
   workdir: string;
+  /** Canonical directory pinned by the durable claim; execute work only here. */
+  resolvedWorkdir: string;
   claimedAt: string;
   heartbeatAt: string;
   expiresAt: string;

@@ -1,4 +1,5 @@
 import { CueLineError } from "../core/errors.js";
+import { MAX_CONTROLLER_ENVELOPE_CHARS } from "./limits.js";
 import type { ControllerCommand, ExpectedControllerIdentity } from "./types.js";
 import { validateControllerCommand } from "./validate-command.js";
 
@@ -16,6 +17,13 @@ export function parseControllerCommand(
     throw new CueLineError(
       "CONTROL_ENVELOPE_MISSING",
       "No complete <CueLineControl> envelope was found.",
+    );
+  }
+  if (body.length > MAX_CONTROLLER_ENVELOPE_CHARS) {
+    throw new CueLineError(
+      "CONTROL_ENVELOPE_TOO_LARGE",
+      `Control envelope exceeds the ${MAX_CONTROLLER_ENVELOPE_CHARS}-character protocol limit.`,
+      { details: { maximum_chars: MAX_CONTROLLER_ENVELOPE_CHARS } },
     );
   }
 

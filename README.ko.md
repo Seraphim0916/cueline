@@ -17,14 +17,14 @@
 
 CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane이나 GPT Relay를 감싼 래퍼가 아닙니다.
 
-## 최신 릴리스: 0.1.6
+## 최신 릴리스: 0.1.7
 
-- caller `work`에 영속적인 claim/start/heartbeat/result fencing을 추가해 시작 전 안전한 회수와 시작 후 `ambiguous` 종결을 지원합니다.
-- 숨겨진 `Stop answering` 오탐, inspect 대상 출력 우선순위, stale 읽기 전용 관찰 복구, process 이중 승인, process 상태 관측성을 수정했습니다.
-- 번들 process route에 `--ignore-user-config`를 추가하고 이후의 신뢰할 수 없는 출력이 model/provider 상태를 위조하지 못하게 했습니다.
-- 267/267 테스트, 깨끗한 패키지 설치, 새 ChatGPT Web Pro run의 최종 `complete`를 재전송이나 중단 없이 검증했습니다.
+- 안전한 run 목록, doctor, watch, timeline, handoff, 무결성 검증, protocol lint, 브라우저 진단, inspect 증거 페이지 기능을 추가했습니다.
+- 탭/버튼 증거, 명령과 라우팅 한도, 원자적 job 상태, 비공개 영속 데이터, workdir ID, runtime/cancel 레코드, CLI 비식별화를 강화했습니다.
+- 영속 `complete` 뒤 정확한 대화만 보관하는 opt-in 기능을 추가했습니다. 클릭 전 fence, Pro 재개/탐색 검사, 모호해진 뒤 재클릭 금지를 적용합니다.
+- 454/454 테스트와 일회용 실제 ChatGPT Web Pro run을 검증했으며, 자연 완료 뒤 한 번만 보관하고 기존 사용자 대화는 건드리지 않았습니다.
 
-전체 내용은 [changelog](CHANGELOG.md#016---2026-07-15) 또는 변경 불가능한 [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6)에서 확인할 수 있습니다.
+전체 내용은 [changelog](CHANGELOG.md#017---2026-07-16) 또는 변경 불가능한 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7)에서 확인할 수 있습니다.
 
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
@@ -57,15 +57,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.1.6
+npm install -g cueline@0.1.7
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.1.6 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.1.7 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.6/cueline-0.1.6.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.7/cueline-0.1.7.tgz
 cueline install
 cueline doctor
 ```
@@ -110,6 +110,7 @@ import {
 let result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
   browser: createCodexIabAdapter({ browser: globalThis.browser }),
+  // opt-in: archiveControllerConversationOnComplete: true,
   // 선택: conversationUrl, routingConfig / routingConfigPath, home, cwd,
   // runTimeoutMs, signal, 작업별/기본 제한 시간.
 }); // 기본 executor: "caller"
@@ -131,7 +132,7 @@ while (["awaiting_controller", "awaiting_caller", "awaiting_caller_work"].includ
       const claim = await claimCueLineCallerJob(result.runId, job.jobId, { callerId: "stable-codex-task-identity" });
       const proof = { claimId: claim.claimId, callerId: claim.callerId, fencingToken: claim.fencingToken };
       await startCueLineCallerJob(result.runId, job.jobId, proof);
-      const stdout = await executeExactLocalWork(job.spec.task, claim.workdir, {
+      const stdout = await executeExactLocalWork(job.spec.task, claim.resolvedWorkdir, {
         heartbeat: () => heartbeatCueLineCallerJob(result.runId, job.jobId, proof),
       });
       await submitCueLineCallerJobResult(result.runId, job.jobId, { status: "succeeded", stdout }, { claim: proof });
@@ -149,18 +150,18 @@ if (result.status === "complete") {
 
 Codex 런타임에서는 `cueline api path`가 출력하는 절대 경로 모듈을 import하세요. 그것이 설치한 패키지의 빌드된 API입니다.
 
-`startCueLineRun`은 지속 run을 만들고 `ready`만 반환합니다. `runCueLine`은 생성 후 지속 controller 관측 대기, caller 인계 또는 종료 상태까지 진행합니다. owner가 없는 `controller_response_pending`에 정상 전송된 턴이 정확히 하나이고 `safeNextAction: observe`가 표시되면 같은 Pro 응답을 읽기 전용으로 관측하기 위한 대기입니다. 잠시 뒤 계속하고 재전송하지 마세요. `safeNextAction: reconcile`은 모호하거나 수동 전송되었거나 보류 턴이 여러 개인 경우에 사용합니다. owner가 없는 `caller_jobs_pending`은 정상적인 로컬 인계이며 orphan이나 ChatGPT 대기가 아닙니다.
+`startCueLineRun`은 지속 run을 만들고 `ready`만 반환합니다. `runCueLine`은 생성 후 지속 controller 관측 대기, caller 인계 또는 종료 상태까지 진행합니다. owner가 없는 `controller_response_pending`에 정상 전송된 턴이 정확히 하나이고 `safeNextAction: observe`가 표시되면 같은 Pro 응답을 읽기 전용으로 관측하기 위한 대기입니다. 잠시 뒤 계속하고 재전송하지 마세요. `safeNextAction: reconcile`은 모호하거나 수동 전송되었거나 보류 턴이 여러 개인 경우에 사용합니다. owner가 없는 `caller_jobs_pending`은 정상적인 로컬 인계이며 orphan이나 ChatGPT 대기가 아닙니다. CLI의 `run status`는 인계에 필요한 metadata만 출력하며 task 본문, caller identity, task hash, workdir, runtime owner ID를 포함하지 않습니다. 정식 claim 뒤에만 API가 정확한 task와 workdir를 승인된 caller에게 반환합니다.
 
 ## CLI
 
-CLI는 브라우저를 구동하지 않습니다. `doctor`, `routing`, `jobs`, `run status`, `api path`, `config path`는 읽기 전용입니다. `install`/`uninstall`은 패키지가 소유한 스킬 링크만 변경합니다. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, `job cancel`은 감사 증거를 추가하거나 지속 run/job 상태를 변경합니다. 상태를 쓰는 명령 전에는 `cueline help`로 전체 인수를 확인하세요.
+CLI는 브라우저를 구동하지 않습니다. `doctor`, `routing`, `jobs`, `runs`, `run status`, `run verify`, `api path`, `config path`는 읽기 전용입니다. `install`/`uninstall`은 패키지가 소유한 스킬 링크만 변경합니다. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, `job cancel`은 감사 증거를 추가하거나 지속 run/job 상태를 변경합니다. 상태를 쓰는 명령 전에는 `cueline help`로 전체 인수를 확인하세요.
 
 ```console
 $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.6
+CueLine 0.1.7
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -169,17 +170,29 @@ caller_ready	yes
 caller_lanes	1
 process_available_lanes	1
 
+$ cueline doctor --json
+{"version":"0.1.7","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
+
 $ cueline api path
 /usr/local/lib/node_modules/cueline/dist/src/api.js
 
 $ cueline routing
 default	codex-default	available
 
+$ cueline routing --json
+{"version":"0.1.7","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
+
 $ cueline jobs
 No jobs.
 
+$ cueline runs
+No runs.
+
 $ cueline run status run_... --json
 {"status":"running","executor":"caller","phase":"caller_jobs_pending","runtime":{"ownership":"missing"},...}
+
+$ cueline run verify run_... --json
+{"runId":"run_...","outcome":"verified","marker":"valid",...}
 
 $ cueline run takeover stale_run_... --json
 {"runId":"stale_run_...","outcome":"taken_over","next":"continue",...}

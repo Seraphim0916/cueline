@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createCodexIabAdapter } from "../../src/browser/codex-iab/chatgpt-client.js";
+import { CueLineError } from "../../src/core/errors.js";
 import {
   readPageChatState,
   readPageComposerState,
@@ -12,6 +13,7 @@ import {
   type PageComposerState,
   type PageChatState,
 } from "../../src/browser/codex-iab/bootstrap.js";
+import { acquireChatGptTab } from "../../src/browser/codex-iab/tab-discovery.js";
 /*
  * Keep these browser-runtime tests at the public adapter boundary. The actual
  * page evaluator runs against a tiny DOM double so newline handling cannot be
@@ -55,6 +57,34 @@ class FakeLocator implements IabLocator {
   }
 }
 
+test("rejects a non-conversation URL before touching the Browser runtime", () => {
+  let browserTouched = false;
+  const browser: IabBrowser = {
+    async documentation() {
+      browserTouched = true;
+    },
+    tabs: {
+      async new() {
+        browserTouched = true;
+        throw new Error("BROWSER_MUST_NOT_BE_TOUCHED");
+      },
+    },
+  };
+
+  assert.throws(
+    () =>
+      createCodexIabAdapter({
+        browser,
+        conversationUrl: "https://chatgpt.com/c/real-id/not-the-conversation",
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_RECONCILIATION_URL_REQUIRED",
+  );
+  assert.equal(browserTouched, false);
+});
+
 function fakeBrowser(options: {
   states: Array<
     Omit<
@@ -87,6 +117,11 @@ function fakeBrowser(options: {
   responseModelSlug?: string | null;
   composerStates?: PageComposerState[];
   urlReadSequence?: string[];
+  archivePostActionUrl?: string;
+  archiveClickError?: string;
+  archiveClickChangesUrlBeforeThrow?: boolean;
+  archiveButtonAvailable?: boolean;
+  archiveMenuItemAvailable?: boolean;
 }) {
   const composer = new FakeLocator();
   const hydratedComposer = new FakeLocator();
@@ -107,6 +142,20 @@ function fakeBrowser(options: {
   });
   const missingProOption = new FakeLocator();
   missingProOption.countResult = 0;
+  const conversationOptionsButton = new FakeLocator();
+  const missingConversationOptionsButton = new FakeLocator();
+  missingConversationOptionsButton.countResult = 0;
+  const archiveMenuItem = new FakeLocator(() => {
+    url = options.archivePostActionUrl ?? "https://chatgpt.com/";
+  });
+  const missingArchiveMenuItem = new FakeLocator();
+  missingArchiveMenuItem.countResult = 0;
+  if (options.archiveClickError) {
+    archiveMenuItem.failFirstClick = true;
+    archiveMenuItem.firstClickError = options.archiveClickError;
+    archiveMenuItem.invokeOnClickBeforeFailure =
+      options.archiveClickChangesUrlBeforeThrow ?? false;
+  }
   sendButtons[0]!.failFirstClick = options.failFirstClick ?? false;
   sendButtons[0]!.invokeOnClickBeforeFailure =
     options.firstSendClickSubmitsBeforeThrow ?? false;
@@ -128,6 +177,11 @@ function fakeBrowser(options: {
     locator(selector: string) {
       requestedSelectors.push(selector);
       if (selector === "button.__composer-pill") return modelPicker;
+      if (selector === '[data-testid="conversation-options-button"]') {
+        return options.archiveButtonAvailable === false
+          ? missingConversationOptionsButton
+          : conversationOptionsButton;
+      }
       return options.hydratedComposer ? hydratedComposer : missingHydratedComposer;
     },
     getByRole(role: string, query: { name: string }) {
@@ -135,6 +189,11 @@ function fakeBrowser(options: {
       if (role === "textbox") return composer;
       if (role === "menuitemradio" && query.name === "Pro") {
         return options.proOptionAvailable === false ? missingProOption : proOption;
+      }
+      if (role === "menuitem" && (query.name === "Archive" || query.name === "封存")) {
+        return options.archiveMenuItemAvailable === false
+          ? missingArchiveMenuItem
+          : archiveMenuItem;
       }
       if (options.sendButtonAvailable === false) {
         return missingSendButton;
@@ -260,12 +319,357 @@ function fakeBrowser(options: {
     requestedRoles,
     requestedSelectors,
     sendButtons,
+    conversationOptionsButton,
+    archiveMenuItem,
     coordinateClicks: () => coordinateClicks,
     sendSubmissions: () => sendSubmissions,
   };
 }
 
-test("treats contenteditable block newlines as the same inline prompt", async () => {
+test("rejects unsafe browser timing options before touching the Browser runtime", () => {
+  const invalid: Array<{
+    options: Parameters<typeof createCodexIabAdapter>[0];
+    code: string;
+  }> = [
+    { options: { timeoutMs: 0 }, code: "IAB_TIMEOUT_INVALID" },
+    { options: { timeoutMs: -1 }, code: "IAB_TIMEOUT_INVALID" },
+    { options: { timeoutMs: Number.NaN }, code: "IAB_TIMEOUT_INVALID" },
+    { options: { timeoutMs: Number.POSITIVE_INFINITY }, code: "IAB_TIMEOUT_INVALID" },
+    { options: { timeoutMs: 2_147_483_648 }, code: "IAB_TIMEOUT_INVALID" },
+    { options: { pollIntervalMs: 0 }, code: "IAB_POLL_INTERVAL_INVALID" },
+    { options: { pollIntervalMs: -1 }, code: "IAB_POLL_INTERVAL_INVALID" },
+    { options: { pollIntervalMs: 0.5 }, code: "IAB_POLL_INTERVAL_INVALID" },
+    { options: { pollIntervalMs: 2_147_483_648 }, code: "IAB_POLL_INTERVAL_INVALID" },
+    { options: { stableMs: -1 }, code: "IAB_STABLE_WINDOW_INVALID" },
+    { options: { stableMs: Number.NaN }, code: "IAB_STABLE_WINDOW_INVALID" },
+    { options: { stableMs: 0.5 }, code: "IAB_STABLE_WINDOW_INVALID" },
+    { options: { stableMs: 2_147_483_648 }, code: "IAB_STABLE_WINDOW_INVALID" },
+  ];
+
+  for (const fixture of invalid) {
+    assert.throws(
+      () => createCodexIabAdapter(fixture.options),
+      (error: unknown) => error instanceof CueLineError && error.code === fixture.code,
+    );
+  }
+});
+
+test("accepts an explicit zero stabilization window for deterministic tests", () => {
+  assert.doesNotThrow(() =>
+    createCodexIabAdapter({ timeoutMs: 1, pollIntervalMs: 1, stableMs: 0 }),
+  );
+});
+
+test("archives one exact completed conversation with one Archive click", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-browser-adapter";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    archivePostActionUrl: "https://chatgpt.com/",
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+  });
+
+  const evidence = await adapter.archiveConversation!({ conversationUrl });
+
+  assert.equal(fixture.conversationOptionsButton.clicks, 1);
+  assert.equal(fixture.archiveMenuItem.clicks, 1);
+  assert.deepEqual(evidence, {
+    conversationUrl,
+    proof: "conversation_url_changed",
+    postActionUrl: "https://chatgpt.com/",
+  });
+});
+
+test("an ambiguous Archive click is never retried", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-browser-ambiguous";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    archiveClickError: "Playwright timeout after Archive click",
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  await assert.rejects(
+    adapter.archiveConversation!({ conversationUrl }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_AMBIGUOUS",
+  );
+  assert.equal(fixture.archiveMenuItem.clicks, 1);
+});
+
+test("a timed-out Archive click is accepted only when URL change proves completion", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-browser-timeout-proven";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    archiveClickError: "Playwright timeout after accepted Archive click",
+    archiveClickChangesUrlBeforeThrow: true,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  const evidence = await adapter.archiveConversation!({ conversationUrl });
+
+  assert.equal(evidence.proof, "conversation_url_changed");
+  assert.equal(fixture.archiveMenuItem.clicks, 1);
+});
+
+test("refuses to archive a conversation other than the adapter binding", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-browser-bound";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  await assert.rejects(
+    adapter.archiveConversation!({
+      conversationUrl: "https://chatgpt.com/c/archive-browser-other",
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_MISMATCH",
+  );
+  assert.equal(fixture.conversationOptionsButton.clicks, 0);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
+});
+
+test("never opens archive controls while ChatGPT Pro is answering", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-pro-active";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: true,
+        assistantText: "still answering",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  await assert.rejects(
+    adapter.archiveConversation!({ conversationUrl }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_PRO_ACTIVE",
+  );
+  assert.equal(fixture.conversationOptionsButton.clicks, 0);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
+});
+
+test("never clicks Archive when Pro starts answering after the menu opens", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-pro-restarted";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+      {
+        pageUrl: conversationUrl,
+        isAnswering: true,
+        assistantText: "new answer",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  await assert.rejects(
+    adapter.archiveConversation!({ conversationUrl }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_PRO_ACTIVE",
+  );
+  assert.equal(fixture.conversationOptionsButton.clicks, 1);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
+});
+
+test("never clicks Archive when the tab navigates after the menu opens", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-navigation-race";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+      {
+        pageUrl: "https://chatgpt.com/c/different-conversation",
+        isAnswering: false,
+        assistantText: "different conversation",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  await assert.rejects(
+    adapter.archiveConversation!({ conversationUrl }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_MISMATCH",
+  );
+  assert.equal(fixture.conversationOptionsButton.clicks, 1);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
+});
+
+test("never clicks Archive when cancellation arrives at the write-ahead checkpoint", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-cancelled-at-checkpoint";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+  const controller = new AbortController();
+
+  await assert.rejects(
+    adapter.archiveConversation!(
+      { conversationUrl, signal: controller.signal },
+      {
+        async onBeforeArchiveClick() {
+          controller.abort();
+        },
+      },
+    ),
+  );
+  assert.equal(fixture.conversationOptionsButton.clicks, 1);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
+});
+
+test("never clicks Archive when Pro starts answering during the durable checkpoint", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-pro-active-during-checkpoint";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+      {
+        pageUrl: conversationUrl,
+        isAnswering: true,
+        assistantText: "new response started",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+  let checkpoints = 0;
+
+  await assert.rejects(
+    adapter.archiveConversation!(
+      { conversationUrl },
+      {
+        async onBeforeArchiveClick() {
+          checkpoints += 1;
+        },
+      },
+    ),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_PRO_ACTIVE",
+  );
+  assert.equal(checkpoints, 1);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
+});
+
+test("normalizes contenteditable block newlines without erasing indentation", async () => {
   const sendButton = {
     disabled: false,
     innerText: "Send prompt",
@@ -317,11 +721,137 @@ test("treats contenteditable block newlines as the same inline prompt", async ()
     );
     assert.equal(state.state, "inline_ready");
     assert.equal(state.sendButtonEnabled, true);
+
+    composer.innerText = "Run exactly:\nnpm test";
+    composer.textContent = composer.innerText;
+    const indentationMismatch = await readPageComposerState(
+      tab,
+      "Run exactly:\n  npm test",
+      ["Send prompt"],
+    );
+    assert.equal(indentationMismatch.state, "empty");
+    assert.equal(indentationMismatch.sendButtonEnabled, true);
   } finally {
     if (documentDescriptor) {
       Object.defineProperty(globalThis, "document", documentDescriptor);
     } else {
       delete (globalThis as { document?: unknown }).document;
+    }
+  }
+});
+
+test("composer readiness ignores every non-actionable residual Send button", async () => {
+  type VisibilityCase =
+    | "hidden"
+    | "aria_hidden"
+    | "ancestor_hidden"
+    | "check_visibility"
+    | "display"
+    | "visibility"
+    | "opacity"
+    | "pointer_events"
+    | "geometry"
+    | "client_rects"
+    | "visible";
+  let visibilityCase: VisibilityCase = "visible";
+  const sendButton = {
+    disabled: false,
+    get hidden() {
+      return visibilityCase === "hidden";
+    },
+    innerText: "Send prompt",
+    textContent: "Send prompt",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Send prompt";
+      if (name === "aria-disabled") return "false";
+      if (name === "aria-hidden") return visibilityCase === "aria_hidden" ? "true" : null;
+      return null;
+    },
+    closest() {
+      return visibilityCase === "ancestor_hidden" ? this : null;
+    },
+    checkVisibility() {
+      return visibilityCase !== "check_visibility";
+    },
+    getBoundingClientRect() {
+      return visibilityCase === "geometry"
+        ? { width: 0, height: 0 }
+        : { width: 40, height: 40 };
+    },
+    getClientRects() {
+      return visibilityCase === "client_rects" ? [] : [{}];
+    },
+  };
+  const form = {
+    querySelectorAll(selector: string) {
+      return selector === "button" ? [sendButton] : [];
+    },
+  };
+  const composer = {
+    innerText: "controller prompt",
+    textContent: "controller prompt",
+    parentElement: null,
+    closest() {
+      return form;
+    },
+  };
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const styleDescriptor = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { querySelector: () => composer },
+  });
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => ({
+      display: visibilityCase === "display" ? "none" : "block",
+      visibility: visibilityCase === "visibility" ? "hidden" : "visible",
+      opacity: visibilityCase === "opacity" ? "0" : "1",
+      pointerEvents: visibilityCase === "pointer_events" ? "none" : "auto",
+    }),
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result, Argument>(
+        pageFunction: (argument: Argument) => Result | Promise<Result>,
+        argument: Argument,
+      ): Promise<Result> {
+        return pageFunction(argument);
+      },
+    },
+  } as unknown as IabTab;
+
+  try {
+    for (const candidate of [
+      "hidden",
+      "aria_hidden",
+      "ancestor_hidden",
+      "check_visibility",
+      "display",
+      "visibility",
+      "opacity",
+      "pointer_events",
+      "geometry",
+      "client_rects",
+    ] as const) {
+      visibilityCase = candidate;
+      const state = await readPageComposerState(tab, "controller prompt", ["Send prompt"]);
+      assert.equal(state.state, "inline_ready");
+      assert.equal(state.sendButtonEnabled, false, candidate);
+    }
+    visibilityCase = "visible";
+    assert.equal(
+      (await readPageComposerState(tab, "controller prompt", ["Send prompt"]))
+        .sendButtonEnabled,
+      true,
+    );
+  } finally {
+    for (const [name, descriptor] of [
+      ["document", documentDescriptor],
+      ["getComputedStyle", styleDescriptor],
+    ] as const) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globalThis as Record<string, unknown>)[name];
     }
   }
 });
@@ -406,13 +936,17 @@ test("ignores a hidden residual Stop answering button after the Pro response com
   }
 });
 
-test("recognizes a visible actionable Stop answering button while Pro is still responding", async () => {
+test("recognizes localized visible stop-answering controls without matching unrelated stops", async () => {
+  let ariaLabel = "Stop answering";
+  let buttonText = "Stop answering";
   const stopButton = {
     disabled: false,
     hidden: false,
-    textContent: "Stop answering",
+    get textContent() {
+      return buttonText;
+    },
     getAttribute(name: string) {
-      if (name === "aria-label") return "Stop answering";
+      if (name === "aria-label") return ariaLabel;
       return null;
     },
     closest() {
@@ -459,8 +993,37 @@ test("recognizes a visible actionable Stop answering button while Pro is still r
   } as unknown as IabTab;
 
   try {
-    const state = await readPageChatState(tab);
-    assert.equal(state.isAnswering, true);
+    for (const label of [
+      "Stop answering",
+      "Stop generating",
+      "Stop response",
+      "停止產生",
+      "停止回答",
+      "停止回覆",
+      "停止作答",
+      "停止生成",
+      "回答の生成を停止",
+      "生成を停止する",
+      "応答を停止",
+      "생성 중지",
+      "답변 중지",
+      "응답 중지",
+    ]) {
+      ariaLabel = label;
+      buttonText = label;
+      assert.equal((await readPageChatState(tab)).isAnswering, true, label);
+    }
+    for (const label of ["Stop sharing", "停止錄音", "共有を停止", "녹음 중지"]) {
+      ariaLabel = label;
+      buttonText = label;
+      assert.equal((await readPageChatState(tab)).isAnswering, false, label);
+    }
+    ariaLabel = "Stop sharing";
+    buttonText = "Generating preview";
+    assert.equal((await readPageChatState(tab)).isAnswering, false, "cross-field tokens");
+    ariaLabel = "   ";
+    buttonText = "Stop answering";
+    assert.equal((await readPageChatState(tab)).isAnswering, true, "visible-text fallback");
   } finally {
     for (const [name, descriptor] of [
       ["document", documentDescriptor],
@@ -681,6 +1244,49 @@ test("submitTurn waits for a delayed exact conversation URL after clicking only 
   ]);
 });
 
+test("submitTurn accepts an equivalent trailing-slash conversation URL", async () => {
+  const conversationUrl = "https://chatgpt.com/c/existing-canonical-conversation";
+  const equivalentUrl = `${conversationUrl}/?utm_source=cueline#latest`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    urlReadSequence: [conversationUrl, conversationUrl, equivalentUrl],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+  const checkpoints: Array<{ state: string; url?: string }> = [];
+
+  await adapter.submitTurn!(
+    {
+      runId: "run_existing_canonical_conversation",
+      round: 2,
+      requestId: "msg_existing_canonical_conversation",
+      prompt: "Keep the same canonical conversation",
+    },
+    {
+      async onCheckpoint(checkpoint) {
+        checkpoints.push({
+          state: checkpoint.submissionState,
+          ...(checkpoint.conversationUrl === undefined
+            ? {}
+            : { url: checkpoint.conversationUrl }),
+        });
+      },
+    },
+  );
+
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.deepEqual(checkpoints, [
+    { state: "submitting", url: conversationUrl },
+    { state: "submitted", url: conversationUrl },
+  ]);
+});
+
 test("submitTurn refuses a post-click navigation away from an existing conversation", async () => {
   const conversationUrl = "https://chatgpt.com/c/existing-conversation-a";
   const navigatedUrl = "https://chatgpt.com/c/unrelated-conversation-b";
@@ -757,6 +1363,38 @@ test("submitTurn reports possibly sent when a new conversation never exposes an 
       error.code === "CONTROLLER_CONVERSATION_URL_UNAVAILABLE" &&
       "details" in error &&
       (error.details as { submission_state?: unknown }).submission_state === "possibly_sent",
+  );
+  assert.equal(fixture.sendSubmissions(), 1);
+});
+
+test("submitTurn never binds a nested path that only starts like a conversation URL", async () => {
+  const fixture = fakeBrowser({
+    initialUrl: "https://chatgpt.com/",
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    urlReadSequence: [
+      "https://chatgpt.com/",
+      "https://chatgpt.com/",
+      "https://chatgpt.com/c/real-conversation/not-the-conversation",
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 5,
+  });
+
+  await assert.rejects(
+    adapter.submitTurn!({
+      runId: "run_nested_conversation_path",
+      round: 1,
+      requestId: "msg_nested_conversation_path",
+      prompt: "Never bind a URL prefix",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_CONVERSATION_URL_UNAVAILABLE",
   );
   assert.equal(fixture.sendSubmissions(), 1);
 });
@@ -1503,6 +2141,93 @@ test("does not retry a timed-out click when answering already started", async ()
   assert.equal(turn.text, "finished");
 });
 
+test("a completed response proves a timed-out click submitted on an existing conversation", async () => {
+  const conversationUrl = "https://chatgpt.com/c/fast-click-completion";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "previous",
+        assistantMessageCount: 1,
+      },
+      {
+        isAnswering: false,
+        assistantText: "fast complete",
+        assistantMessageCount: 2,
+      },
+    ],
+    failFirstClick: true,
+    firstSendClickSubmitsBeforeThrow: true,
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_fast_click_completion",
+    round: 2,
+    requestId: "msg_fast_click_completion",
+    prompt: "Accept the one completed response",
+  });
+
+  assert.equal(turn.text, "fast complete");
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendButtons[1]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 0);
+  assert.equal(fixture.sendSubmissions(), 1);
+});
+
+test("a response count from another conversation cannot prove a timed-out click submitted", async () => {
+  const originalUrl = "https://chatgpt.com/c/click-proof-original";
+  const fixture = fakeBrowser({
+    initialUrl: originalUrl,
+    states: [
+      {
+        pageUrl: originalUrl,
+        isAnswering: false,
+        assistantText: "previous",
+        assistantMessageCount: 1,
+      },
+      {
+        pageUrl: "https://chatgpt.com/c/click-proof-unrelated",
+        isAnswering: false,
+        assistantText: "unrelated complete",
+        assistantMessageCount: 2,
+      },
+    ],
+    failFirstClick: true,
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl: originalUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_click_proof_unrelated",
+      round: 2,
+      requestId: "msg_click_proof_unrelated",
+      prompt: "Do not import another conversation",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS",
+  );
+
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendButtons[1]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 0);
+});
+
 test("does not send twice when an ambiguous locator failure hides a successful click", async () => {
   const fixture = fakeBrowser({
     states: [
@@ -1791,6 +2516,196 @@ test("waits for the Pro composer label to hydrate before sending", async () => {
   assert.equal(turn.text, "complete");
   assert.equal(fixture.sendSubmissions(), 1);
   assert.deepEqual(fixture.composer.fills, ["Wait for the actual Pro composer before sending"]);
+});
+
+test("tab discovery refuses multiple matching session tabs instead of choosing the first", async () => {
+  const fixture = fakeBrowser({
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  let getCalls = 0;
+  let newCalls = 0;
+  const browser: IabBrowser = {
+    tabs: {
+      async selected() {
+        return undefined;
+      },
+      async list() {
+        return [
+          { id: "chat-one", url: "https://chatgpt.com/c/chat-one" },
+          { id: "chat-two", url: "https://chatgpt.com/c/chat-two" },
+        ];
+      },
+      async get() {
+        getCalls += 1;
+        return fixture.tab;
+      },
+      async new() {
+        newCalls += 1;
+        return fixture.tab;
+      },
+    },
+  };
+
+  await assert.rejects(
+    acquireChatGptTab(browser),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "IAB_CHATGPT_TAB_AMBIGUOUS",
+  );
+  assert.equal(getCalls, 0);
+  assert.equal(newCalls, 0);
+});
+
+test("tab discovery refuses multiple claimable copies of one exact conversation", async () => {
+  const conversationUrl = "https://chatgpt.com/c/exact-duplicate";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  let claimCalls = 0;
+  let newCalls = 0;
+  const browser: IabBrowser = {
+    tabs: {
+      async selected() {
+        return undefined;
+      },
+      async list() {
+        return [];
+      },
+      async new() {
+        newCalls += 1;
+        return fixture.tab;
+      },
+    },
+    user: {
+      async openTabs() {
+        return [
+          { id: "copy-one", url: conversationUrl },
+          { id: "copy-two", url: conversationUrl },
+        ];
+      },
+      async claimTab() {
+        claimCalls += 1;
+        return fixture.tab;
+      },
+    },
+  };
+
+  await assert.rejects(
+    acquireChatGptTab(browser, conversationUrl),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "IAB_CHATGPT_TAB_AMBIGUOUS",
+  );
+  assert.equal(claimCalls, 0);
+  assert.equal(newCalls, 0);
+});
+
+test("tab discovery deduplicates repeated listings of one physical tab", async () => {
+  const conversationUrl = "https://chatgpt.com/c/repeated-listing";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  let getCalls = 0;
+  const browser: IabBrowser = {
+    tabs: {
+      async selected() {
+        return undefined;
+      },
+      async list() {
+        return [
+          { id: "same-tab", url: conversationUrl },
+          { id: "same-tab", url: conversationUrl },
+        ];
+      },
+      async get() {
+        getCalls += 1;
+        return fixture.tab;
+      },
+      async new() {
+        throw new Error("UNEXPECTED_NEW_TAB");
+      },
+    },
+  };
+
+  const tab = await acquireChatGptTab(browser, conversationUrl);
+  assert.equal(tab, fixture.tab);
+  assert.equal(getCalls, 1);
+});
+
+test("tab discovery filters the exact target before deduplicating stale tab listings", async () => {
+  const conversationUrl = "https://chatgpt.com/c/current-target";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  let getCalls = 0;
+  const browser: IabBrowser = {
+    tabs: {
+      async selected() {
+        return undefined;
+      },
+      async list() {
+        return [
+          { id: "reused-tab", url: "https://chatgpt.com/c/stale-target" },
+          { id: "reused-tab", url: conversationUrl },
+        ];
+      },
+      async get() {
+        getCalls += 1;
+        return fixture.tab;
+      },
+      async new() {
+        throw new Error("UNEXPECTED_NEW_TAB");
+      },
+    },
+  };
+
+  const tab = await acquireChatGptTab(browser, conversationUrl);
+  assert.equal(tab, fixture.tab);
+  assert.equal(getCalls, 1);
+});
+
+test("tab discovery reports ambiguity even when selected-tab attachment is unavailable", async () => {
+  const fixture = fakeBrowser({
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  let selectedCalls = 0;
+  let newCalls = 0;
+  const browser: IabBrowser = {
+    tabs: {
+      async selected() {
+        selectedCalls += 1;
+        throw new Error("Browser webview attach timeout");
+      },
+      async list() {
+        return [
+          { id: "chat-one", url: "https://chatgpt.com/c/chat-one" },
+          { id: "chat-two", url: "https://chatgpt.com/c/chat-two" },
+        ];
+      },
+      async get() {
+        return fixture.tab;
+      },
+      async new() {
+        newCalls += 1;
+        return fixture.tab;
+      },
+    },
+  };
+
+  await assert.rejects(
+    acquireChatGptTab(browser),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "IAB_CHATGPT_TAB_AMBIGUOUS",
+  );
+  assert.equal(selectedCalls, 2);
+  assert.equal(newCalls, 0);
 });
 
 test("reacquires the exact conversation once when the cached tab is gone", async () => {
@@ -2181,6 +3096,82 @@ test("recovers an existing completed response from the exact conversation withou
 
   assert.equal(turn?.text, "existing complete response");
   assert.equal(turn?.conversationUrl, conversationUrl);
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
+test("recovery treats contenteditable block newlines as the same user prompt", async () => {
+  const conversationUrl = "https://chatgpt.com/c/recovery-block-newlines";
+  const prompt = "First instruction\nSecond instruction\nThird instruction";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "completed multiline response",
+        assistantMessageCount: 1,
+        lastUserText: "First instruction\n\nSecond instruction\r\n \nThird instruction",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_recovery_block_newlines",
+    round: 1,
+    requestId: "msg_recovery_block_newlines",
+    prompt,
+  });
+
+  assert.equal(turn.text, "completed multiline response");
+  assert.equal(turn.conversationUrl, conversationUrl);
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
+test("recovery newline normalization preserves meaningful indentation", async () => {
+  const conversationUrl = "https://chatgpt.com/c/recovery-indentation";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "reply to a differently indented prompt",
+        assistantMessageCount: 1,
+        lastUserText: "Run exactly:\nnpm test",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.recoverTurn!({
+      runId: "run_recovery_indentation",
+      round: 1,
+      requestId: "msg_recovery_indentation",
+      prompt: "Run exactly:\n  npm test",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_RECONCILIATION_MISMATCH",
+  );
   assert.deepEqual(fixture.composer.fills, []);
   assert.equal(fixture.sendButtons[0]!.clicks, 0);
 });
