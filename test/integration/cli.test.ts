@@ -172,6 +172,45 @@ async function seedOneRunningJob(home: string, runId: string): Promise<string> {
   return id;
 }
 
+async function seedComparableRun(
+  home: string,
+  runId: string,
+  task: string,
+  status: "running" | "succeeded",
+): Promise<void> {
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, "", "process", 12, true),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: `secret request for ${runId}`,
+    executor: "process",
+    allow_process_execution: true,
+  });
+  const spec = {
+    job_key: "comparison_job",
+    lane: "default",
+    mode: "advise" as const,
+    task,
+    required: true,
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  await store.append("job_registered", {
+    job: {
+      jobId: id,
+      jobKey: spec.job_key,
+      required: true,
+      spec,
+      status: "pending",
+      output: null,
+      error: null,
+    },
+  });
+  await store.append("job_status", { job_id: id, status });
+}
+
 test("config path prints the effective configuration path", async () => {
   const context = await fixture();
   const result = invoke(["config", "path"], context.environment);
@@ -846,6 +885,93 @@ test("run status-at rejects invalid or duplicate sequence flags as usage errors"
     const result = invoke(args, context.environment);
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, /CLI_ARGUMENTS_INVALID/);
+  }
+});
+
+test("run diff reports sanitized semantic changes without writing either run", async () => {
+  const context = await fixture();
+  const leftRunId = "run_diff_left";
+  const rightRunId = "run_diff_right";
+  await seedComparableRun(context.home, leftRunId, "secret left task", "running");
+  await seedComparableRun(context.home, rightRunId, "secret right task", "succeeded");
+  const leftBefore = await readEvents(runPaths(context.home, leftRunId).events);
+  const rightBefore = await readEvents(runPaths(context.home, rightRunId).events);
+
+  const result = invoke(
+    ["run", "diff", leftRunId, rightRunId, "--json"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const comparison = JSON.parse(result.stdout) as {
+    schema: string;
+    equivalent: boolean;
+    left: { runId: string };
+    right: { runId: string };
+    changes: Array<{ field: string; left: unknown; right: unknown }>;
+  };
+  assert.equal(comparison.schema, "cueline-run-diff/0.1");
+  assert.equal(comparison.equivalent, false);
+  assert.equal(comparison.left.runId, leftRunId);
+  assert.equal(comparison.right.runId, rightRunId);
+  assert.ok(
+    comparison.changes.some(
+      (change) =>
+        change.field === "jobs.counts.orphaned" && change.left === 1 && change.right === 0,
+    ),
+  );
+  assert.ok(
+    comparison.changes.some(
+      (change) =>
+        change.field === "jobs.counts.succeeded" && change.left === 0 && change.right === 1,
+    ),
+  );
+  assert.ok(!result.stdout.includes("secret left task"));
+  assert.ok(!result.stdout.includes("secret right task"));
+  assert.ok(!result.stdout.includes("secret request"));
+  assert.deepEqual(await readEvents(runPaths(context.home, leftRunId).events), leftBefore);
+  assert.deepEqual(await readEvents(runPaths(context.home, rightRunId).events), rightBefore);
+});
+
+test("run diff treats different run identities with the same safe state as equivalent", async () => {
+  const context = await fixture();
+  const leftRunId = "run_diff_equivalent_left";
+  const rightRunId = "run_diff_equivalent_right";
+  await seedComparableRun(context.home, leftRunId, "left private task", "succeeded");
+  await seedComparableRun(context.home, rightRunId, "right private task", "succeeded");
+
+  const result = invoke(
+    ["run", "diff", leftRunId, rightRunId, "--json"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const comparison = JSON.parse(result.stdout) as {
+    equivalent: boolean;
+    changes: Array<{ field: string }>;
+  };
+  assert.equal(comparison.equivalent, true);
+  assert.deepEqual(comparison.changes, []);
+});
+
+test("run diff fails closed for missing runs and malformed arguments", async () => {
+  const context = await fixture();
+  const runId = "run_diff_existing";
+  await seedComparableRun(context.home, runId, "private task", "succeeded");
+
+  const missing = invoke(
+    ["run", "diff", runId, "run_diff_missing", "--json"],
+    context.environment,
+  );
+  assert.equal(missing.status, 1);
+
+  for (const args of [
+    ["run", "diff", runId],
+    ["run", "diff", runId, runId, "--unknown"],
+    ["run", "diff", runId, runId, "--json", "--json"],
+  ]) {
+    const malformed = invoke(args, context.environment);
+    assert.equal(malformed.status, 2, malformed.stderr);
   }
 });
 

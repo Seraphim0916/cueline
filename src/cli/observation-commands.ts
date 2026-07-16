@@ -1,4 +1,5 @@
 import {
+  compareCueLineRuns,
   createCueLineRunHandoff,
   diagnoseCueLineRun,
   listCueLineRuns,
@@ -195,6 +196,29 @@ async function runStatusAtCommand(
   return 0;
 }
 
+async function runDiffCommand(
+  leftRunId: string,
+  rightRunId: string,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const comparison = await compareCueLineRuns(leftRunId, rightRunId, { environment });
+  if (json) {
+    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...comparison }, null, 2));
+  } else {
+    io.stdout(`left\t${comparison.left.runId}`);
+    io.stdout(`right\t${comparison.right.runId}`);
+    io.stdout(`equivalent\t${comparison.equivalent ? "yes" : "no"}`);
+    for (const change of comparison.changes) {
+      io.stdout(
+        `change\t${change.field}\t${JSON.stringify(change.left)}\t${JSON.stringify(change.right)}`,
+      );
+    }
+  }
+  return 0;
+}
+
 export async function handleObservationCommand(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
@@ -248,6 +272,15 @@ export async function handleObservationCommand(
       );
     }
     return runStatusAtCommand(args[2], sequence, json, environment, io);
+  }
+  if (
+    args[0] === "run" &&
+    args[1] === "diff" &&
+    typeof args[2] === "string" &&
+    typeof args[3] === "string" &&
+    (args.length === 4 || (args.length === 5 && args[4] === "--json"))
+  ) {
+    return runDiffCommand(args[2], args[3], args[4] === "--json", environment, io);
   }
   if (args[0] === "run" && args[1] === "watch" && typeof args[2] === "string") {
     let afterSequence: number | undefined;
