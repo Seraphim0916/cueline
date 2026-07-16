@@ -602,6 +602,19 @@ test("runs reports degraded while preserving readable entries beside a corrupt r
   );
 });
 
+test("jobs rejects structurally invalid persisted job evidence", async () => {
+  const context = await fixture();
+  const jobsDirectory = path.join(context.home, "jobs");
+  await mkdir(jobsDirectory, { recursive: true });
+  await writeFile(path.join(jobsDirectory, "malformed.json"), "{}\n", "utf8");
+
+  const result = invoke(["jobs", "--json"], context.environment);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /JOB_STATUS_INVALID/);
+  assert.equal(result.stdout, "");
+});
+
 test("run status refuses to call a legacy running run active without ownership evidence", async () => {
   const context = await fixture();
   const runId = await seedActiveRun(context.home);

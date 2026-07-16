@@ -29,6 +29,113 @@ export interface JobStatus {
   error?: string;
 }
 
+const JOB_STATUS_KINDS = new Set<JobStatusKind>([
+  "pending",
+  "running",
+  "succeeded",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "ambiguous",
+]);
+
+const JOB_RESULT_STATUSES = new Set<JobResultStatus>([
+  "succeeded",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "ambiguous",
+]);
+
+function validTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function validJobResult(value: unknown, expectedStatus: JobStatusKind): value is JobResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const result = value as Record<string, unknown>;
+  return (
+    typeof result.status === "string" &&
+    JOB_RESULT_STATUSES.has(result.status as JobResultStatus) &&
+    result.status === expectedStatus &&
+    (result.exitCode === null || Number.isSafeInteger(result.exitCode)) &&
+    typeof result.stdout === "string" &&
+    typeof result.stderr === "string" &&
+    typeof result.output === "string" &&
+    typeof result.emptyOutput === "boolean" &&
+    result.emptyOutput === (result.output.length === 0) &&
+    typeof result.timedOut === "boolean" &&
+    result.timedOut === (expectedStatus === "timed_out") &&
+    typeof result.cancelled === "boolean" &&
+    result.cancelled === (expectedStatus === "cancelled") &&
+    typeof result.ambiguousSideEffects === "boolean" &&
+    result.retryable === false &&
+    validTimestamp(result.startedAt) &&
+    validTimestamp(result.finishedAt) &&
+    Date.parse(result.finishedAt) >= Date.parse(result.startedAt)
+  );
+}
+
+function assertJobStatus(value: unknown, expectedJobId?: string): asserts value is JobStatus {
+  const invalid = (): never => {
+    throw new CueLineError(
+      "JOB_STATUS_INVALID",
+      `persisted job status${expectedJobId === undefined ? "" : ` for '${expectedJobId}'`} has an invalid structure`,
+      expectedJobId === undefined ? undefined : { details: { jobId: expectedJobId } },
+    );
+  };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) invalid();
+  const status = value as Record<string, unknown>;
+  if (
+    typeof status.jobId !== "string" ||
+    (expectedJobId !== undefined && status.jobId !== expectedJobId) ||
+    (status.execution !== "foreground" && status.execution !== "background") ||
+    typeof status.status !== "string" ||
+    !JOB_STATUS_KINDS.has(status.status as JobStatusKind) ||
+    !validTimestamp(status.startedAt) ||
+    !optionalString(status.runId) ||
+    !optionalString(status.jobKey) ||
+    !optionalString(status.lane) ||
+    (status.mode !== undefined && status.mode !== "advise" && status.mode !== "work") ||
+    !optionalString(status.runnerId) ||
+    !optionalString(status.model) ||
+    !optionalString(status.provider) ||
+    !optionalString(status.phase) ||
+    (status.lastProgressAt !== undefined && !validTimestamp(status.lastProgressAt)) ||
+    (status.pid !== undefined && (!Number.isSafeInteger(status.pid) || (status.pid as number) < 1)) ||
+    (status.finishedAt !== undefined &&
+      (!validTimestamp(status.finishedAt) ||
+        Date.parse(status.finishedAt) < Date.parse(status.startedAt as string))) ||
+    !optionalString(status.error) ||
+    (status.result !== undefined &&
+      !validJobResult(status.result, status.status as JobStatusKind)) ||
+    ((status.status === "pending" || status.status === "running") &&
+      (status.result !== undefined || status.finishedAt !== undefined))
+  ) {
+    invalid();
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(status.jobId as string)) invalid();
+}
+
+export function parseJobStatus(source: string, expectedJobId?: string): JobStatus {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch {
+    throw new CueLineError(
+      "JOB_STATUS_INVALID",
+      `persisted job status${expectedJobId === undefined ? "" : ` for '${expectedJobId}'`} is not valid JSON`,
+      expectedJobId === undefined ? undefined : { details: { jobId: expectedJobId } },
+    );
+  }
+  assertJobStatus(parsed, expectedJobId);
+  return parsed;
+}
+
 function assertSafeJobId(jobId: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(jobId)) {
     throw new CueLineError("JOB_ID_INVALID", "job id contains unsupported path characters", {
@@ -54,7 +161,7 @@ export class JobStatusStore {
   }
 
   async write(status: JobStatus): Promise<void> {
-    assertSafeJobId(status.jobId);
+    assertJobStatus(status, status.jobId);
     const jsonStatus = JSON.parse(JSON.stringify(status)) as JobStatus;
     const existingTerminal = await this.#anchorLegacyTerminal(status.jobId);
     if (isTerminalStatus(jsonStatus)) {
@@ -130,17 +237,9 @@ export class JobStatusStore {
   }
 
   async #readPath(target: string, jobId: string): Promise<JobStatus | undefined> {
+    let source: string;
     try {
-      const source = await readFile(target, "utf8");
-      const status = JSON.parse(source) as JobStatus;
-      if (status.jobId !== jobId) {
-        throw new CueLineError(
-          "JOB_STATUS_IDENTITY_MISMATCH",
-          `Persisted status identity does not match requested job '${jobId}'.`,
-          { details: { jobId, persistedJobId: status.jobId } },
-        );
-      }
-      return status;
+      source = await readFile(target, "utf8");
     } catch (error) {
       if (isNotFound(error)) {
         return undefined;
@@ -151,6 +250,7 @@ export class JobStatusStore {
         details: { jobId },
       });
     }
+    return parseJobStatus(source, jobId);
   }
 
   #alreadyTerminalError(jobId: string, committedStatus: JobStatusKind): CueLineError {

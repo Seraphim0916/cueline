@@ -378,6 +378,12 @@ export async function reconcileCueLineRuntime(
     const activeJobs = Object.values(store.state.jobs).filter(
       (job) => job.status === "pending" || job.status === "running",
     );
+    const persistedStatuses = new Map<string, JobStatus | undefined>();
+    for (const job of activeJobs) {
+      const persisted = await statusStore.read(job.jobId);
+      if (persisted !== undefined) assertPersistedJobIdentity(persisted, runId, job);
+      persistedStatuses.set(job.jobId, persisted);
+    }
     const survivingJobs: string[] = [];
     let affectedJobs = 0;
     await store.append("runtime_reconciliation_started", {
@@ -385,13 +391,12 @@ export async function reconcileCueLineRuntime(
       active_job_ids: activeJobs.map((job) => job.jobId),
     });
     for (const job of activeJobs) {
-      const persisted = await statusStore.read(job.jobId);
+      const persisted = persistedStatuses.get(job.jobId);
       if (persisted?.pid !== undefined && processOrGroupIsAlive(persisted.pid)) {
         survivingJobs.push(job.jobId);
         continue;
       }
       if (persisted !== undefined && isPersistedTerminalStatus(persisted)) {
-        assertPersistedJobIdentity(persisted, runId, job);
         await store.append("job_status", persistedTerminalPayload(job, persisted));
         affectedJobs += 1;
         continue;
