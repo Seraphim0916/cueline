@@ -92,7 +92,7 @@ cueline doctor
 Then, in Codex:
 
 1. Open `https://chatgpt.com` in Codex's built-in Browser and sign in.
-2. Leave the conversation you want to be in charge selected — that page is the controller. Its composer must be on a `Pro` model; CueLine selects `Pro` for you if it is not, and refuses to send otherwise.
+2. Leave the conversation you want to be in charge selected — that page is the controller. If no selected tab is available and several matching ChatGPT tabs exist, CueLine returns `IAB_CHATGPT_TAB_AMBIGUOUS` instead of choosing the first one. Its composer must be on a `Pro` model; CueLine selects `Pro` for you if it is not, and refuses to send otherwise.
 3. Ask Codex to use CueLine for the task: *"Use CueLine and let the open ChatGPT Pro conversation direct this task."*
 4. Keep the returned `runId`. It is how an interrupted run is resumed.
 
