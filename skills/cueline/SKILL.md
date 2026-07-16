@@ -52,6 +52,8 @@ const browser = createCodexIabAdapter({
 let result = await startCueLineRun({
   request: USER_REQUEST,
   // executor defaults to "caller". Select "process" only explicitly.
+  // Opt in only when the user wants this exact controller conversation archived
+  // after a durable `complete`: archiveControllerConversationOnComplete: true,
   // Optional here: runId, home, environment, now, maxRounds.
 });
 result = await continueCueLineRun({
@@ -63,6 +65,8 @@ result = await continueCueLineRun({
 ```
 
 `maxRounds` is fixed as a durable total-run limit at creation. Continuations should omit it and reuse the stored value; if supplied, it must exactly match or CueLine rejects the continuation without sending another controller turn.
+
+`archiveControllerConversationOnComplete` is also a durable creation-time policy. It defaults to `false`. When explicitly enabled, CueLine first persists `run_completed`, then archives only the exact bound ChatGPT conversation and only while Pro is no longer answering. It never archives a `blocked` or `cancelled` run. The browser must finish a durable write-ahead checkpoint immediately before the Archive click. A proven failure before that checkpoint remains `pending` and may be retried; a timeout or restart after it, a missing checkpoint, or missing completion proof becomes `ambiguous` and is never retried automatically. A later continuation must omit the option or supply the exact stored value.
 
 Pass the user's request faithfully. Do not silently widen it, and do not turn an analysis-only request into `work`. Prefer `startCueLineRun` followed by `continueCueLineRun`, so the durable `runId` is known before any browser send. `runCueLine` remains a convenience API and post-creation failures include `details.run_id`. In caller mode, both APIs pause at `awaiting_controller` after one durable send and later at `awaiting_caller` or `awaiting_caller_work`; neither silently spawns a worker.
 
@@ -139,6 +143,7 @@ This check is mandatory before every continuation and after every outer tool/wai
 - `phase: jobs_running` with `runtime.ownership: active` means the original local loop is running jobs. Observe it; do not call `continueCueLineRun`.
 - `executor: caller`, `phase: caller_jobs_pending`, `runtime.ownership: missing`, and `safeNextAction: execute_caller_jobs` is a healthy handoff. Execute the listed local `advise` jobs and submit their results; do not call it orphaned or waiting for ChatGPT.
 - `phase: caller_work_pending` / `claim_caller_work` means no local mutation has started. Claim the exact job first. `caller_work_claimed` / `start_caller_work` means the claim exists but work is still unstarted. `caller_work_running` / `continue_caller_work` means the claimed caller may continue and heartbeat that exact work; another caller must not run it.
+- `phase: controller_archive_pending` / `settle_controller_archive` means the run is already durably `complete`, but its explicitly requested post-completion archive has not reached terminal proof. Continue the same run once with the same browser binding. `archived`, `ambiguous`, or `failed` are terminal archive outcomes; never click Archive manually or retry an `ambiguous` attempt.
 - One strict stale-observer case is self-recoverable: one normally submitted, non-manual caller turn, an exact persisted ChatGPT conversation URL, no jobs, no pending command, and no cancellation. It remains `controller_response_pending`, permits continuation, fences the stale observer, and performs only a read-only response observation. Every other stale owner still requires explicit takeover.
 - `runtime_ownership_unknown` means persisted `running` is not a live-process claim. Jobs shown as `orphaned` need inspection or cancellation. Except for the strict read-only stale-observer case above, `runtime_stale` requires explicit `cueline run takeover RUN_ID --json`; follow its `next` field and never retire a fresh active owner.
 - `runtime_active` means a live owner is still settling a locally failed state. Observe that owner; do not continue from another session.
@@ -176,6 +181,7 @@ When multiple legacy turns are pending, stop on `MULTIPLE_CONTROLLER_TURNS_PENDI
 ## Handle the result
 
 - If `result.status === "complete"`, return `result.finalDeliveryText` **verbatim** as the user-facing answer. Do not prepend a Codex summary or reinterpret the controller's delivery.
+- If completion enabled controller archiving, inspect `result.state.controllerConversationArchive.status`. `archived` has durable exact-URL-change proof. `failed` means the archive was deterministically impossible before any click. `ambiguous` means an Archive click may have occurred or the process restarted after the write-ahead event; do not retry, and report that the run itself is still complete while archive outcome is unverified.
 - If `result.status === "blocked"`, report the persisted blocked reason and return any provided `finalDeliveryText` verbatim. Clearly label missing delivery text instead of inventing one.
 - If `result.status === "cancelled"`, report the persisted cancellation reason. Do not relabel it complete or failed.
 - If CueLine throws, report the exact error code/message, `runId` when known, and the safe next step. Do not translate a failed or exhausted loop into success.

@@ -4,6 +4,7 @@ import { JobStatusStore, type JobStatus } from "../jobs/status.js";
 import type { ControllerCommand, ControllerJobSpec } from "../protocol/types.js";
 import { RunStore } from "../state/store.js";
 import { throwIfCancelled } from "./controller-abort.js";
+import { settleControllerConversationArchive } from "./controller-conversation-archive.js";
 import {
   boundedControllerEventEvidence,
   controllerEvidenceContentHash,
@@ -508,6 +509,7 @@ async function executeCommand(
 
   if (command.action === "complete") {
     await store.append("run_completed", { final_delivery_text: command.final_delivery_text });
+    await settleControllerConversationArchive(store, options);
     return "terminal";
   }
 

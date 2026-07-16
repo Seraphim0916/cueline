@@ -409,6 +409,11 @@ async function runStatusCommand(
   io.stdout(
     `controller\t${controller}\tpending=${status.controller.pendingTurns}\taccepted_commands=${status.controller.acceptedCommands}\tlast_action=${status.controller.lastAcceptedAction ?? "-"}\tlast_jobs=${status.controller.lastAcceptedJobKeys.length}`,
   );
+  if (status.controller.archive.enabled) {
+    io.stdout(
+      `controller_archive\tenabled=yes\tstatus=${status.controller.archive.status}\tcode=${status.controller.archive.code ?? "-"}\tproof=${status.controller.archive.proof ?? "-"}`,
+    );
+  }
   io.stdout(
     `jobs\ttotal=${status.jobs.total}\tpending=${counts.pending}\trunning=${counts.running}\tsucceeded=${counts.succeeded}\tfailed=${counts.failed}\ttimed_out=${counts.timed_out}\torphaned=${counts.orphaned}\tcancelled=${counts.cancelled}\tambiguous=${counts.ambiguous}`,
   );

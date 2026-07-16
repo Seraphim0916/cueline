@@ -25,6 +25,13 @@ function status(
       lastAcceptedAction: "dispatch",
       lastAcceptedRequestId: "msg_doctor",
       lastAcceptedJobKeys: ["audit"],
+      archive: {
+        enabled: false,
+        status: "disabled",
+        code: null,
+        proof: null,
+        postActionUrl: null,
+      },
     },
     jobs: {
       total: 0,
@@ -114,6 +121,13 @@ test("distinguishes work proposed by Pro from work actually started", () => {
         lastAcceptedAction: "dispatch",
         lastAcceptedRequestId: "msg_doctor",
         lastAcceptedJobKeys: ["mutate"],
+        archive: {
+          enabled: false,
+          status: "disabled",
+          code: null,
+          proof: null,
+          postActionUrl: null,
+        },
       },
       jobs: {
         total: 1,
@@ -163,6 +177,13 @@ test("does not call a controller-blocked terminal result healthy", () => {
         lastAcceptedAction: "blocked",
         lastAcceptedRequestId: "msg_blocked",
         lastAcceptedJobKeys: [],
+        archive: {
+          enabled: false,
+          status: "disabled",
+          code: null,
+          proof: null,
+          postActionUrl: null,
+        },
       },
       continueAllowed: false,
       safeNextAction: "return_result",

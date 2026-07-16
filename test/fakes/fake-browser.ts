@@ -1,11 +1,14 @@
 import type {
   BrowserAdapter,
+  BrowserConversationArchiveHooks,
   BrowserTurnInput,
   ControllerTurn,
 } from "../../src/browser/browser-adapter.js";
 
 export class FakeBrowserAdapter implements BrowserAdapter {
   readonly calls: BrowserTurnInput[] = [];
+  readonly archiveCalls: string[] = [];
+  archiveError: Error | null = null;
   readonly #turns: Array<ControllerTurn | ((input: BrowserTurnInput) => ControllerTurn)>;
 
   constructor(
@@ -34,5 +37,23 @@ export class FakeBrowserAdapter implements BrowserAdapter {
       throw new Error("FAKE_BROWSER_EXHAUSTED");
     }
     return structuredClone(typeof turn === "function" ? turn(input) : turn);
+  }
+
+  async archiveConversation(
+    input: { conversationUrl: string },
+    hooks: BrowserConversationArchiveHooks = {},
+  ): Promise<{
+    conversationUrl: string;
+    proof: "conversation_url_changed";
+    postActionUrl: string;
+  }> {
+    await hooks.onBeforeArchiveClick?.();
+    this.archiveCalls.push(input.conversationUrl);
+    if (this.archiveError) throw this.archiveError;
+    return {
+      conversationUrl: input.conversationUrl,
+      proof: "conversation_url_changed",
+      postActionUrl: "https://chatgpt.com/",
+    };
   }
 }

@@ -38,6 +38,8 @@ export interface IabLocator {
   fill(value: string, options?: Record<string, unknown>): Promise<void>;
   click(options?: { timeoutMs?: number }): Promise<void>;
   waitFor?(options: { state: "visible"; timeoutMs: number }): Promise<void>;
+  isVisible?(): Promise<boolean>;
+  isEnabled?(): Promise<boolean>;
 }
 
 export interface IabPlaywright {

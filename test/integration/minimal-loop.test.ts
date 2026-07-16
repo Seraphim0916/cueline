@@ -226,6 +226,7 @@ test("controller dispatches one job, observes it, then completes", async () => {
   assert.equal(result.finalDeliveryText, "CUELINE_OK");
   assert.equal(result.conversationUrl, "https://chatgpt.com/c/cueline-test");
   assert.equal(browser.calls.length, 2);
+  assert.equal(browser.archiveCalls.length, 0);
   assert.equal(supervisor.starts.length, 1);
   assert.match(browser.calls[1]?.prompt ?? "", /WORKER_OK/);
   const modelEvents = (await readEvents(runPaths(stateHome, runId).events))
@@ -251,6 +252,323 @@ test("controller dispatches one job, observes it, then completes", async () => {
       },
     ],
   );
+});
+
+test("opt-in archives the exact controller conversation once after completion is durable", async () => {
+  const runId = "run_archive_controller_on_complete";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/archive-controller-on-complete";
+  const browser = new FakeBrowserAdapter([
+    reply(
+      () => ({ action: "complete", final_delivery_text: "ARCHIVE_COMPLETE" }),
+      conversationUrl,
+    ),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Complete, then archive this controller conversation",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  } as Parameters<typeof runControllerLoop>[0]);
+
+  assert.equal(result.status, "complete");
+  assert.deepEqual(browser.archiveCalls, [conversationUrl]);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  const completedIndex = events.findIndex((event) => event.type === "run_completed");
+  const startedIndex = events.findIndex(
+    (event) => event.type === "controller_conversation_archive_started",
+  );
+  const archivedIndex = events.findIndex(
+    (event) => event.type === "controller_conversation_archived",
+  );
+  assert.ok(completedIndex >= 0);
+  assert.ok(startedIndex > completedIndex);
+  assert.ok(archivedIndex > startedIndex);
+});
+
+test("opt-in never archives a blocked controller run", async () => {
+  const runId = "run_archive_controller_blocked";
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "blocked", reason: "Missing required evidence" })),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Block if required evidence is unavailable",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.state.controllerConversationArchive.status, "waiting_for_completion");
+  assert.equal(browser.archiveCalls.length, 0);
+});
+
+test("an unsupported archive adapter fails deterministically without changing completion", async () => {
+  const runId = "run_archive_controller_unsupported";
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "complete", final_delivery_text: "COMPLETE_WITHOUT_ARCHIVE" })),
+  ]);
+  Object.defineProperty(browser, "archiveConversation", { value: undefined });
+
+  const result = await runControllerLoop({
+    request: "Complete with an adapter that cannot archive",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "COMPLETE_WITHOUT_ARCHIVE");
+  assert.equal(result.state.controllerConversationArchive.status, "failed");
+  assert.equal(
+    result.state.controllerConversationArchive.code,
+    "CONTROLLER_CONVERSATION_ARCHIVE_UNSUPPORTED",
+  );
+  assert.equal(browser.archiveCalls.length, 0);
+});
+
+test("a proven pre-click archive failure remains retryable and later clicks once", async () => {
+  const runId = "run_archive_controller_preclick_retry";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/archive-controller-preclick-retry";
+  const firstBrowser: BrowserAdapter = {
+    async sendTurn(input) {
+      return reply(
+        () => ({ action: "complete", final_delivery_text: "ARCHIVE_AFTER_RETRY" }),
+        conversationUrl,
+      )(input);
+    },
+    async archiveConversation() {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ARCHIVE_UNAVAILABLE",
+        "The archive controls are not hydrated yet.",
+      );
+    },
+  };
+
+  const first = await runControllerLoop({
+    request: "Retry only a proven pre-click archive failure",
+    runId,
+    home: stateHome,
+    browser: firstBrowser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+
+  assert.equal(first.status, "complete");
+  assert.equal(first.state.controllerConversationArchive.status, "pending");
+  assert.equal(
+    first.state.controllerConversationArchive.code,
+    "CONTROLLER_CONVERSATION_ARCHIVE_UNAVAILABLE",
+  );
+
+  const recoveryBrowser = new FakeBrowserAdapter([]);
+  const recovered = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser: recoveryBrowser,
+  });
+
+  assert.equal(recovered.state.controllerConversationArchive.status, "archived");
+  assert.deepEqual(recoveryBrowser.archiveCalls, [conversationUrl]);
+});
+
+test("an adapter that skips the pre-click checkpoint becomes ambiguous and cannot retry", async () => {
+  const runId = "run_archive_controller_checkpoint_missing";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/archive-controller-checkpoint-missing";
+  const browser: BrowserAdapter = {
+    async sendTurn(input) {
+      return reply(
+        () => ({ action: "complete", final_delivery_text: "CHECKPOINT_REQUIRED" }),
+        conversationUrl,
+      )(input);
+    },
+    async archiveConversation(input) {
+      return {
+        conversationUrl: input.conversationUrl,
+        proof: "conversation_url_changed",
+        postActionUrl: "https://chatgpt.com/",
+      };
+    },
+  };
+
+  const result = await runControllerLoop({
+    request: "Refuse an adapter that can click without write-ahead evidence",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.state.controllerConversationArchive.status, "ambiguous");
+  assert.equal(
+    result.state.controllerConversationArchive.code,
+    "CONTROLLER_CONVERSATION_ARCHIVE_CHECKPOINT_MISSING",
+  );
+
+  const recoveryBrowser = new FakeBrowserAdapter([]);
+  const recovered = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser: recoveryBrowser,
+  });
+  assert.equal(recovered.state.controllerConversationArchive.status, "ambiguous");
+  assert.equal(recoveryBrowser.archiveCalls.length, 0);
+});
+
+test("an ambiguous controller archive remains complete and is never retried", async () => {
+  const runId = "run_archive_controller_ambiguous";
+  const stateHome = await home();
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "complete", final_delivery_text: "ARCHIVE_AMBIGUOUS" })),
+  ]);
+  browser.archiveError = new Error("archive click timed out");
+
+  const result = await runControllerLoop({
+    request: "Complete, then archive once",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.state.controllerConversationArchive.status, "ambiguous");
+  assert.equal(browser.archiveCalls.length, 1);
+
+  const recoveryBrowser = new FakeBrowserAdapter([]);
+  const recovered = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    browser: recoveryBrowser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    archiveControllerConversationOnComplete: true,
+  });
+  assert.equal(recovered.status, "complete");
+  assert.equal(recovered.state.controllerConversationArchive.status, "ambiguous");
+  assert.equal(recoveryBrowser.archiveCalls.length, 0);
+});
+
+test("a durable pending archive resumes once after restart", async () => {
+  const runId = "run_archive_controller_resume_pending";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/archive-controller-resume-pending";
+  await startCueLineRun({
+    request: "Persist an archive-on-complete run",
+    runId,
+    home: stateHome,
+    archiveControllerConversationOnComplete: true,
+  });
+  const lease = await RuntimeLease.claim({ home: stateHome, runId });
+  try {
+    const store = await RunStore.load({
+      home: stateHome,
+      runId,
+      initialState: initialRunState(runId, ""),
+      reducer: reduceRunState,
+    });
+    store.bindRuntimeOwner(lease.ownerId);
+    await store.append("controller_conversation_bound", {
+      conversation_url: conversationUrl,
+    });
+    await store.append("run_completed", { final_delivery_text: "RESUME_ARCHIVE" });
+    await store.snapshot();
+  } finally {
+    await lease.release();
+  }
+
+  const pendingStatus = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(pendingStatus.phase, "controller_archive_pending");
+  assert.equal(pendingStatus.safeNextAction, "settle_controller_archive");
+  assert.equal(pendingStatus.controller.archive.status, "pending");
+
+  const wrongPolicyBrowser = new FakeBrowserAdapter([]);
+  await assert.rejects(
+    continueCueLineRun({
+      runId,
+      home: stateHome,
+      browser: wrongPolicyBrowser,
+      archiveControllerConversationOnComplete: false,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_POLICY_MISMATCH",
+  );
+  assert.equal(wrongPolicyBrowser.archiveCalls.length, 0);
+
+  const browser = new FakeBrowserAdapter([]);
+  const result = await continueCueLineRun({ runId, home: stateHome, browser });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.state.controllerConversationArchive.status, "archived");
+  assert.deepEqual(browser.archiveCalls, [conversationUrl]);
+  const archivedStatus = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(archivedStatus.phase, "complete");
+  assert.equal(archivedStatus.safeNextAction, "return_result");
+  assert.equal(archivedStatus.continueAllowed, false);
+  assert.equal(archivedStatus.controller.archive.status, "archived");
+});
+
+test("a restart after archive start marks ambiguity without another click", async () => {
+  const runId = "run_archive_controller_resume_started";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/archive-controller-resume-started";
+  await startCueLineRun({
+    request: "Persist an interrupted archive attempt",
+    runId,
+    home: stateHome,
+    archiveControllerConversationOnComplete: true,
+  });
+  const lease = await RuntimeLease.claim({ home: stateHome, runId });
+  try {
+    const store = await RunStore.load({
+      home: stateHome,
+      runId,
+      initialState: initialRunState(runId, ""),
+      reducer: reduceRunState,
+    });
+    store.bindRuntimeOwner(lease.ownerId);
+    await store.append("controller_conversation_bound", {
+      conversation_url: conversationUrl,
+    });
+    await store.append("run_completed", { final_delivery_text: "INTERRUPTED_ARCHIVE" });
+    await store.append("controller_conversation_archive_started", {
+      conversation_url: conversationUrl,
+    });
+    await store.snapshot();
+  } finally {
+    await lease.release();
+  }
+
+  const browser = new FakeBrowserAdapter([]);
+  const result = await continueCueLineRun({ runId, home: stateHome, browser });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.state.controllerConversationArchive.status, "ambiguous");
+  assert.equal(
+    result.state.controllerConversationArchive.code,
+    "CONTROLLER_CONVERSATION_ARCHIVE_INTERRUPTED",
+  );
+  assert.equal(browser.archiveCalls.length, 0);
 });
 
 test("one accepted dispatch starts independent jobs before awaiting their completion", async () => {

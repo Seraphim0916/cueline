@@ -65,6 +65,12 @@ const PHASE_DIAGNOSES: Record<CueLineRunPhase, PhaseDiagnosis> = {
     summary: "Local evidence is terminal and the controller may decide the next step.",
     action: "Continue the same run to submit the next bounded observation.",
   },
+  controller_archive_pending: {
+    code: "CONTROLLER_ARCHIVE_PENDING",
+    severity: "warning",
+    summary: "The run completed, but its opt-in controller conversation archive is unsettled.",
+    action: "Continue the same run once to settle the durable archive state; never repeat a started archive click.",
+  },
   caller_jobs_pending: {
     code: "CALLER_ADVICE_PENDING",
     severity: "warning",

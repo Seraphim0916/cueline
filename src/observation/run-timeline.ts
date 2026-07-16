@@ -22,6 +22,11 @@ const KNOWN_EVENT_TYPES = new Set([
   "caller_work_started",
   "controller_command_accepted",
   "controller_command_execution_completed",
+  "controller_conversation_archive_ambiguous",
+  "controller_conversation_archive_failed",
+  "controller_conversation_archive_preflight_failed",
+  "controller_conversation_archive_started",
+  "controller_conversation_archived",
   "controller_conversation_bound",
   "controller_repair_requested",
   "controller_response_evidence_rejected",
@@ -220,6 +225,16 @@ function summary(type: string, attributes: Record<string, string | number | bool
       return "Matching controller response observed.";
     case "controller_command_accepted":
       return `Controller command accepted${attributes.action ? `: ${attributes.action}` : ""}.`;
+    case "controller_conversation_archive_started":
+      return "Controller conversation archive attempt started.";
+    case "controller_conversation_archived":
+      return "Controller conversation archived with navigation proof.";
+    case "controller_conversation_archive_ambiguous":
+      return `Controller conversation archive became ambiguous${attributes.code ? `: ${attributes.code}` : ""}.`;
+    case "controller_conversation_archive_failed":
+      return `Controller conversation archive preflight failed${attributes.code ? `: ${attributes.code}` : ""}.`;
+    case "controller_conversation_archive_preflight_failed":
+      return `Controller conversation archive remains retryable after a pre-click failure${attributes.code ? `: ${attributes.code}` : ""}.`;
     case "job_registered":
       return "Local job registered.";
     case "job_status":

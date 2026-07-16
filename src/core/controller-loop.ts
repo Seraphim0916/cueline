@@ -10,6 +10,10 @@ import { readRuntimeLease, RuntimeLease } from "../state/runtime-lease.js";
 import { RunStore } from "../state/store.js";
 import { throwIfCancelled } from "./controller-abort.js";
 import {
+  controllerConversationArchiveNeedsRecovery,
+  settleControllerConversationArchive,
+} from "./controller-conversation-archive.js";
+import {
   executeAcceptedCommand,
   statusPayload,
   validateCommandBeforeAcceptance,
@@ -319,6 +323,7 @@ type ControllerRuntimeLimitOptions = Pick<
   | "runtimeHeartbeatIntervalMs"
   | "maxConcurrency"
   | "laneConcurrency"
+  | "archiveControllerConversationOnComplete"
 >;
 
 export function validateControllerRuntimeOptions(options: ControllerRuntimeLimitOptions): {
@@ -326,6 +331,7 @@ export function validateControllerRuntimeOptions(options: ControllerRuntimeLimit
   maxRepairAttempts: number;
   laneConcurrency: Readonly<Record<string, number>> | undefined;
 } {
+  validatedArchivePolicy(options.archiveControllerConversationOnComplete);
   const maxRounds = validatedMaxRounds(options.maxRounds);
   const maxRepairAttempts = options.maxRepairAttempts ?? 2;
   if (!Number.isSafeInteger(maxRepairAttempts) || maxRepairAttempts < 0) {
@@ -403,6 +409,16 @@ function validatedMaxRounds(value: number | undefined): number {
     throw new CueLineError("MAX_ROUNDS_INVALID", "maxRounds must be a positive integer.");
   }
   return maxRounds;
+}
+
+function validatedArchivePolicy(value: boolean | undefined): boolean {
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new CueLineError(
+      "CONTROLLER_CONVERSATION_ARCHIVE_POLICY_INVALID",
+      "archiveControllerConversationOnComplete must be a boolean.",
+    );
+  }
+  return value === true;
 }
 
 function persistedMaxRounds(
@@ -686,12 +702,16 @@ async function createControllerRunStore(
     );
   }
   const maxRounds = validatedMaxRounds(options.maxRounds);
+  const archiveControllerConversationOnComplete = validatedArchivePolicy(
+    options.archiveControllerConversationOnComplete,
+  );
   const initial = initialRunState(
     id,
     options.request,
     executor,
     maxRounds,
     allowProcessExecution,
+    archiveControllerConversationOnComplete,
   );
   const home = options.home ?? defaultCueLineHome();
   const store = await RunStore.createWithInitialEvent({
@@ -705,6 +725,9 @@ async function createControllerRunStore(
     executor,
     ...(allowProcessExecution ? { allow_process_execution: true } : {}),
     ...(options.maxRounds === undefined ? {} : { max_rounds: maxRounds }),
+    ...(archiveControllerConversationOnComplete
+      ? { archive_controller_conversation_on_complete: true }
+      : {}),
   });
   await store.snapshot();
   return store;
@@ -783,13 +806,25 @@ export async function continueControllerLoop(
     throw new CueLineError("RUN_NOT_FOUND", `No persisted CueLine run '${options.runId}' was found.`);
   }
   if (
+    options.archiveControllerConversationOnComplete !== undefined &&
+    options.archiveControllerConversationOnComplete !==
+      (initialState.controllerConversationArchive?.enabled ?? false)
+  ) {
+    throw new CueLineError(
+      "CONTROLLER_CONVERSATION_ARCHIVE_POLICY_MISMATCH",
+      `Run '${options.runId}' has a different durable controller conversation archive policy.`,
+    );
+  }
+  const recoverControllerArchive = controllerConversationArchiveNeedsRecovery(initialState);
+  if (
     initialState.status === "complete" ||
     initialState.status === "blocked" ||
     initialState.status === "cancelled"
   ) {
-    return resultFromState(initialState);
+    if (!recoverControllerArchive) return resultFromState(initialState);
   }
   if (
+    !recoverControllerArchive &&
     initialState.executor === "process" &&
     (!initialState.allowProcessExecution || options.allowProcessExecution !== true)
   ) {
@@ -809,7 +844,17 @@ export async function continueControllerLoop(
     initialRuntime,
     initialCancellation,
   );
-  if (!recoverStaleObserver) {
+  if (
+    recoverControllerArchive &&
+    initialRuntime.ownership !== "missing" &&
+    initialRuntime.ownership !== "released"
+  ) {
+    throw new CueLineError(
+      "RUN_OWNERSHIP_UNVERIFIED",
+      "The completed run's archive recovery requires a missing or released runtime owner.",
+    );
+  }
+  if (!recoverStaleObserver && !recoverControllerArchive) {
     assertRunCanContinue(initialState, initialRuntime, initialCancellation);
   }
   const lease = recoverStaleObserver
@@ -854,7 +899,11 @@ export async function continueControllerLoop(
       state.status === "blocked" ||
       state.status === "cancelled"
     ) {
-      return resultFromState(state);
+      assertConversationUrlCompatible(state, options.conversationUrl);
+      if (controllerConversationArchiveNeedsRecovery(state)) {
+        await settleControllerConversationArchive(store, options);
+      }
+      return resultFromState(store.state);
     }
     assertConversationUrlCompatible(state, options.conversationUrl);
     const cancellationObservation = await readCancellationObservation(home, options.runId);
