@@ -22,14 +22,15 @@
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 或 GPT Relay 的包装层。
 
-## 最新版本：0.1.7
+## 最新版本：0.2.0
 
+- 新增四个只读可观测性命令，并强化“确认未发送”的提交恢复；输出保持 fail-closed 脱敏，路由解释也只发生在进程启动前。
 - 新增安全的 run 清单、doctor、watch、timeline、handoff、完整性验证、协议 lint、浏览器诊断与 inspect 证据分页。
 - 强化标签页／按钮证据、命令与路由上限、原子 job 状态、私有持久数据、workdir 身份、runtime／取消记录和 CLI 脱敏。
 - 新增可选的 `complete` 后精确会话归档：点击前有持久 fence，Pro 再次回答或页面切换时拒绝，进入模糊状态后绝不重复点击。
-- 完成 454/454 测试和一次可丢弃的真实 ChatGPT Web Pro 验收；控制器自然完成、只归档一次，原有用户会话未被触碰。
+- 完成 479/479 测试和一次可丢弃的真实 ChatGPT Web Pro 验收；控制器自然完成、只归档一次，原有用户会话未被触碰。
 
-完整内容请查看 [changelog](CHANGELOG.md#017---2026-07-16) 或版本化的 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7)。
+完整内容请查看 [changelog](CHANGELOG.md#020---2026-07-16) 或版本化的 [v0.2.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.0)。
 
 ## 一次运行实际是怎么走的
 
@@ -70,15 +71,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.1.7
+npm install -g cueline@0.2.0
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.2.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.0) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.7/cueline-0.1.7.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.2.0/cueline-0.2.0.tgz
 cueline install
 cueline doctor
 ```
@@ -185,7 +186,7 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.1.7
+CueLine 0.2.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

@@ -22,14 +22,15 @@
 
 CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane이나 GPT Relay를 감싼 래퍼가 아닙니다.
 
-## 최신 릴리스: 0.1.7
+## 최신 릴리스: 0.2.0
 
+- 읽기 전용 관측 명령 4개를 추가하고 '전송되지 않음 확인' 제출 복구를 강화했습니다. 출력은 fail-closed 방식으로 비식별화되며 라우팅 설명은 프로세스 시작 전 상태만 다룹니다.
 - 안전한 run 목록, doctor, watch, timeline, handoff, 무결성 검증, protocol lint, 브라우저 진단, inspect 증거 페이지 기능을 추가했습니다.
 - 탭/버튼 증거, 명령과 라우팅 한도, 원자적 job 상태, 비공개 영속 데이터, workdir ID, runtime/cancel 레코드, CLI 비식별화를 강화했습니다.
 - 영속 `complete` 뒤 정확한 대화만 보관하는 opt-in 기능을 추가했습니다. 클릭 전 fence, Pro 재개/탐색 검사, 모호해진 뒤 재클릭 금지를 적용합니다.
-- 454/454 테스트와 일회용 실제 ChatGPT Web Pro run을 검증했으며, 자연 완료 뒤 한 번만 보관하고 기존 사용자 대화는 건드리지 않았습니다.
+- 479/479 테스트와 일회용 실제 ChatGPT Web Pro run을 검증했으며, 자연 완료 뒤 한 번만 보관하고 기존 사용자 대화는 건드리지 않았습니다.
 
-전체 내용은 [changelog](CHANGELOG.md#017---2026-07-16) 또는 버전이 지정된 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7)에서 확인할 수 있습니다.
+전체 내용은 [changelog](CHANGELOG.md#020---2026-07-16) 또는 버전이 지정된 [v0.2.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.0)에서 확인할 수 있습니다.
 
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
@@ -70,15 +71,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.1.7
+npm install -g cueline@0.2.0
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.1.7 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.2.0 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.0)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.7/cueline-0.1.7.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.2.0/cueline-0.2.0.tgz
 cueline install
 cueline doctor
 ```
@@ -183,7 +184,7 @@ CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에
 
 ```console
 $ cueline doctor
-CueLine 0.1.7
+CueLine 0.2.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

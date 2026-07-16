@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-07-16
 
 ### Added
 
@@ -13,6 +13,16 @@
 - Add `cueline routing explain [lane]` to report pre-spawn runner selection,
   availability, fallback, and rejection reasons without exposing runner argv.
 
+### Fixed
+
+- Add append-only recovery for an operator-confirmed unsent ambiguous controller request. `cueline run reconcile ... --not-sent-confirmed` validates the exact run, conversation, round, request, prompt hash, and Pro evidence; abandons the old identity; permits one same-prompt retry under a new deterministic request ID; and remains idempotent across command repetition or restart.
+- Strengthen browser submission checkpoints with run/round/request/prompt identity, a user-message baseline, composer and click-attempt state, a bounded click error, and post-click DOM evidence. Late discovery of the abandoned message or response, prompt drift, extra pending turns, or identity/model/conversation mismatch now freezes the run for manual review instead of risking duplicate controller dispatch.
+
+### Verification
+
+- Verified 479/479 tests, TypeScript typecheck, plugin validation, build, and package-content checks.
+- Verified the real built CLI for `run status-at`, `run diff`, `run graph`, and `routing explain`; confirmed `run reconcile` usage still exposes both `--manual-send-confirmed` and `--not-sent-confirmed`.
+
 ## 0.1.7 - 2026-07-16
 
 ### Added
@@ -22,9 +32,6 @@
 - Add opt-in `archiveControllerConversationOnComplete`. After a durable `complete`, CueLine may archive only the exact bound ChatGPT conversation while Pro is idle. The browser writes a durable checkpoint immediately before one Archive click; proven pre-click failures remain retryable, while a timeout, restart, missing checkpoint, navigation race, or missing proof becomes `ambiguous` and is never clicked again. `blocked` and `cancelled` runs are never archived.
 
 ### Fixed
-
-- Add append-only recovery for an operator-confirmed unsent ambiguous controller request. `cueline run reconcile ... --not-sent-confirmed` validates the exact run, conversation, round, request, prompt hash, and Pro evidence; abandons the old identity; permits one same-prompt retry under a new deterministic request ID; and remains idempotent across command repetition or restart.
-- Strengthen browser submission checkpoints with run/round/request/prompt identity, a user-message baseline, composer and click-attempt state, a bounded click error, and post-click DOM evidence. Late discovery of the abandoned message or response, prompt drift, extra pending turns, or identity/model/conversation mismatch now freezes the run for manual review instead of risking duplicate controller dispatch.
 
 - Require visible, actionable send and stop controls. Hidden, disabled, inert, ancestor-hidden, zero-geometry, localized, or residual controls no longer prove that a prompt can be sent or that Pro is still answering.
 - Refuse ambiguous ChatGPT tab discovery instead of selecting the first match. Exact conversation matching now canonicalizes only benign browser decoration and rejects lookalike hosts, credentials, nested paths, duplicate physical tabs, and navigation races.
