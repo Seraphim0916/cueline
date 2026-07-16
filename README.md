@@ -17,14 +17,14 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane or GPT Relay.
 
-## Latest release: 0.1.6
+## Latest release: 0.1.7
 
-- Added durable caller `work` claim/start/heartbeat/result fencing, with safe reclaim before start and `ambiguous` settlement after side effects may have begun.
-- Fixed hidden `Stop answering` detection, inspected-output priority, stale read-only observation recovery, process double authorization, and process status observability.
-- Hardened the bundled process route with `--ignore-user-config` and protected model/provider status from later untrusted-output spoofing.
-- Verified 267/267 tests, clean package installation, and a terminal `complete` verdict from a new real ChatGPT Web Pro run without resend or interruption.
+- Added safe run inventory, doctor, watch, timeline, handoff, verification, protocol lint, browser diagnostics, and deterministic inspected-evidence pagination.
+- Hardened browser tab/control evidence, command/routing bounds, atomic job status, private durable state, workdir identity, runtime/cancellation records, and redacted CLI output.
+- Added opt-in exact-conversation archiving after durable `complete`, with a one-click write-ahead fence, Pro-active/navigation checks, and no retry after ambiguity.
+- Verified 454/454 tests and a disposable real ChatGPT Web Pro run that completed and archived exactly once without interrupting Pro or touching the existing user conversation.
 
-Read the complete [changelog](CHANGELOG.md#016---2026-07-15) or the immutable [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6).
+Read the complete [changelog](CHANGELOG.md#017---2026-07-16) or the immutable [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7).
 
 ## How a run actually goes
 
@@ -61,15 +61,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.1.6
+npm install -g cueline@0.1.7
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.6/cueline-0.1.6.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.7/cueline-0.1.7.tgz
 cueline install
 cueline doctor
 ```
@@ -114,6 +114,7 @@ import {
 let result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
   browser: createCodexIabAdapter({ browser: globalThis.browser }),
+  // Optional opt-in: archiveControllerConversationOnComplete: true,
   // Optional: conversationUrl, routingConfig / routingConfigPath, home, cwd,
   // runTimeoutMs, signal, and per-job/default limits.
 }); // defaults to executor: "caller"
@@ -160,6 +161,8 @@ if (result.status === "complete") {
 }
 ```
 
+`archiveControllerConversationOnComplete` defaults to `false` and is fixed when the run is created. When enabled, CueLine first persists `complete`, then archives only the exact bound conversation while Pro is idle. A proven failure before the durable click checkpoint can be retried; after that checkpoint, any timeout, restart, navigation race, or missing proof becomes `ambiguous` and CueLine never clicks Archive again. `blocked` and `cancelled` runs are left open.
+
 `startCueLineRun` creates the durable run and returns `ready` without driving the browser. `runCueLine` creates and advances it to a durable controller-observation pause, caller handoff, or terminal state. `continueCueLineRun({ runId })` advances the same conversation and reuses its stored URL. `loadCueLineRunState(runId)` is read-only. A terminal run is returned as-is. Before continuation, run `cueline run status <run-id> --json`: `controller_response_pending` with exactly one normally submitted turn and `safeNextAction: observe` means Pro's response has not yet been observed; wait briefly and continue it without resend. That exact read-only observer can be safely fenced even after its lease becomes stale, but ambiguous/manual submissions, jobs, pending commands, cancellation, or a missing/mismatched URL still require explicit recovery. `phase: prompt_not_sent` with `safeNextAction: retry` is used only with write-ahead or request-correlated `definitely_not_sent` evidence. Caller work phases report `claim_caller_work`, `start_caller_work`, or `continue_caller_work`; a dispatch alone is not local execution. An accepted response plus `jobs_running` means a double-authorized process executor is active. CLI status output is an explicit metadata allowlist: it omits task bodies, caller identities, task hashes, workdirs, and runtime owner IDs. The formal caller claim API returns the exact task and workdir to the authorized caller; the detailed read-only API remains available for trusted local diagnostics.
 
 `listCueLineRuns()` is a read-only, sanitized inventory for discovering persisted run IDs. It omits controller text, conversation URLs, job tasks, and worker output.
@@ -177,7 +180,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.6
+CueLine 0.1.7
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -187,7 +190,7 @@ caller_lanes	1
 process_available_lanes	1
 
 $ cueline doctor --json
-{"version":"0.1.6","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
+{"version":"0.1.7","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
 
 $ cueline api path
 /usr/local/lib/node_modules/cueline/dist/src/api.js
@@ -196,7 +199,7 @@ $ cueline routing
 default	codex-default	available
 
 $ cueline routing --json
-{"version":"0.1.6","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
+{"version":"0.1.7","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
 
 $ cueline jobs
 No jobs.

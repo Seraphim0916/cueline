@@ -74,6 +74,7 @@ The run event log still records the controller-visible job transitions. A status
 - One stale caller observer is automatically recoverable only when it owns exactly one normally submitted, non-manual turn with an exact matching ChatGPT URL, no active jobs, no pending command, and no cancellation. Status remains `controller_response_pending` / `observe`; continuation atomically fences the stale owner and performs read-only observation without resend. Every other stale state requires explicit takeover/reconciliation.
 - `runtime_ownership_unknown` means persisted `running` is not proof of a live process. Except for the strict side-effect-free caller observer described above, `runtime_stale` requires explicit `cueline run takeover <run-id>` confirmation before the exact stale heartbeat can be retired. Active-looking process jobs are reported as `orphaned`.
 - `runtime_active` means a live owner is still settling a failed state; another session must observe rather than continue.
+- `controller_archive_pending` / `settle_controller_archive` means the controller run is already durably `complete`, but an explicitly enabled post-completion archive has not reached terminal proof. Only missing/released ownership may settle it. `archived`, `ambiguous`, and `failed` are terminal archive outcomes; never retry an `ambiguous` attempt.
 - `continueAllowed: false` forbids `continueCueLineRun`. A caller-work state may separately authorize only the exact claim/start/continue API action named by `safeNextAction`; it never authorizes a browser resend.
 
 ## Continue behavior
@@ -81,6 +82,7 @@ The run event log still records the controller-visible job transitions. A status
 Always run `cueline run status <run-id> --json` before continuation. `continueCueLineRun` loads the exact `runId`, replays state as needed, and resumes the same persisted run. The public runtime also reuses the stored ChatGPT conversation URL unless an explicit compatible adapter is supplied.
 
 - `complete`, `blocked`, and `cancelled` runs are returned as-is; they are not dispatched again.
+- When `archiveControllerConversationOnComplete` was fixed to `true` at creation, `complete` first becomes durable and then the exact bound ChatGPT conversation may be archived while Pro is idle. The built-in browser invokes a durable write-ahead hook immediately before one Archive click. A proven failure before that hook stays pending and may be retried; after it, any interruption or missing URL-change proof becomes `ambiguous` and cannot be retried. `blocked` and `cancelled` never archive.
 - an active owner is rejected with `RUN_ALREADY_ACTIVE`; a stale lease requires dead-owner inspection; missing ownership is healthy only for a pristine or caller-mode run
 - a non-terminal or locally `failed` run with no pending controller turn can be marked resumed and driven for additional rounds
 - `maxRounds` is a durable total-run contract, not a per-continuation allowance; continuation reuses the created value and cannot widen or shrink it

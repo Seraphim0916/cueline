@@ -17,14 +17,14 @@
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 或 GPT Relay 的包装层。
 
-## 最新版本：0.1.6
+## 最新版本：0.1.7
 
-- 新增 caller `work` 的持久 claim／start／heartbeat／result fencing；开始前可安全回收，可能已有副作用时统一收敛为 `ambiguous`。
-- 修复隐藏 `Stop answering` 误判、inspect 指定输出优先、stale 只读观察恢复、process 双重授权与 process 状态可观察性。
-- 内置 process route 增加 `--ignore-user-config`，并防止后续不受信任输出伪造 model/provider 状态。
-- 完成 267/267 测试、干净包安装，以及全新真实 ChatGPT Web Pro run 的终态 `complete` 验收；无重发、无中断。
+- 新增安全的 run 清单、doctor、watch、timeline、handoff、完整性验证、协议 lint、浏览器诊断与 inspect 证据分页。
+- 强化标签页／按钮证据、命令与路由上限、原子 job 状态、私有持久数据、workdir 身份、runtime／取消记录和 CLI 脱敏。
+- 新增可选的 `complete` 后精确会话归档：点击前有持久 fence，Pro 再次回答或页面切换时拒绝，进入模糊状态后绝不重复点击。
+- 完成 454/454 测试和一次可丢弃的真实 ChatGPT Web Pro 验收；控制器自然完成、只归档一次，原有用户会话未被触碰。
 
-完整内容请查看 [changelog](CHANGELOG.md#016---2026-07-15) 或不可变的 [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6)。
+完整内容请查看 [changelog](CHANGELOG.md#017---2026-07-16) 或不可变的 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7)。
 
 ## 一次运行实际是怎么走的
 
@@ -57,15 +57,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.1.6
+npm install -g cueline@0.1.7
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.6/cueline-0.1.6.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.7/cueline-0.1.7.tgz
 cueline install
 cueline doctor
 ```
@@ -110,6 +110,7 @@ import {
 let result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
   browser: createCodexIabAdapter({ browser: globalThis.browser }),
+  // 可选并显式启用：archiveControllerConversationOnComplete: true,
   // 可选：conversationUrl、routingConfig / routingConfigPath、home、cwd、
   // runTimeoutMs、signal，以及作业/默认期限。
 }); // 默认 executor: "caller"
@@ -162,7 +163,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.6
+CueLine 0.1.7
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -172,7 +173,7 @@ caller_lanes	1
 process_available_lanes	1
 
 $ cueline doctor --json
-{"version":"0.1.6","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
+{"version":"0.1.7","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
 
 $ cueline api path
 /usr/local/lib/node_modules/cueline/dist/src/api.js
@@ -181,7 +182,7 @@ $ cueline routing
 default	codex-default	available
 
 $ cueline routing --json
-{"version":"0.1.6","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
+{"version":"0.1.7","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
 
 $ cueline jobs
 No jobs.

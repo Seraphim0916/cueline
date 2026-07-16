@@ -17,14 +17,14 @@
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 或 GPT Relay 的包裝層。
 
-## 最新版本：0.1.6
+## 最新版本：0.1.7
 
-- 新增 caller `work` 的持久 claim／start／heartbeat／result fencing；開始前可安全回收，可能已有副作用時一律收斂為 `ambiguous`。
-- 修正隱藏 `Stop answering` 誤判、inspect 指定輸出優先、stale 唯讀觀測恢復、process 雙重授權與 process 狀態可觀測性。
-- 內建 process route 加上 `--ignore-user-config`，並防止後續不受信任輸出偽造 model/provider 狀態。
-- 完成 267/267 測試、乾淨套件安裝，以及全新真實 ChatGPT Web Pro run 的終態 `complete` 驗收；無重送、無中斷。
+- 新增安全的 run 清單、doctor、watch、timeline、handoff、完整性驗證、協定 lint、瀏覽器診斷與 inspect 證據分頁。
+- 強化分頁／按鈕證據、指令與路由上限、原子 job 狀態、私有持久資料、workdir 身分、runtime／取消紀錄，以及 CLI 去敏感資訊。
+- 新增選用的 `complete` 後精確對話封存：點擊前有持久 fence，Pro 又開始回答或換頁就拒絕，進入含糊狀態後絕不重點。
+- 完成 454/454 測試與一次可丟棄的真實 ChatGPT Web Pro 驗收；主控自然完成、只封存一次，原本使用者對話完全未動。
 
-完整內容請看 [changelog](CHANGELOG.md#016---2026-07-15) 或不可變的 [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6)。
+完整內容請看 [changelog](CHANGELOG.md#017---2026-07-16) 或不可變的 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7)。
 
 ## 一次執行實際上怎麼跑
 
@@ -57,15 +57,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.1.6
+npm install -g cueline@0.1.7
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.6/cueline-0.1.6.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.7/cueline-0.1.7.tgz
 cueline install
 cueline doctor
 ```
@@ -110,6 +110,7 @@ import {
 let result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
   browser: createCodexIabAdapter({ browser: globalThis.browser }),
+  // 選填並明確啟用：archiveControllerConversationOnComplete: true,
   // 選填：conversationUrl、routingConfig / routingConfigPath、home、cwd、
   // runTimeoutMs、signal，以及各工作／預設期限。
 }); // 預設 executor: "caller"
@@ -156,6 +157,8 @@ if (result.status === "complete") {
 }
 ```
 
+`archiveControllerConversationOnComplete` 預設為 `false`，並在建立 run 時固定。啟用後，CueLine 會先把 `complete` 寫進持久紀錄，再於 Pro 未回答時封存那一個精確對話。點擊 fence 前能證明尚未點擊的失敗可以重試；fence 後只要逾時、重開、換頁或缺少完成證據，就標成 `ambiguous` 且永不再點。`blocked` 與 `cancelled` 一律保留原對話。
+
 若回傳 `awaiting_controller`，代表同一個精確 request 已送出、但 Pro 回覆尚未被觀測；稍後續跑只會唯讀觀測，不會重送。`awaiting_caller` 交接 `advise`；`awaiting_caller_work` 則必須依序 claim、start、執行、heartbeat 與帶 claim proof 提交結果。Pro 網頁從未直接使用本機工具。
 
 `listCueLineRuns()` 是唯讀且已去敏感資訊的 run 清單，可用來找回持久化的 run ID；它不包含主控文字、對話網址、工作內容或 worker 輸出。
@@ -175,7 +178,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.6
+CueLine 0.1.7
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -185,7 +188,7 @@ caller_lanes	1
 process_available_lanes	1
 
 $ cueline doctor --json
-{"version":"0.1.6","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
+{"version":"0.1.7","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
 
 $ cueline api path
 /usr/local/lib/node_modules/cueline/dist/src/api.js
@@ -194,7 +197,7 @@ $ cueline routing
 default	codex-default	available
 
 $ cueline routing --json
-{"version":"0.1.6","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
+{"version":"0.1.7","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
 
 $ cueline jobs
 No jobs.

@@ -17,14 +17,14 @@
 
 CueLine は独立した実装で、**ランタイムの npm 依存はゼロ**です。Omnilane や GPT Relay のラッパーではありません。
 
-## 最新リリース：0.1.6
+## 最新リリース：0.1.7
 
-- caller `work` に永続的な claim／start／heartbeat／result fencing を追加し、開始前の安全な回収と開始後の `ambiguous` 収束を実装しました。
-- 非表示の `Stop answering` 誤検知、inspect 対象出力の優先、stale 読み取り専用観測の復旧、process 二重認可、process 状態の可観測性を修正しました。
-- 組み込み process route に `--ignore-user-config` を追加し、後続の信頼できない出力による model/provider 状態の偽装を防ぎました。
-- 267/267 テスト、クリーンインストール、新規 ChatGPT Web Pro run の終端 `complete` を、再送・中断なしで検証しました。
+- 安全な run 一覧、doctor、watch、timeline、handoff、整合性検証、protocol lint、ブラウザー診断、inspect 証拠ページングを追加しました。
+- タブ／ボタン証拠、コマンドとルーティング上限、原子的な job 状態、非公開の永続データ、workdir ID、runtime／cancel 記録、CLI の秘匿化を強化しました。
+- 永続 `complete` 後に正確な会話だけをアーカイブする opt-in 機能を追加しました。クリック前 fence、Pro 再開／遷移チェック、曖昧後の再クリック禁止を備えます。
+- 454/454 テストと使い捨ての実 ChatGPT Web Pro run を検証し、自然完了後に一度だけアーカイブし、既存のユーザー会話には触れませんでした。
 
-詳細は [changelog](CHANGELOG.md#016---2026-07-15) または不変の [v0.1.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6) を参照してください。
+詳細は [changelog](CHANGELOG.md#017---2026-07-16) または不変の [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7) を参照してください。
 
 ## 1 回の実行は実際にどう進むか
 
@@ -57,15 +57,15 @@ ChatGPT Pro のサブスクリプションと、選択された Pro モデルは
 npm レジストリからインストールします。
 
 ```bash
-npm install -g cueline@0.1.6
+npm install -g cueline@0.1.7
 cueline install
 cueline doctor
 ```
 
-フォールバックとして、[v0.1.6 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.6) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
+フォールバックとして、[v0.1.7 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.6/cueline-0.1.6.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.1.7/cueline-0.1.7.tgz
 cueline install
 cueline doctor
 ```
@@ -110,6 +110,7 @@ import {
 let result = await runCueLine({
   request: "Inspect the repository, delegate an implementation plan, and report the evidence.",
   browser: createCodexIabAdapter({ browser: globalThis.browser }),
+  // opt-in：archiveControllerConversationOnComplete: true,
   // 任意：conversationUrl、routingConfig / routingConfigPath、home、cwd、
   // runTimeoutMs、signal、ジョブごと／既定の期限。
 }); // 既定は executor: "caller"
@@ -160,7 +161,7 @@ $ cueline install
 CueLine skill installed: /Users/you/.codex/skills/cueline
 
 $ cueline doctor
-CueLine 0.1.6
+CueLine 0.1.7
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -170,7 +171,7 @@ caller_lanes	1
 process_available_lanes	1
 
 $ cueline doctor --json
-{"version":"0.1.6","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
+{"version":"0.1.7","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
 
 $ cueline api path
 /usr/local/lib/node_modules/cueline/dist/src/api.js
@@ -179,7 +180,7 @@ $ cueline routing
 default	codex-default	available
 
 $ cueline routing --json
-{"version":"0.1.6","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
+{"version":"0.1.7","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
 
 $ cueline jobs
 No jobs.
