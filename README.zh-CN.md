@@ -5,6 +5,9 @@
 
 <p align="center">
   <a href="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml"><img alt="ci" src="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://www.npmjs.com/package/cueline"><img alt="npm" src="https://img.shields.io/npm/v/cueline"></a>
+  <a href="package.json"><img alt="node" src="https://img.shields.io/node/v/cueline"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/npm/l/cueline"></a>
 </p>
 
 <p align="center">
@@ -13,7 +16,9 @@
 
 **CueLine 把方向盘交给一个已经打开的 ChatGPT 网页会话：由它规划运行、发出每一步文本指令；CueLine 负责校验，当前 Codex 才在本机执行获准的工作。**
 
-那个网页碰不到你的机器，也没有本地工具。CueLine 默认把 caller 作业持久化：`advise` 是协调式交接；`work` 必须先获得持久 claim 并正式 start。只有双重显式授权 `process` executor，才会启动已注册的本地 worker。
+那个网页碰不到你的机器，也没有本地工具。它每一轮只发出一条文本控制指令。CueLine 默认把 caller 作业持久化：`advise` 是协调式交接；`work` 必须先获得持久 claim 并正式 start。只有双重显式授权 `process` executor，才会启动已注册的本地 worker。
+
+<img alt="CueLine 架构：ChatGPT 网页会话每轮发出一条文本指令，CueLine 校验并记录，当前 Codex 执行获准的本地工作。" src="docs/assets/cueline-architecture-zh-CN.svg" width="100%">
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 或 GPT Relay 的包装层。
 
@@ -32,6 +37,8 @@ CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnil
 
 每一轮：CueLine 先把“接下来要问什么”写入记录，向会话发送一份观测（observation），之后再读回**恰好一个** `<CueLineControl>` 信封。控制器从五个动作中选一个——`dispatch`、`wait`、`inspect`、`complete`、`blocked`——信封之外的任何文本都不会被执行。循环会在一次可靠发送后以 `awaiting_controller` 暂停，也会停在 caller 交接、`complete`、`blocked` 或轮次上限（默认 12 轮）。
 
+控制器命令还有 fail-closed 资源上限：每个信封 131,072 字符、每次 dispatch 最多 64 个作业、每次 wait 或 inspect 最多 256 个显式 job ID。这些检查发生在注册作业或启动进程之前。
+
 非默认的 `maxRounds` 会在创建 run 时固定，并跨所有无 owner 的暂停累计控制器总轮次。后续继续通常省略它并复用持久值；传入不同数值会被拒绝，不会暗中重置或放宽预算。
 
 `startCueLineRun` 与 `runCueLine` 都默认使用 `caller`。CueLine 发送一次后返回 `awaiting_controller` 并释放 lease；继续只做一次只读观测，绝不重发。`advise` 返回 `awaiting_caller`，没有副作用 claim；`work` 返回 `awaiting_caller_work`，必须由当前 Codex 调用 `claimCueLineCallerJob` 与 `startCueLineCallerJob` 后才能修改。claim 绑定 run、job、task hash、绝对 workdir、caller identity 与 fencing token；已开始的工作不会自动重试，过期后成为 `ambiguous`。Pro 只提出和审查文本指令，不会使用本地工具。
@@ -41,6 +48,12 @@ Process 模式必须同时指定 `executor: "process"` 与 `allowProcessExecutio
 控制器协议有意区分路由层级：`lane` 填的是通道名称 `default`；`codex-default` 是该通道内的候选执行器，不是通道。CueLine 会在注册任何作业之前先验证整份 `dispatch`；只要包含无效通道或执行器，整份派工就会被退回修复，不会先执行其中一部分。
 
 这是白名单（allow-list），不是沙箱。已注册的 worker 拥有与 CueLine 进程本身相同的权限；`advise` 对应 Codex 的只读沙箱、`work` 对应 `workspace-write`，但你注册了什么，就等于你授权了什么。
+
+## 运行状态
+
+<img alt="CueLine 运行状态：ready、awaiting_controller、awaiting_caller、awaiting_caller_work、complete、blocked、cancelled，以及每个状态的含义。" src="docs/assets/cueline-states-zh-CN.svg" width="100%">
+
+`cueline run status <run-id> --json` 报告持久状态和 `safeNextAction`；`cueline run doctor <run-id> --json` 把同一份快照转成稳定的 finding 代码和一个安全的下一步。任何模糊情形——可能已发送的点击、过期的已启动 claim、人工附件发送——CueLine 都会停下来要求显式 reconcile，而不是重发。完整恢复契约见 [state and recovery](docs/state-and-recovery.md)。
 
 ## 控制器必须是 Pro 模型
 
@@ -88,7 +101,7 @@ cueline doctor
 然后，在 Codex 里：
 
 1. 用 Codex 的内置浏览器打开 `https://chatgpt.com` 并登录。
-2. 让你想让它当控制器的那个会话保持选中——该页面就是控制器。它的输入框必须停在 `Pro` 模型；若不是，CueLine 会替你选成 `Pro`，否则就拒绝发送。
+2. 让你想让它当控制器的那个会话保持选中——该页面就是控制器。若没有已选中的标签页、且同时存在多个匹配的 ChatGPT 标签页，CueLine 会返回 `IAB_CHATGPT_TAB_AMBIGUOUS`，而不是擅自挑第一个。它的输入框必须停在 `Pro` 模型；若不是，CueLine 会替你选成 `Pro`，否则就拒绝发送。
 3. 让 Codex 用 CueLine 处理任务：*“用 CueLine，让那个打开的 ChatGPT Pro 会话来指挥这项任务。”*
 4. 保留返回的 `runId`。被中断的运行要续跑，就靠它。
 
@@ -148,7 +161,13 @@ if (result.status === "complete") {
 }
 ```
 
+`archiveControllerConversationOnComplete` 默认为 `false`，并在创建 run 时固定。启用后，CueLine 会先把 `complete` 写入持久记录，再在 Pro 空闲时只归档那一个精确绑定的会话。点击 fence 前能证明尚未点击的失败可以重试；fence 之后只要超时、重启、页面切换或缺少完成证据，就标为 `ambiguous` 且永不再点。`blocked` 与 `cancelled` 一律保留原会话。
+
 `awaiting_controller` 只读观测且不重发；`awaiting_caller` 交接 `advise`；`awaiting_caller_work` 必须依次 claim、start、执行、heartbeat 并带 claim proof 提交。Pro 网页从不直接使用本地工具。
+
+`listCueLineRuns()` 是只读且已脱敏的 run 清单，可用来找回持久化的 run ID；它不包含控制器文本、会话 URL、作业内容或 worker 输出。
+
+`verifyCueLineRun(runId)` 是只读完整性检查，会核对创建 marker、event replay 与 authority fence、可选 snapshot、runtime lease 和 job status 证据；只返回稳定 finding，不返回持久 run 内容。
 
 在 Codex 的 runtime 里，import `cueline api path` 打印出的那个绝对路径模块——那就是你安装的那份包构建出来的 API。
 
@@ -156,12 +175,15 @@ if (result.status === "complete") {
 
 ## CLI
 
-CLI 不驱动浏览器。`doctor`、`routing`、`jobs`、`runs`、`run status`、`run verify`、`api path`、`config path` 都是只读；`install`/`uninstall` 只修改包所拥有的 skill 链接；`run reconcile`、`run takeover`、`run reconcile-runtime`、`run cancel`/`run stop`、`job cancel` 会追加审计证据或修改持久 run/job 状态。执行写入状态的命令前，先用 `cueline help` 核对完整参数。
+CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 核对完整参数。
+
+| 分组 | 命令 | 效果 |
+| --- | --- | --- |
+| 查看 | `doctor` · `routing` · `jobs` · `runs` · `run status` · `run doctor` · `run watch` · `run timeline` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | 只读 |
+| 安装 | `install` · `uninstall` | 只创建或移除包所拥有的 skill 链接 |
+| 恢复 | `run reconcile` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | 追加审计证据或修改持久 run/job 状态 |
 
 ```console
-$ cueline install
-CueLine skill installed: /Users/you/.codex/skills/cueline
-
 $ cueline doctor
 CueLine 0.1.7
 status	ok
@@ -172,44 +194,33 @@ caller_ready	yes
 caller_lanes	1
 process_available_lanes	1
 
-$ cueline doctor --json
-{"version":"0.1.7","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
-
-$ cueline api path
-/usr/local/lib/node_modules/cueline/dist/src/api.js
-
 $ cueline routing
 default	codex-default	available
-
-$ cueline routing --json
-{"version":"0.1.7","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
-
-$ cueline jobs
-No jobs.
-
-$ cueline runs
-No runs.
 
 $ cueline run status run_... --json
 {"status":"running","executor":"caller","phase":"caller_jobs_pending","runtime":{"ownership":"missing"},...}
 
-$ cueline run verify run_... --json
-{"runId":"run_...","outcome":"verified","marker":"valid",...}
+$ cueline run doctor run_... --json
+{"outcome":"action_required","phase":"caller_jobs_pending","nextAction":"execute_caller_jobs",...}
 
-$ cueline run takeover stale_run_... --json
-{"runId":"stale_run_...","outcome":"taken_over","next":"continue",...}
+$ cueline run reconcile run_... --request-id msg_... --manual-send-confirmed --conversation-url https://chatgpt.com/c/...
+run_...\tmsg_...\tconfirmed
 
 $ cueline run cancel run_...
 run_...	requested	affected_jobs=0
-
-$ cueline config path
-/usr/local/lib/node_modules/cueline/config/routing.default.json
-
-$ cueline uninstall
-CueLine skill removed: /Users/you/.codex/skills/cueline
 ```
 
 当 Node 版本过旧、或没有任何已启用的 caller 通道时，`cueline doctor` 会以非零状态退出。`process_available_lanes` 可以为 0 而不影响 caller 模式；只有显式选择 process executor 前才需要用 `cueline routing` 检查 process 可用性。`cueline api path` 打印的就是 skill 会 import 的模块，所以使用打包安装时完全不需要 clone 源码。`cueline help` 会列出每个命令的精确语法，包括 `--json` 和人工 reconcile 的必需确认参数。
+
+实验性的诊断命令各有专属文档：
+
+| 命令 | 用途 | 文档 |
+| --- | --- | --- |
+| `run doctor` | 把 run 快照转成稳定 finding 代码、有界证据与一个安全下一步，不写入任何状态 | [run-doctor](docs/experiments/run-doctor.md) |
+| `run watch` | 以持久事件序号为游标，做有界、不占 lease 的观察 | [run-watch](docs/experiments/run-watch.md) |
+| `protocol lint` | 离线校验 Pro 信封，一次报告所有已知的契约修正 | [protocol-lint](docs/experiments/protocol-lint.md) |
+| `run handoff` | 产出带精确身份与绝对路径的安全重启包 | [run-handoff](docs/experiments/run-handoff.md) |
+| `run timeline` | 脱敏、游标分页的审计视图，不含原始事件内容 | [run-timeline](docs/experiments/run-timeline.md) |
 
 只有 `run status` 明确显示 stale owner 时才能使用 `run takeover`。新鲜的 active heartbeat 会被拒绝；命令返回 `next: continue` 或 `next: reconcile_runtime`，请按该值行动，不要自行猜测。
 
@@ -217,7 +228,7 @@ CueLine skill removed: /Users/you/.codex/skills/cueline
 
 `CUELINE_CONFIG` 用于指定路由配置文件；`CUELINE_HOME` 用于迁移本地状态（默认 `~/.cueline`）。
 
-Caller 模式不会启动路由进程。只有同时选择 `executor: "process"` 与 `allowProcessExecution: true` 时，内置 `default` 通道才以 `codex-default` 运行隔离的 `codex exec --ignore-user-config`；独立 `advise` 默认全局/每 lane 并发上限均为 2，包含 `work` 的批次保持串行。
+Caller 模式不会启动路由进程。只有同时选择 `executor: "process"` 与 `allowProcessExecution: true` 时，内置 `default` 通道才以 `codex-default` 运行隔离的 `codex exec --ignore-user-config`；独立 `advise` 默认全局/每 lane 并发上限均为 2，包含 `work` 的批次保持串行。要注册不同的 process worker，复制 [`config/routing.default.json`](config/routing.default.json)、加入你的候选项，再把 `CUELINE_CONFIG` 指过去。
 
 状态位于 `CUELINE_HOME` 之下：
 
@@ -233,7 +244,11 @@ jobs/<job-id>.json            每个作业的执行证据
 
 事件日志才是记录本身：控制器这一轮在发送之前先写入、作业在进程启动之前先注册，因此“意图”与“副作用”之间若被中断，会留下痕迹。损坏的快照会被忽略并从第 1 号事件重建，而不是被信任。
 
-续跑只接回完全相同的会话 URL。ChatGPT 自动把长文本转换成附件时，CueLine 识别 `attachment_ready` 且最多点击一次；模糊点击记为 `possibly_sent`，绝不补点或重发。人工发送附件后，使用 `cueline run reconcile RUN_ID --request-id REQUEST_ID --manual-send-confirmed` 写入正式确认；仍须通过完全一致的 conversation、Pro 证据与 protocol/run/round/request identity。控制器证据优先使用成功且非空的 stdout，全局上限 12,000 字符；完整 stdout/stderr 保留在本地。
+续跑只接回完全相同的会话 URL。ChatGPT 自动把长文本转换成附件时，CueLine 识别 `attachment_ready` 且最多点击一次；模糊点击记为 `possibly_sent`，绝不补点或重发。只有实际可见、启用且可操作的 Stop 按钮才表示 Pro 仍在回答；隐藏残留按钮不会挡住已完成的回复。人工发送附件后，使用 `cueline run reconcile RUN_ID --request-id REQUEST_ID --manual-send-confirmed` 写入正式确认；仍须通过完全一致的 conversation、Pro 证据与 protocol/run/round/request identity。
+
+Pro 回答时绝不要打断它，也不要用 `Answer now`、`Respond now`、`Stop` 或任何等效的加速控制。Pro 没有本地工具，也不默认了解 repository 布局或本地路径。Caller 证据必须包含精确的代码/错误标识、相关代码摘录与绝对本地路径，并明确询问 Pro 是否还需要更多本地证据。
+
+控制器证据优先使用成功且非空的 stdout，全局上限 12,000 字符；完整 stdout/stderr 保留在本地。若 Pro 接受 `inspect(job_ids)`，下一轮会先为指定 job 保留证据预算，再处理无关作业。
 
 ## 验证
 
@@ -250,13 +265,22 @@ npm pack --dry-run
 
 ## 0.1 的限制
 
-仅支持文本控制命令。一次运行只对应一个会话。支持 ChatGPT 自动将长文本转为附件，但不支持主动文件上传、图片、Deep Research、Projects 或 Apps。Caller `work` 必须显式 claim/start；process 执行必须双重授权。模糊发送和已启动工作都不会被自动重试。
+仅支持文本控制命令。一次运行只对应一个会话。选成 `Pro` 是 CueLine 唯一会做的模型切换。支持 ChatGPT 自动将长文本转为附件，但不支持主动文件上传、图片、Deep Research、Projects 或 Apps。Caller `work` 必须显式 claim/start，长工作需要 heartbeat；process 执行必须双重授权。模糊发送和已启动工作都不会被自动重试。macOS 是主要桌面目标、Linux 是 CI 目标；Windows 未验证。adapter 依赖当前 ChatGPT 网页 UI，UI 改版会被显式暴露，绝不会变成捏造的答案。
 
 完整矩阵见 [compatibility](docs/compatibility.md)。
 
 ## 文档
 
-[architecture](docs/architecture.md) · [controller protocol](docs/controller-protocol.md) · [runner contract](docs/runner-contract.md) · [state and recovery](docs/state-and-recovery.md) · [compatibility](docs/compatibility.md) · [provenance](docs/provenance.md)（均为英文）
+| 文档 | 内容 |
+| --- | --- |
+| [architecture](docs/architecture.md) | 各组件如何组合、信任边界在哪里 |
+| [controller protocol](docs/controller-protocol.md) | `<CueLineControl>` 信封、五个动作与修复规则 |
+| [runner contract](docs/runner-contract.md) | 已注册的 process worker 必须做与不得做的事 |
+| [state and recovery](docs/state-and-recovery.md) | 持久状态布局、ownership 与每一条恢复路径 |
+| [compatibility](docs/compatibility.md) | 支持的平台、runtime 与 UI 假设 |
+| [provenance](docs/provenance.md) | 设计从哪里来、它不是什么 |
+
+（以上均为英文）
 
 ## 开发
 

@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 530" width="1000" height="530" role="img" aria-label="CueLine 아키텍처: ChatGPT 웹 대화가 라운드마다 텍스트 명령 하나를 내리고, CueLine이 검증·기록하며, 현재 Codex가 허용된 로컬 작업을 수행합니다.">
+  <title>CueLine 아키텍처</title>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Apple SD Gothic Neo", "Malgun Gothic", monospace }
+    .hd   { fill: #0F1720; font-size: 17px; letter-spacing: .02em }
+    .sub  { fill: #8B949E; font-size: 13.5px }
+    .rule { stroke: #E4E8EC; stroke-width: 1 }
+    .tick { stroke: #C3CAD2; stroke-width: 1 }
+    .say  { fill: #C8553D; font-size: 15px }
+    .obs  { fill: #4A5561; font-size: 15px }
+    .note { fill: #8B949E; font-size: 13.5px }
+    .foot { fill: #8B949E; font-size: 13.5px }
+    .cue  { fill: #C8553D }
+    @media (prefers-color-scheme: dark) {
+      .hd { fill: #E6EDF3 }
+      .sub, .note, .foot { fill: #7D8590 }
+      .rule { stroke: #21262D }
+      .tick { stroke: #30363D }
+      .say { fill: #E0674C }
+      .obs { fill: #ADBAC7 }
+      .cue { fill: #E0674C }
+    }
+  </style>
+
+  <text x="40" y="48" class="hd">ChatGPT 웹 대화 (Pro)</text>
+  <text x="40" y="68" class="sub">컨트롤러 — 계획하고, 다섯 동작 중 하나를 고르고, 증거를 심사 · 로컬 도구 없음</text>
+  <path d="M40 84H960" class="rule"/>
+
+  <path d="M340 100V158" class="tick"/>
+  <path d="M336 158 340 166 344 158z" class="cue"/>
+  <text x="364" y="124" class="say">라운드당 텍스트 명령 하나</text>
+  <text x="364" y="144" class="note">dispatch · wait · inspect · complete · blocked</text>
+
+  <path d="M640 166V108" class="tick"/>
+  <path d="M636 108 640 100 644 108z" class="cue"/>
+  <text x="664" y="124" class="obs">라운드당 관측 하나</text>
+  <text x="664" y="144" class="note">제한된 증거 · 12,000자 예산</text>
+
+  <text x="40" y="196" class="hd">CueLine</text>
+  <text x="40" y="216" class="sub">게이트 — 모든 엔벨로프 검증, fail-closed 한도와 fence, 실행 전 events.jsonl 기록</text>
+  <path d="M40 232H960" class="rule"/>
+
+  <path d="M340 248V306" class="tick"/>
+  <path d="M336 306 340 314 344 306z" class="cue"/>
+  <text x="364" y="272" class="say">영속화된 대기 작업</text>
+  <text x="364" y="292" class="note">advise — 조정 전용 · work — claim + start 먼저</text>
+
+  <path d="M640 314V256" class="tick"/>
+  <path d="M636 256 640 248 644 256z" class="cue"/>
+  <text x="664" y="272" class="obs">제출된 결과</text>
+  <text x="664" y="292" class="note">stdout 우선 · 전체 stdout/stderr는 로컬에 보관</text>
+
+  <text x="40" y="346" class="hd">현재 Codex</text>
+  <text x="40" y="366" class="sub">caller — 허용된 로컬 작업 수행</text>
+  <path d="M40 382H960" class="rule"/>
+
+  <text x="40" y="408" class="obs">advise — 읽기 전용 조정 인계</text>
+  <text x="40" y="430" class="obs">work — 지속 claim, start, heartbeat; 자동 재시도 없음</text>
+  <text x="40" y="452" class="obs">process — 이중 승인 허용 목록 경로, 셸을 거치지 않음</text>
+
+  <path d="M40 478H960" class="rule"/>
+  <text x="40" y="504" class="foot">무엇이 일어나야 하는지는 대화가 정하고, 일어나도 되는지는 당신의 머신이 정합니다.</text>
+</svg>

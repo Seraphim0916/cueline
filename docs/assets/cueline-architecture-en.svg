@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 530" width="1000" height="530" role="img" aria-label="CueLine architecture: a ChatGPT web conversation issues one text command per round, CueLine validates and records it, and the current Codex performs the permitted local work.">
+  <title>CueLine architecture</title>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace }
+    .hd   { fill: #0F1720; font-size: 17px; letter-spacing: .02em }
+    .sub  { fill: #8B949E; font-size: 13.5px }
+    .rule { stroke: #E4E8EC; stroke-width: 1 }
+    .tick { stroke: #C3CAD2; stroke-width: 1 }
+    .say  { fill: #C8553D; font-size: 15px }
+    .obs  { fill: #4A5561; font-size: 15px }
+    .note { fill: #8B949E; font-size: 13.5px }
+    .foot { fill: #8B949E; font-size: 13.5px }
+    .cue  { fill: #C8553D }
+    @media (prefers-color-scheme: dark) {
+      .hd { fill: #E6EDF3 }
+      .sub, .note, .foot { fill: #7D8590 }
+      .rule { stroke: #21262D }
+      .tick { stroke: #30363D }
+      .say { fill: #E0674C }
+      .obs { fill: #ADBAC7 }
+      .cue { fill: #E0674C }
+    }
+  </style>
+
+  <text x="40" y="48" class="hd">ChatGPT web conversation (Pro)</text>
+  <text x="40" y="68" class="sub">the controller — plans, picks one of five actions, judges evidence · no local tools</text>
+  <path d="M40 84H960" class="rule"/>
+
+  <path d="M340 100V158" class="tick"/>
+  <path d="M336 158 340 166 344 158z" class="cue"/>
+  <text x="364" y="124" class="say">one text command per round</text>
+  <text x="364" y="144" class="note">dispatch · wait · inspect · complete · blocked</text>
+
+  <path d="M640 166V108" class="tick"/>
+  <path d="M636 108 640 100 644 108z" class="cue"/>
+  <text x="664" y="124" class="obs">one observation per round</text>
+  <text x="664" y="144" class="note">bounded evidence · 12,000-character budget</text>
+
+  <text x="40" y="196" class="hd">CueLine</text>
+  <text x="40" y="216" class="sub">the gate — validates every envelope, fail-closed bounds and fences, writes events.jsonl before acting</text>
+  <path d="M40 232H960" class="rule"/>
+
+  <path d="M340 248V306" class="tick"/>
+  <path d="M336 306 340 314 344 306z" class="cue"/>
+  <text x="364" y="272" class="say">durable pending jobs</text>
+  <text x="364" y="292" class="note">advise — coordination-only · work — claim + start first</text>
+
+  <path d="M640 314V256" class="tick"/>
+  <path d="M636 256 640 248 644 256z" class="cue"/>
+  <text x="664" y="272" class="obs">submitted results</text>
+  <text x="664" y="292" class="note">stdout preferred · full stdout/stderr kept locally</text>
+
+  <text x="40" y="346" class="hd">current Codex</text>
+  <text x="40" y="366" class="sub">the caller — does the permitted local work</text>
+  <path d="M40 382H960" class="rule"/>
+
+  <text x="40" y="408" class="obs">advise — read-only coordination handoff</text>
+  <text x="40" y="430" class="obs">work — durable claim, start, heartbeat; never auto-retried</text>
+  <text x="40" y="452" class="obs">process — double-authorized allow-list route, nothing through a shell</text>
+
+  <path d="M40 478H960" class="rule"/>
+  <text x="40" y="504" class="foot">The conversation decides what should happen. Your machine decides whether it may.</text>
+</svg>

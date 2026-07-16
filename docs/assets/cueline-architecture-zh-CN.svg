@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 530" width="1000" height="530" role="img" aria-label="CueLine 架构：ChatGPT 网页会话每轮发出一条文本指令，CueLine 校验并记录，当前 Codex 执行获准的本地工作。">
+  <title>CueLine 架构</title>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "PingFang SC", "Microsoft YaHei", monospace }
+    .hd   { fill: #0F1720; font-size: 17px; letter-spacing: .02em }
+    .sub  { fill: #8B949E; font-size: 13.5px }
+    .rule { stroke: #E4E8EC; stroke-width: 1 }
+    .tick { stroke: #C3CAD2; stroke-width: 1 }
+    .say  { fill: #C8553D; font-size: 15px }
+    .obs  { fill: #4A5561; font-size: 15px }
+    .note { fill: #8B949E; font-size: 13.5px }
+    .foot { fill: #8B949E; font-size: 13.5px }
+    .cue  { fill: #C8553D }
+    @media (prefers-color-scheme: dark) {
+      .hd { fill: #E6EDF3 }
+      .sub, .note, .foot { fill: #7D8590 }
+      .rule { stroke: #21262D }
+      .tick { stroke: #30363D }
+      .say { fill: #E0674C }
+      .obs { fill: #ADBAC7 }
+      .cue { fill: #E0674C }
+    }
+  </style>
+
+  <text x="40" y="48" class="hd">ChatGPT 网页会话（Pro）</text>
+  <text x="40" y="68" class="sub">控制器——规划、五选一动作、审查证据 · 没有本地工具</text>
+  <path d="M40 84H960" class="rule"/>
+
+  <path d="M340 100V158" class="tick"/>
+  <path d="M336 158 340 166 344 158z" class="cue"/>
+  <text x="364" y="124" class="say">每轮恰好一条文本指令</text>
+  <text x="364" y="144" class="note">dispatch · wait · inspect · complete · blocked</text>
+
+  <path d="M640 166V108" class="tick"/>
+  <path d="M636 108 640 100 644 108z" class="cue"/>
+  <text x="664" y="124" class="obs">每轮一份观测</text>
+  <text x="664" y="144" class="note">有界证据 · 12,000 字符预算</text>
+
+  <text x="40" y="196" class="hd">CueLine</text>
+  <text x="40" y="216" class="sub">守门人——校验每个信封、fail-closed 上限与 fence、行动前先写 events.jsonl</text>
+  <path d="M40 232H960" class="rule"/>
+
+  <path d="M340 248V306" class="tick"/>
+  <path d="M336 306 340 314 344 306z" class="cue"/>
+  <text x="364" y="272" class="say">持久化的待办作业</text>
+  <text x="364" y="292" class="note">advise——仅协调 · work——先 claim + start</text>
+
+  <path d="M640 314V256" class="tick"/>
+  <path d="M636 256 640 248 644 256z" class="cue"/>
+  <text x="664" y="272" class="obs">提交的执行结果</text>
+  <text x="664" y="292" class="note">优先 stdout · 完整 stdout/stderr 留在本地</text>
+
+  <text x="40" y="346" class="hd">当前 Codex</text>
+  <text x="40" y="366" class="sub">caller——执行获准的本地工作</text>
+  <path d="M40 382H960" class="rule"/>
+
+  <text x="40" y="408" class="obs">advise——只读协调交接</text>
+  <text x="40" y="430" class="obs">work——持久 claim、start、heartbeat；绝不自动重试</text>
+  <text x="40" y="452" class="obs">process——双重授权白名单路由，不经过 shell</text>
+
+  <path d="M40 478H960" class="rule"/>
+  <text x="40" y="504" class="foot">会话决定“该发生什么”；你的机器决定“可不可以发生”。</text>
+</svg>

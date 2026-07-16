@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 530" width="1000" height="530" role="img" aria-label="CueLine のアーキテクチャ：ChatGPT ウェブ会話が 1 ラウンドに 1 つのテキストコマンドを出し、CueLine が検証・記録し、現在の Codex が許可されたローカル作業を実行する。">
+  <title>CueLine のアーキテクチャ</title>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Hiragino Kaku Gothic ProN", "Yu Gothic", monospace }
+    .hd   { fill: #0F1720; font-size: 17px; letter-spacing: .02em }
+    .sub  { fill: #8B949E; font-size: 13.5px }
+    .rule { stroke: #E4E8EC; stroke-width: 1 }
+    .tick { stroke: #C3CAD2; stroke-width: 1 }
+    .say  { fill: #C8553D; font-size: 15px }
+    .obs  { fill: #4A5561; font-size: 15px }
+    .note { fill: #8B949E; font-size: 13.5px }
+    .foot { fill: #8B949E; font-size: 13.5px }
+    .cue  { fill: #C8553D }
+    @media (prefers-color-scheme: dark) {
+      .hd { fill: #E6EDF3 }
+      .sub, .note, .foot { fill: #7D8590 }
+      .rule { stroke: #21262D }
+      .tick { stroke: #30363D }
+      .say { fill: #E0674C }
+      .obs { fill: #ADBAC7 }
+      .cue { fill: #E0674C }
+    }
+  </style>
+
+  <text x="40" y="48" class="hd">ChatGPT ウェブ会話（Pro）</text>
+  <text x="40" y="68" class="sub">コントローラー——計画し、5 つの動作から選び、証拠を審査する · ローカルツールなし</text>
+  <path d="M40 84H960" class="rule"/>
+
+  <path d="M340 100V158" class="tick"/>
+  <path d="M336 158 340 166 344 158z" class="cue"/>
+  <text x="364" y="124" class="say">1 ラウンドにつきテキストコマンド 1 つ</text>
+  <text x="364" y="144" class="note">dispatch · wait · inspect · complete · blocked</text>
+
+  <path d="M640 166V108" class="tick"/>
+  <path d="M636 108 640 100 644 108z" class="cue"/>
+  <text x="664" y="124" class="obs">1 ラウンドにつき観測 1 回</text>
+  <text x="664" y="144" class="note">有界な証拠 · 12,000 文字の予算</text>
+
+  <text x="40" y="196" class="hd">CueLine</text>
+  <text x="40" y="216" class="sub">ゲート——全エンベロープを検証、fail-closed な上限と fence、実行前に events.jsonl へ記録</text>
+  <path d="M40 232H960" class="rule"/>
+
+  <path d="M340 248V306" class="tick"/>
+  <path d="M336 306 340 314 344 306z" class="cue"/>
+  <text x="364" y="272" class="say">永続化された保留ジョブ</text>
+  <text x="364" y="292" class="note">advise——調整のみ · work——先に claim + start</text>
+
+  <path d="M640 314V256" class="tick"/>
+  <path d="M636 256 640 248 644 256z" class="cue"/>
+  <text x="664" y="272" class="obs">提出された結果</text>
+  <text x="664" y="292" class="note">stdout 優先 · 完全な stdout/stderr はローカルに保持</text>
+
+  <text x="40" y="346" class="hd">現在の Codex</text>
+  <text x="40" y="366" class="sub">caller——許可されたローカル作業を実行</text>
+  <path d="M40 382H960" class="rule"/>
+
+  <text x="40" y="408" class="obs">advise——読み取り専用の調整用引き渡し</text>
+  <text x="40" y="430" class="obs">work——永続 claim、start、heartbeat。自動再試行なし</text>
+  <text x="40" y="452" class="obs">process——二重承認の許可リスト経路。シェルは通さない</text>
+
+  <path d="M40 478H960" class="rule"/>
+  <text x="40" y="504" class="foot">何が起きるべきかは会話が決め、起こしてよいかはあなたのマシンが決める。</text>
+</svg>

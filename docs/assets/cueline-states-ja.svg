@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 424" width="1000" height="424" role="img" aria-label="CueLine の run 状態：ready、awaiting_controller、awaiting_caller、awaiting_caller_work、complete、blocked、cancelled と、それぞれの意味。">
+  <title>CueLine の run 状態</title>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Hiragino Kaku Gothic ProN", "Yu Gothic", monospace }
+    .hd   { fill: #0F1720; font-size: 17px; letter-spacing: .02em }
+    .sub  { fill: #8B949E; font-size: 13.5px }
+    .rule { stroke: #E4E8EC; stroke-width: 1 }
+    .say  { fill: #C8553D; font-size: 15px }
+    .obs  { fill: #4A5561; font-size: 14px }
+    .foot { fill: #8B949E; font-size: 13.5px }
+    @media (prefers-color-scheme: dark) {
+      .hd { fill: #E6EDF3 }
+      .sub, .foot { fill: #7D8590 }
+      .rule { stroke: #21262D }
+      .say { fill: #E0674C }
+      .obs { fill: #ADBAC7 }
+    }
+  </style>
+
+  <text x="40" y="44" class="hd">run の状態</text>
+  <text x="40" y="64" class="sub">状態値は API のそのままの文字列</text>
+  <path d="M40 84H960" class="rule"/>
+
+  <text x="60" y="122" class="say">ready</text>
+  <text x="340" y="122" class="obs">作成済みで永続化済み。まだ何も送信していない</text>
+
+  <text x="60" y="156" class="say">awaiting_controller</text>
+  <text x="340" y="156" class="obs">永続的な送信を 1 回完了——観測のみ、再送は決してしない</text>
+
+  <text x="60" y="190" class="say">awaiting_caller</text>
+  <text x="340" y="190" class="obs">advise の引き渡し——調整のみ、副作用 claim なし</text>
+
+  <text x="60" y="224" class="say">awaiting_caller_work</text>
+  <text x="340" y="224" class="obs">work 保留——claim + start までは開始されない</text>
+
+  <text x="60" y="258" class="say">complete</text>
+  <text x="340" y="258" class="obs">最終成果物をそのまま返却。任意のアーカイブは 1 回だけ</text>
+
+  <text x="60" y="292" class="say">blocked</text>
+  <text x="340" y="292" class="obs">コントローラーが明確な理由つきで停止</text>
+
+  <text x="60" y="326" class="say">cancelled</text>
+  <text x="340" y="326" class="obs">永続的なキャンセル。開始済みの owner 不在の work は ambiguous に</text>
+
+  <path d="M40 352H960" class="rule"/>
+  <text x="40" y="378" class="foot">曖昧なものはすべて明示的な reconcile が必要——CueLine は再送も推測もしない。</text>
+  <text x="40" y="400" class="foot">ラウンド上限は既定 12。既定値以外の maxRounds は run 作成時に固定される。</text>
+</svg>

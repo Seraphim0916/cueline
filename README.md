@@ -5,6 +5,9 @@
 
 <p align="center">
   <a href="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml"><img alt="ci" src="https://github.com/Seraphim0916/cueline/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://www.npmjs.com/package/cueline"><img alt="npm" src="https://img.shields.io/npm/v/cueline"></a>
+  <a href="package.json"><img alt="node" src="https://img.shields.io/node/v/cueline"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/npm/l/cueline"></a>
 </p>
 
 <p align="center">
@@ -14,6 +17,8 @@
 **CueLine hands the wheel to an open ChatGPT web conversation: it plans the run and calls each next step, while CueLine checks every text command and the current Codex does the permitted local work.**
 
 The web page never touches your machine and has no local tools. It only emits one text command per round. CueLine decides whether that command is well-formed and belongs to this run. By default, it persists caller jobs for the current Codex: `advise` is a coordination-only handoff, while `work` requires a durable claim and start before any mutation. An explicitly double-authorized process executor can instead run registered local workers. CueLine keeps bounded controller evidence and the full local record.
+
+<img alt="CueLine architecture: a ChatGPT web conversation issues one text command per round, CueLine validates and records it, and the current Codex performs the permitted local work." src="docs/assets/cueline-architecture-en.svg" width="100%">
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane or GPT Relay.
 
@@ -45,6 +50,12 @@ Process execution requires both `executor: "process"` and `allowProcessExecution
 The controller protocol keeps routing levels explicit: `lane` names the lane (`default`), while `codex-default` is a candidate runner inside that lane, not a lane. CueLine validates the entire `dispatch` before registering any job; an invalid lane or runner rejects the whole dispatch for repair, so no valid-looking subset starts early.
 
 That process route is an allow-list, not a sandbox. A registered worker runs with the same permissions as the CueLine process itself; `advise` maps to a read-only Codex sandbox and `work` to `workspace-write`, but what you register is what you have authorized.
+
+## Run states
+
+<img alt="CueLine run states: ready, awaiting_controller, awaiting_caller, awaiting_caller_work, complete, blocked, cancelled — and what each one means." src="docs/assets/cueline-states-en.svg" width="100%">
+
+`cueline run status <run-id> --json` reports the durable state plus a `safeNextAction`; `cueline run doctor <run-id> --json` turns the same snapshot into stable finding codes and one safe next step. When anything is ambiguous — a possibly-sent click, an expired started claim, a manual attachment send — CueLine stops and asks for an explicit reconcile instead of resending. The full recovery contract lives in [state and recovery](docs/state-and-recovery.md).
 
 ## The controller must be a Pro model
 
@@ -173,12 +184,15 @@ Inside Codex's runtime, import the absolute module that `cueline api path` print
 
 ## The CLI
 
-The CLI does not drive the browser. `doctor`, `routing`, `jobs`, `runs`, `run status`, `run verify`, `api path`, and `config path` are read-only. `install`/`uninstall` change the package-owned skill link. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, and `job cancel` append evidence or change durable local run/job state. Run `cueline help` for every positional argument and option before using a state-changing command.
+The CLI does not drive the browser. Run `cueline help` for every positional argument and option before using a state-changing command.
+
+| Group | Commands | Effect |
+| --- | --- | --- |
+| Inspect | `doctor` · `routing` · `jobs` · `runs` · `run status` · `run doctor` · `run watch` · `run timeline` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | Read-only |
+| Install | `install` · `uninstall` | Create or remove only the package-owned skill link |
+| Recover | `run reconcile` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | Append evidence or change durable local run/job state |
 
 ```console
-$ cueline install
-CueLine skill installed: /Users/you/.codex/skills/cueline
-
 $ cueline doctor
 CueLine 0.1.7
 status	ok
@@ -189,26 +203,8 @@ caller_ready	yes
 caller_lanes	1
 process_available_lanes	1
 
-$ cueline doctor --json
-{"version":"0.1.7","status":"ok","node":{"version":"22.14.0","ok":true,"requirement":">=22"},...}
-
-$ cueline api path
-/usr/local/lib/node_modules/cueline/dist/src/api.js
-
 $ cueline routing
 default	codex-default	available
-
-$ cueline routing --json
-{"version":"0.1.7","availableLanes":1,"lanes":[{"name":"default","status":"available","selectedRunnerId":"codex-default"}],...}
-
-$ cueline jobs
-No jobs.
-
-$ cueline protocol lint response.txt --run-id run_... --round 3 --request-id msg_... --json
-{"valid":false,"issues":[{"code":"LEGACY_RUNNER_ID_FIELD",...}]}
-
-$ cueline runs
-No runs.
 
 $ cueline run status run_... --json
 {"status":"running","executor":"caller","phase":"caller_jobs_pending","runtime":{"ownership":"missing"},...}
@@ -216,55 +212,24 @@ $ cueline run status run_... --json
 $ cueline run doctor run_... --json
 {"outcome":"action_required","phase":"caller_jobs_pending","nextAction":"execute_caller_jobs",...}
 
-$ cueline run watch run_... --after 42 --timeout-ms 5000 --json
-{"outcome":"changed","previousSequence":42,"currentSequence":43,...}
-
-$ cueline run handoff run_... --json
-{"schema":"cueline-handoff/0.1","run":{"runId":"run_...","safeNextAction":"execute_caller_jobs"},...}
-
-$ cueline run timeline run_... --after 40 --limit 20 --json
-{"schema":"cueline-timeline/0.1","entries":[{"sequence":41,"type":"job_status",...}],...}
-
-$ cueline run verify run_... --json
-{"runId":"run_...","outcome":"verified","marker":"valid",...}
-
-$ cueline run takeover stale_run_... --json
-{"runId":"stale_run_...","outcome":"taken_over","next":"continue",...}
-
 $ cueline run reconcile run_... --request-id msg_... --manual-send-confirmed --conversation-url https://chatgpt.com/c/...
 run_...\tmsg_...\tconfirmed
 
 $ cueline run cancel run_...
 run_...	requested	affected_jobs=0
-
-$ cueline config path
-/usr/local/lib/node_modules/cueline/config/routing.default.json
-
-$ cueline uninstall
-CueLine skill removed: /Users/you/.codex/skills/cueline
 ```
 
-`cueline doctor` exits non-zero when Node is too old or no enabled caller lane exists. `process_available_lanes` may be zero without degrading caller mode; use `cueline routing` to inspect process availability before explicitly selecting that executor. `cueline api path` is what the skill imports, so a packaged install needs no repository checkout. `cueline help` lists every command's exact syntax, including `--json` and the manual-reconcile confirmation flags.
+`cueline doctor` exits non-zero when Node is too old or no enabled caller lane exists. `process_available_lanes` may be zero without degrading caller mode; use `cueline routing` to inspect process availability before explicitly selecting that executor. `cueline api path` is what the skill imports, so a packaged install needs no repository checkout. Every command supports `--json` where shown by `cueline help`.
 
-The experimental `run doctor` command converts a run snapshot into stable
-finding codes, bounded evidence, and a safe next action without writing state.
-See [`docs/experiments/run-doctor.md`](docs/experiments/run-doctor.md).
+The experimental diagnosis commands each have a focused doc:
 
-The experimental `run watch` command performs a bounded, lease-free observation
-using the durable event sequence as its cursor. See
-[`docs/experiments/run-watch.md`](docs/experiments/run-watch.md).
-
-The experimental `protocol lint` command validates a Pro envelope offline and
-reports all known contract corrections in one pass. See
-[`docs/experiments/protocol-lint.md`](docs/experiments/protocol-lint.md).
-
-The experimental `run handoff` command produces a safe restart packet with
-exact identities and absolute paths. See
-[`docs/experiments/run-handoff.md`](docs/experiments/run-handoff.md).
-
-The experimental `run timeline` command exposes a sanitized, cursor-paginated
-audit view without raw event payloads. See
-[`docs/experiments/run-timeline.md`](docs/experiments/run-timeline.md).
+| Command | What it does | Doc |
+| --- | --- | --- |
+| `run doctor` | Converts a run snapshot into stable finding codes, bounded evidence, and a safe next action without writing state | [run-doctor](docs/experiments/run-doctor.md) |
+| `run watch` | Bounded, lease-free observation using the durable event sequence as its cursor | [run-watch](docs/experiments/run-watch.md) |
+| `protocol lint` | Validates a Pro envelope offline and reports all known contract corrections in one pass | [protocol-lint](docs/experiments/protocol-lint.md) |
+| `run handoff` | Produces a safe restart packet with exact identities and absolute paths | [run-handoff](docs/experiments/run-handoff.md) |
+| `run timeline` | Sanitized, cursor-paginated audit view without raw event payloads | [run-timeline](docs/experiments/run-timeline.md) |
 
 Use `run takeover` only when `run status` reports an exact stale owner. It refuses a fresh active heartbeat and returns `next: continue` or `next: reconcile_runtime`; follow that value instead of guessing.
 
@@ -315,7 +280,14 @@ See [compatibility](docs/compatibility.md) for the full matrix.
 
 ## Docs
 
-[architecture](docs/architecture.md) · [controller protocol](docs/controller-protocol.md) · [runner contract](docs/runner-contract.md) · [state and recovery](docs/state-and-recovery.md) · [compatibility](docs/compatibility.md) · [provenance](docs/provenance.md)
+| Doc | What it covers |
+| --- | --- |
+| [architecture](docs/architecture.md) | How the pieces fit and where the trust boundaries sit |
+| [controller protocol](docs/controller-protocol.md) | The `<CueLineControl>` envelope, the five actions, and repair rules |
+| [runner contract](docs/runner-contract.md) | What a registered process worker must and must not do |
+| [state and recovery](docs/state-and-recovery.md) | Durable state layout, ownership, and every recovery path |
+| [compatibility](docs/compatibility.md) | Supported platforms, runtimes, and UI assumptions |
+| [provenance](docs/provenance.md) | Where the design comes from and what it is not |
 
 ## Development
 

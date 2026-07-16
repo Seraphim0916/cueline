@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 424" width="1000" height="424" role="img" aria-label="CueLine run 상태: ready, awaiting_controller, awaiting_caller, awaiting_caller_work, complete, blocked, cancelled — 각 상태의 의미.">
+  <title>CueLine run 상태</title>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Apple SD Gothic Neo", "Malgun Gothic", monospace }
+    .hd   { fill: #0F1720; font-size: 17px; letter-spacing: .02em }
+    .sub  { fill: #8B949E; font-size: 13.5px }
+    .rule { stroke: #E4E8EC; stroke-width: 1 }
+    .say  { fill: #C8553D; font-size: 15px }
+    .obs  { fill: #4A5561; font-size: 14px }
+    .foot { fill: #8B949E; font-size: 13.5px }
+    @media (prefers-color-scheme: dark) {
+      .hd { fill: #E6EDF3 }
+      .sub, .foot { fill: #7D8590 }
+      .rule { stroke: #21262D }
+      .say { fill: #E0674C }
+      .obs { fill: #ADBAC7 }
+    }
+  </style>
+
+  <text x="40" y="44" class="hd">run 상태</text>
+  <text x="40" y="64" class="sub">상태 값은 API 문자열 그대로입니다</text>
+  <path d="M40 84H960" class="rule"/>
+
+  <text x="60" y="122" class="say">ready</text>
+  <text x="340" y="122" class="obs">생성되고 영속화됨; 아직 아무것도 보내지 않음</text>
+
+  <text x="60" y="156" class="say">awaiting_controller</text>
+  <text x="340" y="156" class="obs">지속 전송 한 번 완료 — 관측만 하고 절대 재전송하지 않음</text>
+
+  <text x="60" y="190" class="say">awaiting_caller</text>
+  <text x="340" y="190" class="obs">advise 인계 — 조정 전용, 부작용 claim 없음</text>
+
+  <text x="60" y="224" class="say">awaiting_caller_work</text>
+  <text x="340" y="224" class="obs">work 대기 — claim + start 전에는 시작되지 않음</text>
+
+  <text x="60" y="258" class="say">complete</text>
+  <text x="340" y="258" class="obs">최종 결과를 그대로 반환; 선택적 보관은 정확히 한 번</text>
+
+  <text x="60" y="292" class="say">blocked</text>
+  <text x="340" y="292" class="obs">컨트롤러가 명확한 이유와 함께 중단</text>
+
+  <text x="60" y="326" class="say">cancelled</text>
+  <text x="340" y="326" class="obs">지속 취소; 시작된 owner 없는 work는 ambiguous가 됨</text>
+
+  <path d="M40 352H960" class="rule"/>
+  <text x="40" y="378" class="foot">모호한 것은 모두 명시적 reconcile이 필요합니다 — CueLine은 재전송도 추측도 하지 않습니다.</text>
+  <text x="40" y="400" class="foot">라운드 상한은 기본 12; 기본값이 아닌 maxRounds는 run 생성 시 고정됩니다.</text>
+</svg>
