@@ -61,6 +61,17 @@ test("malformed runtime lease identity and timestamps are invalid, never stale",
         { owner_id: "old", events_after_sequence: 1, retired_at: "not-a-time" },
       ],
     },
+    {
+      ...valid,
+      retired_owners: [
+        {
+          owner_id: "old",
+          events_after_sequence: 1,
+          retired_at: timestamp,
+          extra: true,
+        },
+      ],
+    },
     { ...valid, state: "released" },
     { ...valid, state: "released", released_at: "not-a-time" },
   ];

@@ -472,7 +472,7 @@ export async function main(
       args[0] === "jobs" &&
       (args.length === 1 || (args.length === 2 && args[1] === "--json"))
     ) {
-      return jobsCommand(args[1] === "--json", environment, io);
+      return await jobsCommand(args[1] === "--json", environment, io);
     }
     if (
       args[0] === "protocol" &&
@@ -522,7 +522,7 @@ export async function main(
           "usage: cueline protocol lint <file> --run-id <id> --round <n> --request-id <id> [--json]",
         );
       }
-      return protocolLintCommand(
+      return await protocolLintCommand(
         args[2],
         { runId, round, requestId },
         json,
@@ -616,7 +616,7 @@ export async function main(
       typeof args[2] === "string" &&
       (args.length === 3 || (args.length === 4 && args[3] === "--json"))
     ) {
-      return runStatusCommand(args[2], args[3] === "--json", environment, io);
+      return await runStatusCommand(args[2], args[3] === "--json", environment, io);
     }
     if (
       args[0] === "run" &&

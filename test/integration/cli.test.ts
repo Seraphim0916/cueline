@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, readlink, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -613,6 +614,34 @@ test("jobs rejects structurally invalid persisted job evidence", async () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /JOB_STATUS_INVALID/);
   assert.equal(result.stdout, "");
+});
+
+test("run status catches invalid retirement evidence without a stack trace", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  const ownerId = "owner-invalid-cli-retirement";
+  const ownerHash = createHash("sha256").update(ownerId).digest("hex").slice(0, 24);
+  const directory = `${runPaths(context.home, runId).runtimeLease}.retired-owners`;
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    path.join(directory, `${ownerHash}-00000000-0000-4000-8000-000000000000.json`),
+    `${JSON.stringify({
+      protocol: "cueline/runtime-owner-retirement/0.1",
+      run_id: runId,
+      owner_id: ownerId,
+      events_after_sequence: 0,
+      retired_at: "2026-07-16T00:00:00.000Z",
+      extra: true,
+    })}\n`,
+    "utf8",
+  );
+
+  const result = invoke(["run", "status", runId, "--json"], context.environment);
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /RUNTIME_OWNER_RETIREMENT_INVALID/);
+  assert.doesNotMatch(result.stderr, /at parseRetirement|file:\/\//);
 });
 
 test("run status refuses to call a legacy running run active without ownership evidence", async () => {

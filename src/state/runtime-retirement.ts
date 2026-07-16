@@ -5,8 +5,17 @@ import { CueLineError } from "../core/errors.js";
 import { atomicWriteJson } from "./atomic-write.js";
 import { ensurePrivateDirectory } from "./private-directory.js";
 import { runPaths } from "./paths.js";
+import { isRuntimeOwnerRetirementEvidence } from "./runtime-record-validation.js";
 
 const RETIREMENT_PROTOCOL = "cueline/runtime-owner-retirement/0.1";
+const RETIREMENT_FIELDS = new Set([
+  "protocol",
+  "run_id",
+  "owner_id",
+  "events_after_sequence",
+  "retired_at",
+]);
+const RETIREMENT_MARKER_PATTERN = /^([a-f0-9]{24})-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
 
 export interface RuntimeOwnerRetirementEvidence {
   owner_id: string;
@@ -41,20 +50,51 @@ function retirementDirectory(home: string, runId: string): string {
   return `${runPaths(home, runId).runtimeLease}.retired-owners`;
 }
 
-function parseRetirement(source: string, runId: string): RuntimeOwnerRetirementRecord {
-  const value = JSON.parse(source) as Partial<RuntimeOwnerRetirementRecord>;
+function ownerIdentityHash(ownerId: string): string {
+  return createHash("sha256").update(ownerId).digest("hex").slice(0, 24);
+}
+
+function invalidRetirement(message: string, cause?: unknown): CueLineError {
+  return new CueLineError("RUNTIME_OWNER_RETIREMENT_INVALID", message, {
+    ...(cause === undefined ? {} : { cause }),
+  });
+}
+
+function parseRetirement(
+  source: string,
+  runId: string,
+  markerName: string,
+): RuntimeOwnerRetirementRecord {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source) as unknown;
+  } catch (error) {
+    throw invalidRetirement("Runtime owner retirement marker is not valid JSON.", error);
+  }
+  const value =
+    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  const evidence = {
+    owner_id: value.owner_id,
+    events_after_sequence: value.events_after_sequence,
+    retired_at: value.retired_at,
+  };
   if (
+    Object.keys(value).some((field) => !RETIREMENT_FIELDS.has(field)) ||
     value.protocol !== RETIREMENT_PROTOCOL ||
     value.run_id !== runId ||
-    typeof value.owner_id !== "string" ||
-    value.owner_id === "" ||
-    !Number.isSafeInteger(value.events_after_sequence) ||
-    (value.events_after_sequence as number) < 0 ||
-    typeof value.retired_at !== "string"
+    !isRuntimeOwnerRetirementEvidence(evidence)
   ) {
-    throw new Error("RUNTIME_OWNER_RETIREMENT_INVALID");
+    throw invalidRetirement("Runtime owner retirement marker has an invalid record shape.");
   }
-  return value as RuntimeOwnerRetirementRecord;
+  const markerMatch = RETIREMENT_MARKER_PATTERN.exec(markerName);
+  if (markerMatch?.[1] !== ownerIdentityHash(evidence.owner_id)) {
+    throw invalidRetirement(
+      "Runtime owner retirement marker filename does not match its owner identity.",
+    );
+  }
+  return value as unknown as RuntimeOwnerRetirementRecord;
 }
 
 async function readMarkers(
@@ -68,7 +108,9 @@ async function readMarkers(
   });
   const retirements: RuntimeOwnerRetirementEvidence[] = [];
   for (const name of names.filter((candidate) => candidate.endsWith(".json")).sort()) {
-    retirements.push(parseRetirement(await readFile(`${directory}/${name}`, "utf8"), runId));
+    retirements.push(
+      parseRetirement(await readFile(`${directory}/${name}`, "utf8"), runId, name),
+    );
   }
   return retirements;
 }
@@ -115,11 +157,7 @@ export async function readStableRuntimeOwnerRetirementCutoffs(
   throw new Error("RUNTIME_OWNER_RETIREMENT_EVIDENCE_UNSTABLE");
 }
 
-async function persistRetirement(
-  home: string,
-  runId: string,
-  retirement: RuntimeOwnerRetirementEvidence,
-): Promise<void> {
+function validateRetirement(retirement: RuntimeOwnerRetirementEvidence): void {
   if (
     !Number.isSafeInteger(retirement.events_after_sequence) ||
     retirement.events_after_sequence < 0
@@ -129,12 +167,22 @@ async function persistRetirement(
       "Runtime takeover requires a non-negative durable event cutoff.",
     );
   }
+  if (!isRuntimeOwnerRetirementEvidence(retirement)) {
+    throw invalidRetirement(
+      "Runtime owner retirement evidence requires a non-empty owner and canonical timestamp.",
+    );
+  }
+}
+
+async function persistRetirement(
+  home: string,
+  runId: string,
+  retirement: RuntimeOwnerRetirementEvidence,
+): Promise<void> {
+  validateRetirement(retirement);
   const directory = retirementDirectory(home, runId);
   await ensurePrivateDirectory(directory);
-  const ownerHash = createHash("sha256")
-    .update(retirement.owner_id)
-    .digest("hex")
-    .slice(0, 24);
+  const ownerHash = ownerIdentityHash(retirement.owner_id);
   await atomicWriteJson(`${directory}/${ownerHash}-${randomUUID()}.json`, {
     protocol: RETIREMENT_PROTOCOL,
     run_id: runId,
@@ -147,7 +195,11 @@ export async function persistRuntimeOwnerRetirements(
   runId: string,
   retirements: readonly RuntimeOwnerRetirementEvidence[],
 ): Promise<void> {
-  for (const retirement of retirements) {
+  const validated = retirements.map((retirement) => {
+    validateRetirement(retirement);
+    return { ...retirement };
+  });
+  for (const retirement of validated) {
     await persistRetirement(home, runId, retirement);
   }
 }
