@@ -15,6 +15,7 @@ import type {
 import {
   cancelCueLineJob,
   cancelCueLineRun,
+  confirmControllerTurnNotSent,
   confirmManualControllerSubmission,
   continueCueLineRun,
   loadCueLineRunStatus,
@@ -24,7 +25,7 @@ import {
   submitCueLineCallerJobResult,
 } from "../../src/api.js";
 import { CueLineError } from "../../src/core/errors.js";
-import { jobId } from "../../src/core/ids.js";
+import { commandHash, jobId } from "../../src/core/ids.js";
 import {
   continueControllerLoop as continueControllerLoopRaw,
   runControllerLoop as runControllerLoopRaw,
@@ -3569,6 +3570,368 @@ test("continues after a proven pre-submit failure without trying to recover a no
         (event.payload as Record<string, unknown>).reason === "definitely_not_sent_retry",
     ),
     true,
+  );
+});
+
+test("operator-confirmed not-sent retries the same prompt once under a new request identity", async () => {
+  const runId = "run_operator_not_sent_retry";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/operator-not-sent-retry";
+  let abandonedRequestId = "";
+  let abandonedPrompt = "";
+  const firstBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input, hooks): Promise<ControllerTurn> {
+      abandonedRequestId = input.requestId;
+      abandonedPrompt = input.prompt;
+      await hooks?.onCheckpoint?.({
+        submissionState: "possibly_sent",
+        composerPromptState: "attachment_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: 1,
+      });
+      throw new CueLineError(
+        "CONTROLLER_SUBMISSION_AMBIGUOUS",
+        "The click outcome is unknown.",
+        {
+          details: {
+            stage: "submitting",
+            submission_state: "possibly_sent",
+            request_id: input.requestId,
+          },
+        },
+      );
+    },
+  };
+  await assert.rejects(
+    runControllerLoop({
+      request: "Retry exact controller evidence once",
+      runId,
+      home: stateHome,
+      browser: firstBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS",
+  );
+  await confirmControllerTurnNotSent(runId, {
+    home: stateHome,
+    requestId: abandonedRequestId,
+    conversationUrl,
+  });
+
+  const retriedBrowser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "complete",
+      final_delivery_text: "RETRY_COMPLETE",
+    }), conversationUrl),
+  ]);
+  const result = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    conversationUrl,
+    browser: retriedBrowser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(retriedBrowser.calls.length, 1);
+  assert.notEqual(retriedBrowser.calls[0]?.requestId, abandonedRequestId);
+  assert.equal(retriedBrowser.calls[0]?.round, 1);
+  assert.equal(
+    retriedBrowser.calls[0]?.prompt
+      .split(retriedBrowser.calls[0]!.requestId)
+      .join(abandonedRequestId),
+    abandonedPrompt,
+  );
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  const retryRequested = events.find(
+    (event) =>
+      event.type === "controller_turn_requested" &&
+      (event.payload as Record<string, unknown>).retry_of_request_id ===
+        abandonedRequestId,
+  );
+  assert.equal(
+    (retryRequested?.payload as Record<string, unknown> | undefined)
+      ?.recovery_prompt_hash,
+    commandHash(abandonedPrompt),
+  );
+});
+
+test("operator-confirmed not-sent retry rejects any prompt change outside the request identity", async () => {
+  const runId = "run_operator_not_sent_prompt_mismatch";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/operator-not-sent-prompt-mismatch";
+  let abandonedRequestId = "";
+  const firstBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input, hooks): Promise<ControllerTurn> {
+      abandonedRequestId = input.requestId;
+      await hooks?.onCheckpoint?.({
+        submissionState: "possibly_sent",
+        composerPromptState: "attachment_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: 1,
+      });
+      throw new CueLineError(
+        "CONTROLLER_SUBMISSION_AMBIGUOUS",
+        "simulated ambiguous submission",
+        {
+          details: {
+            stage: "submitting",
+            submission_state: "possibly_sent",
+            request_id: input.requestId,
+          },
+        },
+      );
+    },
+  };
+
+  await assert.rejects(
+    runControllerLoop({
+      request: "Retry only the checkpointed controller prompt",
+      runId,
+      home: stateHome,
+      browser: firstBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS",
+  );
+  await confirmControllerTurnNotSent(runId, {
+    home: stateHome,
+    requestId: abandonedRequestId,
+    conversationUrl,
+  });
+
+  const retryBrowser = new FakeBrowserAdapter([]);
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      conversationUrl,
+      controllerInstructions: ["This changes the controller prompt."],
+      browser: retryBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_NOT_SENT_PROMPT_MISMATCH",
+  );
+  assert.equal(retryBrowser.calls.length, 0);
+
+  const status = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(status.safeNextAction, "manual_review");
+  assert.equal(
+    status.controller.reconciliation?.resendBlockedReason,
+    "CONTROLLER_NOT_SENT_PROMPT_MISMATCH",
+  );
+});
+
+test("operator-confirmed not-sent retry keeps one retry identity across a crash and restart", async () => {
+  const runId = "run_operator_not_sent_retry_restart";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/operator-not-sent-retry-restart";
+  let abandonedRequestId = "";
+  const firstBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input, hooks): Promise<ControllerTurn> {
+      abandonedRequestId = input.requestId;
+      await hooks?.onCheckpoint?.({
+        submissionState: "possibly_sent",
+        composerPromptState: "inline_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: 0,
+      });
+      throw new CueLineError(
+        "CONTROLLER_SUBMISSION_AMBIGUOUS",
+        "simulated ambiguous submission",
+        {
+          details: {
+            stage: "submitting",
+            submission_state: "possibly_sent",
+            request_id: input.requestId,
+          },
+        },
+      );
+    },
+  };
+
+  await assert.rejects(
+    runControllerLoop({
+      request: "Resume the exact not-sent retry after restart",
+      runId,
+      home: stateHome,
+      browser: firstBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS",
+  );
+  await confirmControllerTurnNotSent(runId, {
+    home: stateHome,
+    requestId: abandonedRequestId,
+    conversationUrl,
+  });
+
+  let retryRequestId = "";
+  const crashingRetryBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input): Promise<ControllerTurn> {
+      retryRequestId = input.requestId;
+      throw new CueLineError("SEND_BUTTON_MISSING", "simulated pre-click crash", {
+        details: {
+          stage: "pre_submit",
+          submission_state: "definitely_not_sent",
+          request_id: input.requestId,
+        },
+      });
+    },
+  };
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      conversationUrl,
+      browser: crashingRetryBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "SEND_BUTTON_MISSING",
+  );
+
+  const resumedBrowser = new FakeBrowserAdapter([
+    reply(
+      () => ({
+        action: "complete",
+        final_delivery_text: "RESTART_RECOVERY_COMPLETE",
+      }),
+      conversationUrl,
+    ),
+  ]);
+  const result = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    conversationUrl,
+    browser: resumedBrowser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(resumedBrowser.calls.length, 1);
+  assert.equal(resumedBrowser.calls[0]?.requestId, retryRequestId);
+  const retryRequests = (await readEvents(runPaths(stateHome, runId).events)).filter(
+    (event) =>
+      event.type === "controller_turn_requested" &&
+      (event.payload as Record<string, unknown>).retry_of_request_id ===
+        abandonedRequestId,
+  );
+  assert.equal(retryRequests.length, 2);
+  assert.equal(
+    new Set(
+      retryRequests.map(
+        (event) => (event.payload as Record<string, unknown>).request_id,
+      ),
+    ).size,
+    1,
+  );
+});
+
+test("operator-confirmed not-sent retry freezes when the abandoned response appears later", async () => {
+  const runId = "run_operator_not_sent_conflict";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/operator-not-sent-conflict";
+  let abandonedRequestId = "";
+  const firstBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input, hooks): Promise<ControllerTurn> {
+      abandonedRequestId = input.requestId;
+      await hooks?.onCheckpoint?.({
+        submissionState: "possibly_sent",
+        composerPromptState: "inline_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: 1,
+      });
+      throw new CueLineError("CONTROLLER_SUBMISSION_AMBIGUOUS", "Unknown click outcome.", {
+        details: {
+          stage: "submitting",
+          submission_state: "possibly_sent",
+          request_id: input.requestId,
+        },
+      });
+    },
+  };
+  await assert.rejects(
+    runControllerLoop({
+      request: "Freeze if old response appears",
+      runId,
+      home: stateHome,
+      browser: firstBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+  );
+  await confirmControllerTurnNotSent(runId, {
+    home: stateHome,
+    requestId: abandonedRequestId,
+    conversationUrl,
+  });
+  let calls = 0;
+  const conflictBrowser: BrowserAdapter = {
+    async sendTurn(input): Promise<ControllerTurn> {
+      calls += 1;
+      return {
+        text: `<CueLineControl>${JSON.stringify({
+          protocol: "cueline/0.1",
+          run_id: input.runId,
+          round: input.round,
+          request_id: abandonedRequestId,
+          action: "complete",
+          final_delivery_text: "OLD_RESPONSE",
+        })}</CueLineControl>`,
+        conversationUrl,
+        model: {
+          provider: "chatgpt",
+          selectedLabel: "Pro",
+          responseModelSlug: "gpt-5-6-pro",
+          source: "composer_and_response",
+        },
+      };
+    },
+  };
+
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      conversationUrl,
+      browser: conflictBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_NOT_SENT_RESPONSE_CONFLICT",
+  );
+  assert.equal(calls, 1);
+  const status = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(status.safeNextAction, "manual_review");
+  assert.equal(
+    status.controller.reconciliation?.resendBlockedReason,
+    "CONTROLLER_NOT_SENT_RESPONSE_CONFLICT",
   );
 });
 

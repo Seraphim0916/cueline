@@ -61,7 +61,8 @@ export type CueLineSafeNextAction =
   | "start_caller_work"
   | "continue_caller_work"
   | "return_result"
-  | "settle_controller_archive";
+  | "settle_controller_archive"
+  | "manual_review";
 
 export interface CueLineRunStatusSummary {
   runId: string;
@@ -81,6 +82,14 @@ export interface CueLineRunStatusSummary {
     lastAcceptedAction: "dispatch" | "wait" | "inspect" | "complete" | "blocked" | null;
     lastAcceptedRequestId: string | null;
     lastAcceptedJobKeys: string[];
+    reconciliation?: {
+      requiredReason: string | null;
+      operatorConfirmation: "not_sent_confirmed" | "manual_send_confirmed" | null;
+      abandonedRequestId: string | null;
+      retryRequestId: string | null;
+      promptHash: string | null;
+      resendBlockedReason: string | null;
+    };
     archive: {
       enabled: boolean;
       status: CueLineRunState["controllerConversationArchive"]["status"];
@@ -250,6 +259,14 @@ function safeNextActionFor(
   runtime: RuntimeLeaseObservation,
   cancellation: CancellationObservation,
 ): CueLineSafeNextAction {
+  if (state.notSentRecovery?.status === "conflict") return "manual_review";
+  if (
+    state.notSentRecovery?.status === "confirmed" &&
+    state.notSentRecovery.retryRequestId === null &&
+    state.pendingControllerTurns.length === 0
+  ) {
+    return "retry";
+  }
   if (controllerConversationArchiveNeedsRecovery(state)) {
     if (runtime.ownership === "active") return "observe";
     if (runtime.ownership === "stale" || runtime.ownership === "invalid") {
@@ -308,6 +325,14 @@ export function cueLineRunPhase(
   runtime: RuntimeLeaseObservation,
   cancellation: CancellationObservation = { runRequested: false, jobRequests: [] },
 ): CueLineRunPhase {
+  if (state.notSentRecovery?.status === "conflict") return "reconciliation_required";
+  if (
+    state.notSentRecovery?.status === "confirmed" &&
+    state.notSentRecovery.retryRequestId === null &&
+    state.pendingControllerTurns.length === 0
+  ) {
+    return "prompt_not_sent";
+  }
   if (controllerConversationArchiveNeedsRecovery(state)) {
     if (runtime.ownership === "stale") return "runtime_stale";
     if (runtime.ownership === "invalid") return "runtime_ownership_unknown";
@@ -533,6 +558,19 @@ export function summarizeCueLineRunState(
       lastAcceptedAction: acceptedCommand.action,
       lastAcceptedRequestId: acceptedCommand.requestId,
       lastAcceptedJobKeys: acceptedCommand.jobKeys,
+      reconciliation: {
+        requiredReason: state.lastFailure?.code ?? null,
+        operatorConfirmation:
+          state.notSentRecovery !== undefined && state.notSentRecovery !== null
+            ? "not_sent_confirmed"
+            : state.pendingControllerTurns.some((turn) => turn.manualSendConfirmed)
+              ? "manual_send_confirmed"
+              : null,
+        abandonedRequestId: state.notSentRecovery?.abandonedRequestId ?? null,
+        retryRequestId: state.notSentRecovery?.retryRequestId ?? null,
+        promptHash: state.notSentRecovery?.promptHash ?? null,
+        resendBlockedReason: state.notSentRecovery?.conflictCode ?? null,
+      },
       archive: {
         enabled: state.controllerConversationArchive?.enabled === true,
         status: state.controllerConversationArchive?.status ?? "disabled",

@@ -14,6 +14,7 @@ import {
   sameChatGptConversationUrl,
 } from "../../core/conversation-url.js";
 import { CueLineError } from "../../core/errors.js";
+import { commandHash } from "../../core/ids.js";
 import {
   readPageChatState,
   readPageComposerState,
@@ -310,21 +311,24 @@ class CodexIabAdapter implements BrowserAdapter {
     tab: IabTab,
     previousUrl: string,
     baseline: PageChatState,
+    observedState?: PageChatState,
   ): Promise<boolean> {
     const currentUrl = (await tab.url().catch(() => previousUrl)) ?? previousUrl;
     if (!isConversationUrl(previousUrl) && isConversationUrl(currentUrl)) {
       return true;
     }
     const state =
-      await readPageChatState(tab).catch(() => ({
+      observedState ??
+      (await readPageChatState(tab).catch(() => ({
         pageUrl: "",
         isAnswering: false,
         assistantText: "",
+        userMessageCount: 0,
         assistantMessageCount: 0,
         assistantModelSlug: null,
         lastUserText: null,
         lastMessageRole: null,
-    }));
+      })));
     if (
       isConversationUrl(previousUrl) &&
       !sameChatGptConversationUrl(state.pageUrl, previousUrl)
@@ -333,6 +337,7 @@ class CodexIabAdapter implements BrowserAdapter {
     }
     return (
       state.isAnswering ||
+      (state.userMessageCount ?? 0) > (baseline.userMessageCount ?? 0) ||
       state.assistantMessageCount > baseline.assistantMessageCount
     );
   }
@@ -352,6 +357,9 @@ class CodexIabAdapter implements BrowserAdapter {
     tab: IabTab,
     target: SendTarget,
     baseline: PageChatState,
+    input: BrowserTurnInput,
+    context: TurnAttemptContext,
+    hooks?: BrowserTurnHooks,
   ): Promise<void> {
     const previousUrl = (await tab.url()) ?? "";
     try {
@@ -362,7 +370,23 @@ class CodexIabAdapter implements BrowserAdapter {
         await tab.playwright.waitForTimeout(100);
       }
     } catch (error) {
-      if (await this.#submissionStarted(tab, previousUrl, baseline)) return;
+      const observed = await readPageChatState(tab).catch(() => undefined);
+      await this.#emitCheckpoint(
+        input,
+        tab,
+        context,
+        hooks,
+        "possibly_sent",
+        "error",
+        undefined,
+        observed ?? null,
+        error,
+      );
+      if (observed === undefined) {
+        if (isTabUnavailableError(error)) throw error;
+        throw ambiguousSubmissionError(error);
+      }
+      if (await this.#submissionStarted(tab, previousUrl, baseline, observed)) return;
       if (isTabUnavailableError(error)) throw error;
       throw ambiguousSubmissionError(error);
     }
@@ -371,6 +395,7 @@ class CodexIabAdapter implements BrowserAdapter {
   async #waitForCompletion(
     tab: IabTab,
     baseline: PageChatState,
+    notSentRecovery?: BrowserTurnInput["notSentRecovery"],
     signal?: AbortSignal,
   ): Promise<PageChatState> {
     const deadline = Date.now() + this.#options.timeoutMs;
@@ -380,6 +405,25 @@ class CodexIabAdapter implements BrowserAdapter {
     while (Date.now() < deadline) {
       throwIfCancelled(signal);
       const state = await readPageChatState(tab);
+      if (
+        notSentRecovery !== undefined &&
+        (state.userMessageCount ?? 0) > (baseline.userMessageCount ?? 0) + 1
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT",
+          "The abandoned controller message appeared after the operator-confirmed retry began; freezing the run.",
+          {
+            details: {
+              stage: "observing_retry",
+              submission_state: "possibly_sent",
+              abandoned_request_id: notSentRecovery.abandonedRequestId,
+              baseline_user_message_count:
+                notSentRecovery.baselineUserMessageCount,
+              observed_user_message_count: state.userMessageCount ?? 0,
+            },
+          },
+        );
+      }
       if (state.isAnswering || state.assistantMessageCount > baseline.assistantMessageCount) {
         responseStarted = true;
       }
@@ -642,6 +686,29 @@ class CodexIabAdapter implements BrowserAdapter {
     }
     context.selectedModelLabel = await this.#ensureProModel(tab, input.signal);
     context.baseline = await readPageChatState(tab);
+    if (input.notSentRecovery !== undefined) {
+      const currentUrl = context.baseline.pageUrl;
+      const userMessageCount = context.baseline.userMessageCount ?? 0;
+      if (
+        !sameChatGptConversationUrl(currentUrl, input.notSentRecovery.conversationUrl) ||
+        userMessageCount !== input.notSentRecovery.baselineUserMessageCount
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT",
+          "The exact conversation no longer matches the operator-confirmed not-sent baseline; refusing retry click.",
+          {
+            details: {
+              stage: "pre_submit",
+              submission_state: "definitely_not_sent",
+              abandoned_request_id: input.notSentRecovery.abandonedRequestId,
+              baseline_user_message_count:
+                input.notSentRecovery.baselineUserMessageCount,
+              observed_user_message_count: userMessageCount,
+            },
+          },
+        );
+      }
+    }
     const composerBaseline = await readPageComposerState(
       tab,
       input.prompt,
@@ -668,9 +735,18 @@ class CodexIabAdapter implements BrowserAdapter {
       input.signal,
     );
     const sendTarget = await this.#resolveSendTarget(tab);
-    await this.#emitCheckpoint(tab, context, hooks, "submitting");
+    await this.#emitCheckpoint(
+      input,
+      tab,
+      context,
+      hooks,
+      "submitting",
+      "attempting",
+      undefined,
+      context.baseline,
+    );
     context.stage = "submitting";
-    await this.#clickSend(tab, sendTarget, context.baseline);
+    await this.#clickSend(tab, sendTarget, context.baseline, input, context, hooks);
     if (requireRecoverableCheckpoint) {
       this.#conversationUrl = await captureConversationUrlAfterSubmit(
         tab,
@@ -682,11 +758,14 @@ class CodexIabAdapter implements BrowserAdapter {
     }
     context.stage = "submitted";
     await this.#emitCheckpoint(
+      input,
       tab,
       context,
       hooks,
       "submitted",
+      "accepted",
       requireRecoverableCheckpoint ? this.#conversationUrl : undefined,
+      context.baseline,
     );
     return tab;
   }
@@ -697,16 +776,25 @@ class CodexIabAdapter implements BrowserAdapter {
     hooks?: BrowserTurnHooks,
   ): Promise<ControllerTurn> {
     const tab = await this.#submitTurnOnce(input, context, hooks);
-    const completed = await this.#waitForCompletion(tab, context.baseline!, input.signal);
+    const completed = await this.#waitForCompletion(
+      tab,
+      context.baseline!,
+      input.notSentRecovery,
+      input.signal,
+    );
     return this.#resultFromCompletedTurn(tab, context.selectedModelLabel!, completed);
   }
 
   async #emitCheckpoint(
+    input: BrowserTurnInput,
     tab: IabTab,
     context: TurnAttemptContext,
     hooks: BrowserTurnHooks | undefined,
-    submissionState: "submitting" | "submitted",
+    submissionState: "submitting" | "possibly_sent" | "submitted",
+    clickAttemptState: "attempting" | "accepted" | "error",
     capturedConversationUrl?: string,
+    observedState?: PageChatState | null,
+    clickError?: unknown,
   ): Promise<void> {
     if (!context.baseline || !context.selectedModelLabel || !context.composerPromptState) return;
     const currentUrl = capturedConversationUrl ?? (await tab.url().catch(() => "")) ?? "";
@@ -714,6 +802,14 @@ class CodexIabAdapter implements BrowserAdapter {
     if (checkpointUrl !== undefined && isConversationUrl(checkpointUrl)) {
       this.#conversationUrl = checkpointUrl;
     }
+    const domState =
+      observedState === null
+        ? undefined
+        : observedState ?? (await readPageChatState(tab).catch(() => undefined));
+    const baselineLastUserMessageHash =
+      context.baseline.lastUserText === null
+        ? null
+        : commandHash(normalizedMessageText(context.baseline.lastUserText));
     await hooks?.onCheckpoint?.({
       submissionState,
       composerPromptState: context.composerPromptState,
@@ -721,7 +817,38 @@ class CodexIabAdapter implements BrowserAdapter {
         ? { conversationUrl: checkpointUrl }
         : {}),
       selectedModelLabel: context.selectedModelLabel,
+      runId: input.runId,
+      round: input.round,
+      requestId: input.requestId,
+      promptHash: commandHash(input.prompt),
+      modelEvidenceSource: "composer",
+      baselineUserMessageCount: context.baseline.userMessageCount ?? 0,
       baselineAssistantMessageCount: context.baseline.assistantMessageCount,
+      baselineLastUserMessageHash,
+      clickAttemptState,
+      ...(clickError instanceof Error
+        ? {
+            clickErrorName: clickError.name.slice(0, 128),
+            clickErrorMessage: clickError.message.slice(0, 500),
+          }
+        : clickError === undefined
+          ? {}
+          : { clickErrorMessage: String(clickError).slice(0, 500) }),
+      ...(domState === undefined
+        ? {}
+        : {
+            domEvidence: {
+              pageUrl: domState.pageUrl,
+              userMessageCount: domState.userMessageCount ?? 0,
+              assistantMessageCount: domState.assistantMessageCount,
+              lastMessageRole: domState.lastMessageRole,
+              lastUserMessageHash:
+                domState.lastUserText === null
+                  ? null
+                  : commandHash(normalizedMessageText(domState.lastUserText)),
+              isAnswering: domState.isAnswering,
+            },
+          }),
     });
   }
 
@@ -809,6 +936,7 @@ class CodexIabAdapter implements BrowserAdapter {
         const completed = await this.#waitForCompletion(
           recoveredTab,
           context.baseline,
+          input.notSentRecovery,
           input.signal,
         );
         return this.#resultFromCompletedTurn(
@@ -898,6 +1026,26 @@ class CodexIabAdapter implements BrowserAdapter {
           input.signal,
         );
     if (completed === undefined) return undefined;
+    if (
+      input.notSentRecovery !== undefined &&
+      (completed.userMessageCount ?? 0) >
+        input.notSentRecovery.baselineUserMessageCount + 1
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT",
+        "The abandoned controller message appeared during retry recovery; freezing the run.",
+        {
+          details: {
+            stage: "reconciling_retry",
+            submission_state: "possibly_sent",
+            abandoned_request_id: input.notSentRecovery.abandonedRequestId,
+            baseline_user_message_count:
+              input.notSentRecovery.baselineUserMessageCount,
+            observed_user_message_count: completed.userMessageCount ?? 0,
+          },
+        },
+      );
+    }
     const recoveredUrl = (await tab.url()) ?? "";
     if (!sameChatGptConversationUrl(recoveredUrl, this.#conversationUrl)) {
       throw new CueLineError(

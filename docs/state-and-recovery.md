@@ -48,6 +48,8 @@ The controller turn is recorded before sending it through the browser. The built
 
 The absence of `controller_response_received` proves only that the local runtime did not record a response. It does **not** prove that ChatGPT did not answer. `run_failed` therefore retains the safe error message, stage, exact request ID, submission state, and known conversation URL. CueLine never treats a missing response event as permission to resend an ambiguous prompt.
 
+Submission checkpoints also bind the run, round, request ID, prompt hash, exact conversation URL, Pro model evidence, baseline user and assistant message counts, composer state, click-attempt state, and bounded DOM evidence. If the click throws, CueLine records the exception class and message plus any readable post-click DOM evidence before classification.
+
 ## Snapshot
 
 `snapshot.json` is a disposable materialized view of the event stream. CueLine writes a temporary file in the same directory and renames it over the destination. A snapshot records its state protocol, run ID, and last applied physical sequence. Loads replay the authoritative event stream from event 1 instead of trusting a snapshot that a retired owner could have replaced.
@@ -76,6 +78,34 @@ The run event log still records the controller-visible job transitions. A status
 - `runtime_active` means a live owner is still settling a failed state; another session must observe rather than continue.
 - `controller_archive_pending` / `settle_controller_archive` means the controller run is already durably `complete`, but an explicitly enabled post-completion archive has not reached terminal proof. Only missing/released ownership may settle it. `archived`, `ambiguous`, and `failed` are terminal archive outcomes; never retry an `ambiguous` attempt.
 - `continueAllowed: false` forbids `continueCueLineRun`. A caller-work state may separately authorize only the exact claim/start/continue API action named by `safeNextAction`; it never authorizes a browser resend.
+
+## Operator-confirmed not-sent recovery
+
+`possibly_sent` remains non-retryable by default. If the operator directly inspects the exact ChatGPT conversation and confirms that the original user message is absent, a separate append-only recovery path can authorize one retry:
+
+```bash
+cueline run reconcile RUN_ID \
+  --request-id REQUEST_ID \
+  --not-sent-confirmed \
+  --conversation-url https://chatgpt.com/c/EXACT_CONVERSATION
+```
+
+The command does not drive the browser or send a message. It requires exactly one pending controller turn and validates the exact run, conversation, round, request ID, persisted prompt hash, and Pro model checkpoint. It also refuses recovery if a matching response or a command for the same or a newer controller round was accepted. Success appends `controller_turn_not_sent_confirmed` and `controller_turn_abandoned` with reason `operator_confirmed_not_sent`; old events remain unchanged.
+
+The next continuation creates exactly one new request ID for the same round. The regenerated prompt must match the abandoned checkpoint hash after substituting only the new request ID for the abandoned request ID. Any other content change records `CONTROLLER_NOT_SENT_PROMPT_MISMATCH` and freezes the run for manual review. A crash after the retry request is written resumes the same deterministic retry identity. Repeating the confirmation command is idempotent and never appends another confirmation, abandonment, or send.
+
+Status exposes `operatorConfirmation`, `abandonedRequestId`, `retryRequestId`, `promptHash`, and `resendBlockedReason`. Before the retry, `safeNextAction` is `retry`; after submission it is the normal `observe`. If later DOM or response evidence shows that the abandoned request actually appeared, CueLine records `CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT` or `CONTROLLER_NOT_SENT_RESPONSE_CONFLICT`, changes `safeNextAction` to `manual_review`, and refuses automatic resend or command acceptance.
+
+Existing manual-send path is distinct:
+
+```bash
+cueline run reconcile RUN_ID \
+  --request-id REQUEST_ID \
+  --manual-send-confirmed \
+  --conversation-url https://chatgpt.com/c/EXACT_CONVERSATION
+```
+
+`--manual-send-confirmed` says the original request was sent and must be observed under the same identity. `--not-sent-confirmed` says the original request definitely was not sent and must be abandoned. The flags are mutually exclusive.
 
 ## Continue behavior
 

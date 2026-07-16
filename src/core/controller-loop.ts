@@ -494,9 +494,20 @@ async function driveControllerLoop(
     }
     const round = state.round + 1;
     const evidenceJobs = await controllerEvidenceJobs(store);
+    const notSentRetry =
+      state.notSentRecovery?.status === "confirmed" &&
+      state.notSentRecovery.retryRequestId === null
+        ? state.notSentRecovery
+        : undefined;
     const requestId = messageId(id, round, "observation", {
       jobs: evidenceJobs,
       notices: state.notices,
+      ...(notSentRetry === undefined
+        ? {}
+        : {
+            not_sent_retry_of_request_id: notSentRetry.abandonedRequestId,
+            not_sent_retry_prompt_hash: notSentRetry.promptHash,
+          }),
     });
     const observation = observationFor(state, round, requestId, evidenceJobs);
     const command = await requestControllerCommand(
@@ -511,6 +522,7 @@ async function driveControllerLoop(
       options.signal,
       undefined,
       options.returnAfterControllerSubmission === true,
+      notSentRetry,
     );
     if (command === undefined) {
       await store.snapshot();
@@ -632,6 +644,19 @@ async function reconcilePendingControllerTurn(
     ...(pending.baselineAssistantMessageCount === null
       ? {}
       : { baselineAssistantMessageCount: pending.baselineAssistantMessageCount }),
+    ...(pending.retryOfRequestId === undefined ||
+    pending.retryOfRequestId === null ||
+    state.notSentRecovery?.abandonedRequestId !== pending.retryOfRequestId
+      ? {}
+      : {
+          notSentRecovery: {
+            abandonedRequestId: state.notSentRecovery.abandonedRequestId,
+            promptHash: state.notSentRecovery.promptHash,
+            conversationUrl: state.notSentRecovery.conversationUrl,
+            baselineUserMessageCount:
+              state.notSentRecovery.baselineUserMessageCount ?? 0,
+          },
+        }),
     ...(pending.repairAttempt === 0 ? {} : { repairAttempt: pending.repairAttempt }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   };

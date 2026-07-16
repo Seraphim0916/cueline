@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createCodexIabAdapter } from "../../src/browser/codex-iab/chatgpt-client.js";
+import type { BrowserTurnInput } from "../../src/browser/browser-adapter.js";
 import { CueLineError } from "../../src/core/errors.js";
+import { commandHash } from "../../src/core/ids.js";
 import {
   readPageChatState,
   readPageComposerState,
@@ -1196,6 +1198,165 @@ test("submitTurn returns after one durable submission without waiting for Pro", 
 
   assert.equal(fixture.sendSubmissions(), 1);
   assert.deepEqual(checkpoints, ["submitting", "submitted"]);
+});
+
+test("submission checkpoints include prompt identity, user baseline, click phase, and DOM evidence", async () => {
+  const fixture = fakeBrowser({
+    initialUrl: "https://chatgpt.com/c/checkpoint-evidence",
+    states: [
+      { isAnswering: false, assistantText: "previous", assistantMessageCount: 1 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 1 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl: "https://chatgpt.com/c/checkpoint-evidence",
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+  const checkpoints: Array<Record<string, unknown>> = [];
+  const prompt = "Persist exact click evidence";
+
+  await adapter.submitTurn!(
+    {
+      runId: "run_checkpoint_evidence",
+      round: 1,
+      requestId: "msg_checkpoint_evidence",
+      prompt,
+    },
+    {
+      async onCheckpoint(checkpoint) {
+        checkpoints.push(checkpoint as unknown as Record<string, unknown>);
+      },
+    },
+  );
+
+  assert.equal(checkpoints.length, 2);
+  assert.deepEqual(
+    checkpoints.map((checkpoint) => checkpoint.clickAttemptState),
+    ["attempting", "accepted"],
+  );
+  assert.equal(checkpoints[0]?.runId, "run_checkpoint_evidence");
+  assert.equal(checkpoints[0]?.round, 1);
+  assert.equal(checkpoints[0]?.requestId, "msg_checkpoint_evidence");
+  assert.equal(checkpoints[0]?.promptHash, commandHash(prompt));
+  assert.equal(checkpoints[0]?.modelEvidenceSource, "composer");
+  assert.equal(checkpoints[0]?.baselineUserMessageCount, 0);
+  assert.equal(checkpoints[0]?.baselineAssistantMessageCount, 1);
+  assert.deepEqual(checkpoints[1]?.domEvidence, {
+    pageUrl: "https://chatgpt.com/c/checkpoint-evidence",
+    userMessageCount: 0,
+    assistantMessageCount: 1,
+    lastMessageRole: "assistant",
+    lastUserMessageHash: null,
+    isAnswering: false,
+  });
+});
+
+test("operator-confirmed not-sent retry fails closed when the abandoned user message appears before retry click", async () => {
+  const conversationUrl = "https://chatgpt.com/c/not-sent-conflict";
+  const prompt = "Original controller prompt";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "previous",
+        assistantMessageCount: 1,
+        userMessageCount: 2,
+        lastUserText: prompt,
+        lastMessageRole: "user",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+  const input = {
+    runId: "run_not_sent_conflict",
+    round: 2,
+    requestId: "msg_retry",
+    prompt: prompt.replace("Original", "Retry"),
+    notSentRecovery: {
+      abandonedRequestId: "msg_original",
+      promptHash: commandHash(prompt),
+      conversationUrl,
+      baselineUserMessageCount: 1,
+    },
+  } as BrowserTurnInput & {
+    notSentRecovery: {
+      abandonedRequestId: string;
+      promptHash: string;
+      conversationUrl: string;
+      baselineUserMessageCount: number;
+    };
+  };
+
+  await assert.rejects(
+    adapter.sendTurn(input),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT",
+  );
+  assert.equal(fixture.composer.fills.length, 0);
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+});
+
+test("operator-confirmed not-sent retry freezes when the abandoned user message appears after the retry click", async () => {
+  const conversationUrl = "https://chatgpt.com/c/not-sent-late-conflict";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "previous",
+        assistantMessageCount: 1,
+        userMessageCount: 1,
+        lastUserText: "previous prompt",
+        lastMessageRole: "assistant",
+      },
+      {
+        isAnswering: true,
+        assistantText: "",
+        assistantMessageCount: 1,
+        userMessageCount: 3,
+        lastUserText: "abandoned prompt appeared late",
+        lastMessageRole: "user",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_not_sent_late_conflict",
+      round: 2,
+      requestId: "msg_retry",
+      prompt: "retry prompt",
+      notSentRecovery: {
+        abandonedRequestId: "msg_original",
+        promptHash: commandHash("abandoned prompt appeared late"),
+        conversationUrl,
+        baselineUserMessageCount: 1,
+      },
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT",
+  );
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendSubmissions(), 1);
 });
 
 test("submitTurn waits for a delayed exact conversation URL after clicking only once", async () => {

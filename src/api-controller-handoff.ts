@@ -3,6 +3,7 @@ import type {
   CueLineCallerJobResultInput,
   CueLineCallerJobSubmissionResult,
   CueLineCallerWorkClaimProof,
+  ControllerNotSentConfirmation,
   CueLineRuntimeOptions,
   ManualControllerSubmissionConfirmation,
 } from "./api-contracts.js";
@@ -149,6 +150,214 @@ export async function confirmManualControllerSubmission(
     });
     await store.snapshot();
     return { runId, requestId: turn.requestId, conversationUrl, outcome: "confirmed" };
+  } finally {
+    await lease.release();
+  }
+}
+
+export async function confirmControllerTurnNotSent(
+  runId: string,
+  options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> & {
+    requestId: string;
+    conversationUrl?: string;
+  },
+): Promise<ControllerNotSentConfirmation> {
+  const environment = options.environment ?? runtimeEnvironment();
+  const home = options.home ?? defaultCueLineHome(environment);
+  await loadPersistedRunStore(home, runId);
+  const runtime = await readRuntimeLease(home, runId, {
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  const retiredOwner =
+    (runtime.ownership === "active" || runtime.ownership === "stale") &&
+    runtime.ownerId !== undefined &&
+    (await retireDeadRuntimeLease(home, runId, runtime.ownerId))
+      ? { ownerId: runtime.ownerId, ownership: runtime.ownership }
+      : undefined;
+  const lease = await RuntimeLease.claim({
+    home,
+    runId,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  try {
+    const store = await loadPersistedRunStore(home, runId);
+    store.bindRuntimeOwner(lease.ownerId);
+    if (retiredOwner !== undefined) {
+      await store.append("runtime_dead_owner_retired", {
+        owner_id: retiredOwner.ownerId,
+        previous_ownership: retiredOwner.ownership,
+      });
+    }
+    const state = store.state;
+    const existingRecovery =
+      state.notSentRecovery?.abandonedRequestId === options.requestId
+        ? state.notSentRecovery
+        : null;
+    const turn = (state.pendingControllerTurns ?? []).find(
+      (candidate) => candidate.requestId === options.requestId,
+    );
+    if (turn === undefined) {
+      if (existingRecovery !== null) {
+        return {
+          runId,
+          requestId: options.requestId,
+          conversationUrl: existingRecovery.conversationUrl,
+          promptHash: existingRecovery.promptHash,
+          outcome: "already_confirmed",
+        };
+      }
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_REQUEST_NOT_FOUND",
+        `Pending controller request '${options.requestId}' was not found.`,
+      );
+    }
+    if ((state.pendingControllerTurns ?? []).length !== 1) {
+      throw new CueLineError(
+        "OTHER_CONTROLLER_TURNS_PENDING",
+        "Operator-confirmed not-sent recovery requires exactly one pending controller turn.",
+      );
+    }
+    if (
+      turn.submissionState !== "possibly_sent" ||
+      state.lastFailure?.code !== "CONTROLLER_SUBMISSION_AMBIGUOUS" ||
+      state.lastFailure.requestId !== turn.requestId
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_STATE_INVALID",
+        "Operator-confirmed not-sent recovery is available only for the exact ambiguous submission failure.",
+      );
+    }
+    if (turn.retryOfRequestId !== undefined && turn.retryOfRequestId !== null) {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_RETRY_EXHAUSTED",
+        "The pending turn is already the one authorized not-sent retry; refusing another retry.",
+      );
+    }
+    if (turn.manualSendConfirmed) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_CONFIRMATION_CONFLICT",
+        "The turn is already operator-confirmed as sent; it cannot also be confirmed not sent.",
+      );
+    }
+    const suppliedConversationUrl = options.conversationUrl;
+    const knownConversationUrl = state.conversationUrl ?? turn.conversationUrl;
+    if (knownConversationUrl === null && suppliedConversationUrl === undefined) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_URL_REQUIRED",
+        "Operator-confirmed not-sent recovery requires the exact ChatGPT conversation URL.",
+      );
+    }
+    if (
+      suppliedConversationUrl !== undefined &&
+      knownConversationUrl !== null &&
+      !sameChatGptConversationUrl(suppliedConversationUrl, knownConversationUrl)
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+        "The operator-confirmed URL does not match the run's exact ChatGPT conversation.",
+      );
+    }
+    const conversationUrl = knownConversationUrl ?? suppliedConversationUrl!;
+    if (!isExactChatGptConversationUrl(conversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+        "Operator-confirmed not-sent recovery requires an exact ChatGPT conversation URL.",
+      );
+    }
+    if (turn.selectedModelLabel === null || !/^Pro(?:\s|$)/i.test(turn.selectedModelLabel)) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
+        "The pending turn lacks exact Pro composer model evidence.",
+      );
+    }
+    if (!/^[0-9a-f]{64}$/.test(turn.promptHash)) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_PROMPT_HASH_INVALID",
+        "The pending turn lacks a valid prompt hash.",
+      );
+    }
+    const events = await readAuthoritativeRunEvents(home, runId);
+    for (const event of events) {
+      const payload =
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        !Array.isArray(event.payload)
+          ? (event.payload as Record<string, unknown>)
+          : {};
+      if (
+        event.type === "controller_response_received" &&
+        payload.request_id === options.requestId
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_SUPERSEDED",
+          "A controller response for this request was already received; refusing not-sent recovery.",
+        );
+      }
+      if (event.type !== "controller_command_accepted") continue;
+      const command =
+        typeof payload.command === "object" &&
+        payload.command !== null &&
+        !Array.isArray(payload.command)
+          ? (payload.command as Record<string, unknown>)
+          : {};
+      if (
+        command.request_id === options.requestId ||
+        (typeof command.round === "number" && command.round >= turn.round)
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_SUPERSEDED",
+          "A command for this request or the same/newer controller round was already accepted.",
+        );
+      }
+    }
+    const derivedBaselineUserMessageCount =
+      turn.baselineUserMessageCount ??
+      events.filter((event) => {
+        if (event.type !== "controller_turn_submitted") return false;
+        const payload =
+          typeof event.payload === "object" &&
+          event.payload !== null &&
+          !Array.isArray(event.payload)
+            ? (event.payload as Record<string, unknown>)
+            : {};
+        return typeof payload.round === "number" && payload.round < turn.round;
+      }).length;
+    if (existingRecovery === null) {
+      await store.append("controller_turn_not_sent_confirmed", {
+        round: turn.round,
+        request_id: turn.requestId,
+        prompt_hash: turn.promptHash,
+        conversation_url: conversationUrl,
+        selected_model_label: turn.selectedModelLabel,
+        baseline_user_message_count: derivedBaselineUserMessageCount,
+        operator_confirmation: true,
+      });
+    }
+    if (
+      (store.state.pendingControllerTurns ?? []).some(
+        (candidate) => candidate.requestId === turn.requestId,
+      )
+    ) {
+      await store.append("controller_turn_abandoned", {
+        round: turn.round,
+        request_id: turn.requestId,
+        reason: "operator_confirmed_not_sent",
+        round_not_consumed: true,
+        prompt_hash: turn.promptHash,
+        conversation_url: conversationUrl,
+        selected_model_label: turn.selectedModelLabel,
+        baseline_user_message_count: derivedBaselineUserMessageCount,
+        operator_confirmation: true,
+      });
+    }
+    await store.snapshot();
+    return {
+      runId,
+      requestId: turn.requestId,
+      conversationUrl,
+      promptHash: turn.promptHash,
+      outcome: existingRecovery === null ? "confirmed" : "already_confirmed",
+    };
   } finally {
     await lease.release();
   }

@@ -100,6 +100,14 @@ export interface ManualControllerSubmissionConfirmation {
   outcome: "confirmed" | "already_confirmed";
 }
 
+export interface ControllerNotSentConfirmation {
+  runId: string;
+  requestId: string;
+  conversationUrl: string;
+  promptHash: string;
+  outcome: "confirmed" | "already_confirmed";
+}
+
 export interface CueLineCallerJobResultInput {
   status: JobResultStatus;
   stdout?: string;

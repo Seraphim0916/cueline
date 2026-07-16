@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   cancelCueLineJob,
   cancelCueLineRun,
+  confirmControllerTurnNotSent,
   confirmManualControllerSubmission,
   loadCueLineRunStatus,
   lintControllerCommandText,
@@ -83,6 +84,7 @@ function help(): string {
     "  cueline run timeline <run-id> [--after <sequence>] [--limit <1..1000>] [--json]",
     "  cueline run verify <run-id> [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
+    "  cueline run reconcile <run-id> --request-id <request-id> --not-sent-confirmed [--conversation-url <url>] [--json]",
     "  cueline run takeover <run-id> [--json]",
     "  cueline run reconcile-runtime <run-id> [--json]",
     "  cueline run cancel <run-id> [--json]",
@@ -579,6 +581,7 @@ export async function main(
       let requestId: string | undefined;
       let conversationUrl: string | undefined;
       let manualConfirmed = false;
+      let notSentConfirmed = false;
       let json = false;
       let valid = true;
       for (let index = 3; index < args.length; index += 1) {
@@ -594,23 +597,35 @@ export async function main(
           index += 1;
         } else if (argument === "--manual-send-confirmed") {
           manualConfirmed = true;
+        } else if (argument === "--not-sent-confirmed") {
+          notSentConfirmed = true;
         } else if (argument === "--json") {
           json = true;
         } else {
           valid = false;
         }
       }
-      if (!valid || !requestId || !manualConfirmed) {
+      if (
+        !valid ||
+        !requestId ||
+        Number(manualConfirmed) + Number(notSentConfirmed) !== 1
+      ) {
         throw new CueLineError(
           "CLI_ARGUMENTS_INVALID",
-          "usage: cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
+          "usage: cueline run reconcile <run-id> --request-id <request-id> (--manual-send-confirmed | --not-sent-confirmed) [--conversation-url <url>] [--json]",
         );
       }
-      const result = await confirmManualControllerSubmission(args[2], {
-        environment,
-        requestId,
-        ...(conversationUrl === undefined ? {} : { conversationUrl }),
-      });
+      const result = notSentConfirmed
+        ? await confirmControllerTurnNotSent(args[2], {
+            environment,
+            requestId,
+            ...(conversationUrl === undefined ? {} : { conversationUrl }),
+          })
+        : await confirmManualControllerSubmission(args[2], {
+            environment,
+            requestId,
+            ...(conversationUrl === undefined ? {} : { conversationUrl }),
+          });
       if (json) io.stdout(JSON.stringify(result, null, 2));
       else io.stdout(`${result.runId}\t${result.requestId}\t${result.outcome}\tno_resend`);
       return 0;

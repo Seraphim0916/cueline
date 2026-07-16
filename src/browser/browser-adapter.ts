@@ -7,6 +7,12 @@ export interface BrowserTurnInput {
   manualSendConfirmed?: boolean;
   attachmentPromptExpected?: boolean;
   baselineAssistantMessageCount?: number;
+  notSentRecovery?: {
+    abandonedRequestId: string;
+    promptHash: string;
+    conversationUrl: string;
+    baselineUserMessageCount: number;
+  };
   signal?: AbortSignal;
 }
 
@@ -26,6 +32,16 @@ export interface ControllerModelEvidence {
 
 export type ControllerSubmissionState = "submitting" | "possibly_sent" | "submitted";
 export type ComposerPromptState = "inline_ready" | "attachment_ready";
+export type ClickAttemptState = "attempting" | "accepted" | "error";
+
+export interface BrowserSubmissionDomEvidence {
+  pageUrl: string;
+  userMessageCount: number;
+  assistantMessageCount: number;
+  lastMessageRole: "assistant" | "user" | null;
+  lastUserMessageHash: string | null;
+  isAnswering: boolean;
+}
 
 export interface BrowserTurnCheckpoint {
   submissionState: ControllerSubmissionState;
@@ -33,6 +49,17 @@ export interface BrowserTurnCheckpoint {
   conversationUrl?: string;
   selectedModelLabel: string;
   baselineAssistantMessageCount: number;
+  runId?: string;
+  round?: number;
+  requestId?: string;
+  promptHash?: string;
+  modelEvidenceSource?: "composer";
+  baselineUserMessageCount?: number;
+  baselineLastUserMessageHash?: string | null;
+  clickAttemptState?: ClickAttemptState;
+  clickErrorName?: string;
+  clickErrorMessage?: string;
+  domEvidence?: BrowserSubmissionDomEvidence;
 }
 
 export interface BrowserTurnHooks {

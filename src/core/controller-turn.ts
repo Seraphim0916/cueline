@@ -388,6 +388,13 @@ export async function requestControllerCommand(
   signal?: AbortSignal,
   expectedConversationUrl?: string | null,
   returnAfterSubmission = false,
+  notSentRetry?: {
+    abandonedRequestId: string;
+    promptHash: string;
+    conversationUrl: string;
+    baselineUserMessageCount: number | null;
+    selectedModelLabel: string;
+  },
 ): Promise<ControllerCommand | undefined> {
   let lastError: CueLineError | undefined;
   const firstAttempt = recovered?.attempt ?? 0;
@@ -402,11 +409,47 @@ export async function requestControllerCommand(
           ? controllerPrompt(observation, instructions)
           : repairPrompt(observation, lastError!, attempt, instructions);
       const promptHash = commandHash(prompt);
+      const recoveryComparablePrompt =
+        notSentRetry === undefined
+          ? prompt
+          : prompt.split(expected.requestId).join(notSentRetry.abandonedRequestId);
+      const recoveryComparablePromptHash = commandHash(recoveryComparablePrompt);
+      if (
+        attempt === 0 &&
+        notSentRetry !== undefined &&
+        recoveryComparablePromptHash !== notSentRetry.promptHash
+      ) {
+        await store.append("controller_turn_retry_conflict", {
+          round: expected.round,
+          request_id: expected.requestId,
+          abandoned_request_id: notSentRetry.abandonedRequestId,
+          expected_prompt_hash: notSentRetry.promptHash,
+          actual_prompt_hash: recoveryComparablePromptHash,
+          code: "CONTROLLER_NOT_SENT_PROMPT_MISMATCH",
+          message:
+            "The regenerated controller prompt does not match the operator-confirmed checkpoint.",
+        });
+        throw new CueLineError(
+          "CONTROLLER_NOT_SENT_PROMPT_MISMATCH",
+          "The regenerated controller prompt does not match the operator-confirmed checkpoint.",
+        );
+      }
       const input: BrowserTurnInput = {
         runId: expected.runId,
         round: expected.round,
         requestId: expected.requestId,
         prompt,
+        ...(attempt === 0 && notSentRetry !== undefined
+          ? {
+              notSentRecovery: {
+                abandonedRequestId: notSentRetry.abandonedRequestId,
+                promptHash: notSentRetry.promptHash,
+                conversationUrl: notSentRetry.conversationUrl,
+                baselineUserMessageCount:
+                  notSentRetry.baselineUserMessageCount ?? 0,
+              },
+            }
+          : {}),
         ...(attempt === 0 ? {} : { repairAttempt: attempt }),
         ...(signal === undefined ? {} : { signal }),
       };
@@ -418,6 +461,12 @@ export async function requestControllerCommand(
           prompt,
           prompt_hash: promptHash,
           repair_attempt: attempt,
+          ...(attempt === 0 && notSentRetry !== undefined
+            ? {
+                retry_of_request_id: notSentRetry.abandonedRequestId,
+                recovery_prompt_hash: notSentRetry.promptHash,
+              }
+            : {}),
           ...(browser.submissionCheckpointContract === "write_ahead_v1"
             ? { submission_checkpoint_contract: "write_ahead_v1" }
             : {}),
@@ -447,9 +496,39 @@ export async function requestControllerCommand(
                 ? {}
                 : { conversation_url: checkpoint.conversationUrl }),
               selected_model_label: checkpoint.selectedModelLabel,
+              ...(checkpoint.promptHash === undefined
+                ? {}
+                : { prompt_hash: checkpoint.promptHash }),
+              ...(checkpoint.modelEvidenceSource === undefined
+                ? {}
+                : { model_evidence_source: checkpoint.modelEvidenceSource }),
               composer_prompt_state: checkpoint.composerPromptState,
+              ...(checkpoint.baselineUserMessageCount === undefined
+                ? {}
+                : {
+                    baseline_user_message_count:
+                      checkpoint.baselineUserMessageCount,
+                  }),
               baseline_assistant_message_count:
                 checkpoint.baselineAssistantMessageCount,
+              ...(checkpoint.baselineLastUserMessageHash === undefined
+                ? {}
+                : {
+                    baseline_last_user_message_hash:
+                      checkpoint.baselineLastUserMessageHash,
+                  }),
+              ...(checkpoint.clickAttemptState === undefined
+                ? {}
+                : { click_attempt_state: checkpoint.clickAttemptState }),
+              ...(checkpoint.clickErrorName === undefined
+                ? {}
+                : { click_error_name: checkpoint.clickErrorName }),
+              ...(checkpoint.clickErrorMessage === undefined
+                ? {}
+                : { click_error_message: checkpoint.clickErrorMessage }),
+              ...(checkpoint.domEvidence === undefined
+                ? {}
+                : { dom_evidence: checkpoint.domEvidence }),
             },
           );
         },
@@ -519,6 +598,21 @@ export async function requestControllerCommand(
         throw new CueLineError(
           "CONTROLLER_MANUAL_RECONCILIATION_REJECTED",
           `The operator-confirmed response failed exact CueLine identity or command validation (${lastError.code}); refusing to send a repair or resend.`,
+          { cause: lastError },
+        );
+      }
+      if (notSentRetry !== undefined && attempt === firstAttempt) {
+        await store.append("controller_turn_retry_conflict", {
+          round: expected.round,
+          request_id: expected.requestId,
+          abandoned_request_id: notSentRetry.abandonedRequestId,
+          code: "CONTROLLER_NOT_SENT_RESPONSE_CONFLICT",
+          message:
+            "The response after operator-confirmed retry did not match the new request identity.",
+        });
+        throw new CueLineError(
+          "CONTROLLER_NOT_SENT_RESPONSE_CONFLICT",
+          "The response after operator-confirmed retry did not match the new request identity; freezing the run.",
           { cause: lastError },
         );
       }

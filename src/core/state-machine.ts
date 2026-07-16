@@ -65,10 +65,25 @@ export interface PendingControllerTurn {
   submissionState: ControllerSubmissionState;
   conversationUrl: string | null;
   selectedModelLabel: string | null;
+  baselineUserMessageCount?: number | null | undefined;
   baselineAssistantMessageCount: number | null;
+  baselineLastUserMessageHash?: string | null | undefined;
   composerPromptState: "inline_ready" | "attachment_ready" | null;
   manualSendConfirmed: boolean;
+  retryOfRequestId?: string | null | undefined;
   submissionCheckpointContract?: "write_ahead_v1" | null;
+}
+
+export interface ControllerNotSentRecoveryState {
+  abandonedRequestId: string;
+  round: number;
+  promptHash: string;
+  conversationUrl: string;
+  baselineUserMessageCount: number | null;
+  selectedModelLabel: string;
+  status: "confirmed" | "retry_pending" | "conflict";
+  retryRequestId: string | null;
+  conflictCode: string | null;
 }
 
 export interface RunFailureEvidence {
@@ -141,6 +156,7 @@ export interface CueLineRunState {
   controllerConversationArchive: ControllerConversationArchiveState;
   pendingControllerTurns: PendingControllerTurn[];
   abandonedControllerTurns: PendingControllerTurn[];
+  notSentRecovery?: ControllerNotSentRecoveryState | null | undefined;
   lastFailure: RunFailureEvidence | null;
   jobs: Record<string, StoredJob>;
   /** Job IDs explicitly requested by the most recently accepted inspect command. */
@@ -271,6 +287,7 @@ export function initialRunState(
     ),
     pendingControllerTurns: [],
     abandonedControllerTurns: [],
+    notSentRecovery: null,
     lastFailure: null,
     jobs: {},
     inspectionJobIds: [],
@@ -346,9 +363,15 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           submissionState: "requested",
           conversationUrl: state.conversationUrl,
           selectedModelLabel: null,
+          baselineUserMessageCount: null,
           baselineAssistantMessageCount: null,
+          baselineLastUserMessageHash: null,
           composerPromptState: null,
           manualSendConfirmed: false,
+          retryOfRequestId:
+            typeof payload.retry_of_request_id === "string"
+              ? payload.retry_of_request_id
+              : null,
           submissionCheckpointContract:
             payload.submission_checkpoint_contract === "write_ahead_v1"
               ? "write_ahead_v1"
@@ -358,6 +381,16 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       abandonedControllerTurns: (state.abandonedControllerTurns ?? []).filter(
         (turn) => turn.requestId !== payload.request_id,
       ),
+      notSentRecovery:
+        typeof payload.retry_of_request_id === "string" &&
+        state.notSentRecovery?.abandonedRequestId === payload.retry_of_request_id
+          ? {
+              ...state.notSentRecovery,
+              status: "retry_pending",
+              retryRequestId: payload.request_id,
+              conflictCode: null,
+            }
+          : state.notSentRecovery ?? null,
     };
   }
   if (
@@ -423,10 +456,18 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
                 typeof payload.selected_model_label === "string"
                   ? payload.selected_model_label
                   : turn.selectedModelLabel,
+              baselineUserMessageCount:
+                typeof payload.baseline_user_message_count === "number"
+                  ? payload.baseline_user_message_count
+                  : turn.baselineUserMessageCount,
               baselineAssistantMessageCount:
                 typeof payload.baseline_assistant_message_count === "number"
                   ? payload.baseline_assistant_message_count
                   : turn.baselineAssistantMessageCount,
+              baselineLastUserMessageHash:
+                typeof payload.baseline_last_user_message_hash === "string"
+                  ? payload.baseline_last_user_message_hash
+                  : turn.baselineLastUserMessageHash,
               composerPromptState:
                 payload.composer_prompt_state === "inline_ready" ||
                 payload.composer_prompt_state === "attachment_ready"
@@ -473,6 +514,89 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
               ),
               abandoned,
             ],
+      notSentRecovery:
+        abandoned?.retryOfRequestId !== undefined &&
+        abandoned.retryOfRequestId !== null &&
+        payload.reason === "definitely_not_sent_retry" &&
+        state.notSentRecovery?.abandonedRequestId === abandoned.retryOfRequestId
+          ? {
+              ...state.notSentRecovery,
+              status: "confirmed",
+              retryRequestId: null,
+              conflictCode: null,
+            }
+          : payload.reason === "operator_confirmed_not_sent" &&
+        abandoned !== undefined &&
+        typeof payload.prompt_hash === "string" &&
+        typeof payload.conversation_url === "string" &&
+        typeof payload.selected_model_label === "string"
+          ? {
+              abandonedRequestId: abandoned.requestId,
+              round: abandoned.round,
+              promptHash: payload.prompt_hash,
+              conversationUrl: payload.conversation_url,
+              baselineUserMessageCount:
+                typeof payload.baseline_user_message_count === "number"
+                  ? payload.baseline_user_message_count
+                  : null,
+              selectedModelLabel: payload.selected_model_label,
+              status: "confirmed",
+              retryRequestId: null,
+              conflictCode: null,
+            }
+          : state.notSentRecovery ?? null,
+    };
+  }
+  if (
+    event.type === "controller_turn_not_sent_confirmed" &&
+    typeof payload.request_id === "string" &&
+    typeof payload.round === "number" &&
+    typeof payload.prompt_hash === "string" &&
+    typeof payload.conversation_url === "string" &&
+    typeof payload.selected_model_label === "string"
+  ) {
+    return {
+      ...state,
+      notSentRecovery: {
+        abandonedRequestId: payload.request_id,
+        round: payload.round,
+        promptHash: payload.prompt_hash,
+        conversationUrl: payload.conversation_url,
+        baselineUserMessageCount:
+          typeof payload.baseline_user_message_count === "number"
+            ? payload.baseline_user_message_count
+            : null,
+        selectedModelLabel: payload.selected_model_label,
+        status: "confirmed",
+        retryRequestId: null,
+        conflictCode: null,
+      },
+    };
+  }
+  if (
+    event.type === "controller_turn_retry_conflict" &&
+    typeof payload.code === "string"
+  ) {
+    return {
+      ...state,
+      status: "failed",
+      notSentRecovery:
+        state.notSentRecovery === undefined || state.notSentRecovery === null
+          ? state.notSentRecovery
+          : {
+              ...state.notSentRecovery,
+              status: "conflict",
+              conflictCode: payload.code,
+            },
+      lastFailure: {
+        code: payload.code,
+        requestId:
+          typeof payload.request_id === "string" ? payload.request_id : null,
+        message: typeof payload.message === "string" ? payload.message : null,
+        stage: "not_sent_recovery",
+        submissionState: null,
+        conversationUrl: state.conversationUrl,
+      },
     };
   }
   if (
@@ -934,6 +1058,16 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     return {
       ...state,
       status: "failed",
+      notSentRecovery:
+        payload.code === "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT" &&
+        state.notSentRecovery !== undefined &&
+        state.notSentRecovery !== null
+          ? {
+              ...state.notSentRecovery,
+              status: "conflict",
+              conflictCode: "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT",
+            }
+          : state.notSentRecovery,
       pendingControllerTurns:
         failedRequestId === undefined || failedSubmissionState === undefined
           ? state.pendingControllerTurns ?? []

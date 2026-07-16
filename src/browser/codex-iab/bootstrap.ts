@@ -6,6 +6,7 @@ export interface PageChatState {
   pageUrl: string;
   isAnswering: boolean;
   assistantText: string;
+  userMessageCount?: number;
   assistantMessageCount: number;
   assistantModelSlug: string | null;
   lastUserText: string | null;
@@ -220,6 +221,7 @@ export async function readPageChatState(tab: IabTab): Promise<PageChatState> {
       pageUrl: window.location.href,
       isAnswering,
       assistantText,
+      userMessageCount: userMessages.length,
       assistantMessageCount: assistantMessages.length,
       assistantModelSlug,
       lastUserText,

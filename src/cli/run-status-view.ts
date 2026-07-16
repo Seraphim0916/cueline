@@ -38,6 +38,15 @@ export function safeCueLineRunStatus(status: CueLineRunStatusSummary) {
       lastAcceptedAction: status.controller.lastAcceptedAction,
       lastAcceptedRequestId: status.controller.lastAcceptedRequestId,
       lastAcceptedJobKeys: [...status.controller.lastAcceptedJobKeys],
+      ...(status.controller.reconciliation === undefined ||
+      (status.controller.reconciliation.requiredReason === null &&
+        status.controller.reconciliation.operatorConfirmation === null &&
+        status.controller.reconciliation.abandonedRequestId === null &&
+        status.controller.reconciliation.retryRequestId === null &&
+        status.controller.reconciliation.promptHash === null &&
+        status.controller.reconciliation.resendBlockedReason === null)
+        ? {}
+        : { reconciliation: { ...status.controller.reconciliation } }),
       ...(status.controller.archive.enabled
         ? {
             archive: {

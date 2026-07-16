@@ -13,6 +13,12 @@ Every command must echo these values from the pending observation:
 
 A stale or mismatched value is rejected. CueLine parses only the **last complete** control envelope, which prevents an older example earlier in the assistant response from winning.
 
+### Not-sent retry identity
+
+Operator-confirmed not-sent recovery abandons the original request identity and creates exactly one new request ID. The controller sees the new identity in the next observation and must echo it. CueLine verifies that the regenerated prompt matches the abandoned checkpoint hash after replacing only the request ID; a changed instruction, observation, or other prompt content is not a recovery retry.
+
+The abandoned identity remains durable. If later browser evidence or a control envelope proves that the abandoned user message or response actually appeared, CueLine fails closed and requires manual review. It never accepts an old envelope as the new retry's result.
+
 ## Observation
 
 ```json

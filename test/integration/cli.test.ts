@@ -944,6 +944,300 @@ test("run reconcile records operator-confirmed manual submission without resendi
   );
 });
 
+test("run reconcile records operator-confirmed not-sent once and abandons the exact turn", async () => {
+  const context = await fixture();
+  const runId = "run_cli_not_sent_reconcile";
+  const requestId = "msg_cli_not_sent_reconcile";
+  const conversationUrl = "https://chatgpt.com/c/cli-not-sent-reconcile";
+  const prompt = "synthetic round-two evidence prompt";
+  const promptHash = commandHash(prompt);
+  const store = await RunStore.create({
+    home: context.home,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: "Recover an ambiguous controller click" });
+  await store.append("controller_conversation_bound", {
+    request_id: "msg_prior",
+    conversation_url: conversationUrl,
+  });
+  await store.append("controller_turn_requested", {
+    round: 2,
+    request_id: requestId,
+    prompt,
+    prompt_hash: promptHash,
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.append("controller_turn_submission_started", {
+    round: 2,
+    request_id: requestId,
+    submission_state: "submitting",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "attachment_ready",
+    baseline_assistant_message_count: 2,
+  });
+  await store.append("run_failed", {
+    code: "CONTROLLER_SUBMISSION_AMBIGUOUS",
+    request_id: requestId,
+    stage: "submitting",
+    submission_state: "possibly_sent",
+    conversation_url: conversationUrl,
+  });
+  await store.snapshot();
+
+  const beforeStatus = invoke(["run", "status", runId, "--json"], context.environment);
+  assert.equal(beforeStatus.status, 0, beforeStatus.stderr);
+  assert.deepEqual(JSON.parse(beforeStatus.stdout).controller.reconciliation, {
+    requiredReason: "CONTROLLER_SUBMISSION_AMBIGUOUS",
+    operatorConfirmation: null,
+    abandonedRequestId: null,
+    retryRequestId: null,
+    promptHash: null,
+    resendBlockedReason: null,
+  });
+
+  const result = invoke(
+    [
+      "run",
+      "reconcile",
+      runId,
+      "--request-id",
+      requestId,
+      "--not-sent-confirmed",
+      "--conversation-url",
+      conversationUrl,
+      "--json",
+    ],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    runId,
+    requestId,
+    conversationUrl,
+    promptHash,
+    outcome: "confirmed",
+  });
+  const firstEvents = await readEvents(runPaths(context.home, runId).events);
+  assert.equal(
+    firstEvents.filter((event) => event.type === "controller_turn_not_sent_confirmed").length,
+    1,
+  );
+  assert.equal(
+    firstEvents.filter(
+      (event) =>
+        event.type === "controller_turn_abandoned" &&
+        (event.payload as Record<string, unknown>).request_id === requestId &&
+        (event.payload as Record<string, unknown>).reason === "operator_confirmed_not_sent",
+    ).length,
+    1,
+  );
+
+  const repeated = invoke(
+    [
+      "run",
+      "reconcile",
+      runId,
+      "--request-id",
+      requestId,
+      "--not-sent-confirmed",
+      "--conversation-url",
+      conversationUrl,
+      "--json",
+    ],
+    context.environment,
+  );
+  assert.equal(repeated.status, 0, repeated.stderr);
+  assert.equal(JSON.parse(repeated.stdout).outcome, "already_confirmed");
+  const repeatedEvents = await readEvents(runPaths(context.home, runId).events);
+  assert.equal(
+    repeatedEvents.filter((event) => event.type === "controller_turn_not_sent_confirmed").length,
+    1,
+  );
+  assert.equal(
+    repeatedEvents.filter(
+      (event) =>
+        event.type === "controller_turn_abandoned" &&
+        (event.payload as Record<string, unknown>).reason === "operator_confirmed_not_sent",
+    ).length,
+    1,
+  );
+
+  const status = invoke(["run", "status", runId, "--json"], context.environment);
+  assert.equal(status.status, 0, status.stderr);
+  assert.deepEqual(JSON.parse(status.stdout).controller.reconciliation, {
+    requiredReason: "CONTROLLER_SUBMISSION_AMBIGUOUS",
+    operatorConfirmation: "not_sent_confirmed",
+    abandonedRequestId: requestId,
+    retryRequestId: null,
+    promptHash,
+    resendBlockedReason: null,
+  });
+  assert.equal(JSON.parse(status.stdout).safeNextAction, "retry");
+});
+
+test("run reconcile not-sent confirmation fails closed on identity and state conflicts", async () => {
+  const context = await fixture();
+  const conversationUrl = "https://chatgpt.com/c/cli-not-sent-guards";
+
+  async function createAmbiguousRun(
+    suffix: string,
+    options: {
+      selectedModelLabel?: string;
+      secondPending?: boolean;
+      responseReceived?: boolean;
+      normallySubmitted?: boolean;
+    } = {},
+  ): Promise<{ runId: string; requestId: string }> {
+    const runId = `run_cli_not_sent_guard_${suffix}`;
+    const requestId = `msg_cli_not_sent_guard_${suffix}`;
+    const prompt = `guard prompt ${suffix}`;
+    const store = await RunStore.create({
+      home: context.home,
+      runId,
+      initialState: initialRunState(runId, "", "caller"),
+      reducer: reduceRunState,
+    });
+    await store.append("run_created", { request: `Guard ${suffix}` });
+    await store.append("controller_conversation_bound", {
+      request_id: "msg_prior",
+      conversation_url: conversationUrl,
+    });
+    await store.append("controller_turn_requested", {
+      round: 2,
+      request_id: requestId,
+      prompt,
+      prompt_hash: commandHash(prompt),
+      submission_checkpoint_contract: "write_ahead_v1",
+    });
+    await store.append("controller_turn_submission_started", {
+      round: 2,
+      request_id: requestId,
+      submission_state: "submitting",
+      conversation_url: conversationUrl,
+      selected_model_label: options.selectedModelLabel ?? "Pro",
+      composer_prompt_state: "inline_ready",
+      baseline_user_message_count: 1,
+      baseline_assistant_message_count: 1,
+    });
+    if (options.secondPending === true) {
+      const secondPrompt = `second guard prompt ${suffix}`;
+      await store.append("controller_turn_requested", {
+        round: 3,
+        request_id: `${requestId}_second`,
+        prompt: secondPrompt,
+        prompt_hash: commandHash(secondPrompt),
+        submission_checkpoint_contract: "write_ahead_v1",
+      });
+    }
+    if (options.responseReceived === true) {
+      await store.append("controller_response_received", {
+        round: 2,
+        request_id: requestId,
+        selected_model_label: "Pro",
+        response_model_slug: "gpt-5-6-pro",
+        model_evidence_source: "composer_and_response",
+      });
+    }
+    if (options.normallySubmitted === true) {
+      await store.append("controller_turn_submitted", {
+        round: 2,
+        request_id: requestId,
+        submission_state: "submitted",
+        conversation_url: conversationUrl,
+        selected_model_label: "Pro",
+        composer_prompt_state: "inline_ready",
+        baseline_user_message_count: 1,
+        baseline_assistant_message_count: 1,
+      });
+    } else {
+      await store.append("run_failed", {
+        code: "CONTROLLER_SUBMISSION_AMBIGUOUS",
+        request_id: requestId,
+        stage: "submitting",
+        submission_state: "possibly_sent",
+        conversation_url: conversationUrl,
+      });
+    }
+    await store.snapshot();
+    return { runId, requestId };
+  }
+
+  const cases = [
+    {
+      name: "request",
+      setup: () => createAmbiguousRun("request"),
+      requestId: (requestId: string) => `${requestId}_wrong`,
+      conversation: conversationUrl,
+      code: "CONTROLLER_RECONCILIATION_REQUEST_NOT_FOUND",
+    },
+    {
+      name: "conversation",
+      setup: () => createAmbiguousRun("conversation"),
+      requestId: (requestId: string) => requestId,
+      conversation: "https://chatgpt.com/c/another-conversation",
+      code: "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+    },
+    {
+      name: "model",
+      setup: () =>
+        createAmbiguousRun("model", { selectedModelLabel: "GPT-5" }),
+      requestId: (requestId: string) => requestId,
+      conversation: conversationUrl,
+      code: "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
+    },
+    {
+      name: "response",
+      setup: () =>
+        createAmbiguousRun("response", { responseReceived: true }),
+      requestId: (requestId: string) => requestId,
+      conversation: conversationUrl,
+      code: "CONTROLLER_RECONCILIATION_SUPERSEDED",
+    },
+    {
+      name: "other-pending",
+      setup: () => createAmbiguousRun("other_pending", { secondPending: true }),
+      requestId: (requestId: string) => requestId,
+      conversation: conversationUrl,
+      code: "OTHER_CONTROLLER_TURNS_PENDING",
+    },
+    {
+      name: "normally-submitted",
+      setup: () =>
+        createAmbiguousRun("normally_submitted", { normallySubmitted: true }),
+      requestId: (requestId: string) => requestId,
+      conversation: conversationUrl,
+      code: "CONTROLLER_NOT_SENT_STATE_INVALID",
+    },
+  ];
+
+  for (const scenario of cases) {
+    const { runId, requestId } = await scenario.setup();
+    const before = await readEvents(runPaths(context.home, runId).events);
+    const result = invoke(
+      [
+        "run",
+        "reconcile",
+        runId,
+        "--request-id",
+        scenario.requestId(requestId),
+        "--not-sent-confirmed",
+        "--conversation-url",
+        scenario.conversation,
+        "--json",
+      ],
+      context.environment,
+    );
+    assert.equal(result.status, 1, scenario.name);
+    assert.match(result.stderr, new RegExp(scenario.code), scenario.name);
+    const after = await readEvents(runPaths(context.home, runId).events);
+    assert.equal(after.length, before.length, scenario.name);
+  }
+});
+
 test("run reconcile accepts the first conversation URL created by a manual send", async () => {
   const context = await fixture();
   const runId = "run_cli_manual_first_url";

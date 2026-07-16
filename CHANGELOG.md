@@ -10,6 +10,9 @@
 
 ### Fixed
 
+- Add append-only recovery for an operator-confirmed unsent ambiguous controller request. `cueline run reconcile ... --not-sent-confirmed` validates the exact run, conversation, round, request, prompt hash, and Pro evidence; abandons the old identity; permits one same-prompt retry under a new deterministic request ID; and remains idempotent across command repetition or restart.
+- Strengthen browser submission checkpoints with run/round/request/prompt identity, a user-message baseline, composer and click-attempt state, a bounded click error, and post-click DOM evidence. Late discovery of the abandoned message or response, prompt drift, extra pending turns, or identity/model/conversation mismatch now freezes the run for manual review instead of risking duplicate controller dispatch.
+
 - Require visible, actionable send and stop controls. Hidden, disabled, inert, ancestor-hidden, zero-geometry, localized, or residual controls no longer prove that a prompt can be sent or that Pro is still answering.
 - Refuse ambiguous ChatGPT tab discovery instead of selecting the first match. Exact conversation matching now canonicalizes only benign browser decoration and rejects lookalike hosts, credentials, nested paths, duplicate physical tabs, and navigation races.
 - Accept a fast completed response as post-click proof after a send timeout, while preserving the one-click rule whenever completion cannot be proven. Browser timing options and all Node timer values are validated before they can schedule a spin, overflow, or unsafe delay.

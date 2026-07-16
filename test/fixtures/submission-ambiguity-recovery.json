@@ -1,0 +1,32 @@
+{
+  "schema": "cueline-deidentified-incident/0.1",
+  "sourceRunId": "run_88ba8b6ec0c474defb87cecff510a84e",
+  "fixtureRunId": "run_88ba8b6ec0c474defb87cecff510a84e",
+  "conversationUrl": "https://chatgpt.com/c/deidentified-submission-ambiguity",
+  "request": "Use two independent read-only advisers, then synthesize their evidence.",
+  "sourceEventTypes": [
+    "run_created",
+    "run_resumed",
+    "controller_turn_requested",
+    "controller_turn_submission_started",
+    "controller_turn_submitted",
+    "run_resumed",
+    "run_resumed",
+    "controller_response_received",
+    "controller_response_reconciled",
+    "controller_command_accepted",
+    "job_registered",
+    "job_registered",
+    "caller_jobs_ready",
+    "controller_command_execution_completed",
+    "caller_job_result_submitted",
+    "job_status",
+    "caller_job_result_submitted",
+    "job_status",
+    "run_resumed",
+    "controller_conversation_bound",
+    "controller_turn_requested",
+    "controller_turn_submission_started",
+    "run_failed"
+  ]
+}
