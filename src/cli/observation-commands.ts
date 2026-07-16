@@ -2,6 +2,7 @@ import {
   createCueLineRunHandoff,
   diagnoseCueLineRun,
   listCueLineRuns,
+  loadCueLineRunGraph,
   loadCueLineRunTimeline,
   verifyCueLineRun,
   waitForCueLineRunChange,
@@ -164,6 +165,23 @@ async function runTimelineCommand(
   return 0;
 }
 
+async function runGraphCommand(
+  runId: string,
+  afterSequence: number,
+  limit: number,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const graph = await loadCueLineRunGraph(runId, {
+    environment,
+    afterSequence,
+    limit,
+  });
+  io.stdout(json ? JSON.stringify({ version: CUELINE_VERSION, ...graph }, null, 2) : graph.mermaid);
+  return 0;
+}
+
 export async function handleObservationCommand(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
@@ -322,6 +340,52 @@ export async function handleObservationCommand(
       );
     }
     return runTimelineCommand(args[2], afterSequence, limit, json, environment, io);
+  }
+  if (args[0] === "run" && args[1] === "graph" && typeof args[2] === "string") {
+    let afterSequence = 0;
+    let limit = 100;
+    let afterProvided = false;
+    let limitProvided = false;
+    let json = false;
+    let valid = true;
+    for (let index = 3; index < args.length; index += 1) {
+      const argument = args[index];
+      if (
+        argument === "--after" &&
+        !afterProvided &&
+        typeof args[index + 1] === "string"
+      ) {
+        afterSequence = Number(args[index + 1]);
+        afterProvided = true;
+        index += 1;
+      } else if (
+        argument === "--limit" &&
+        !limitProvided &&
+        typeof args[index + 1] === "string"
+      ) {
+        limit = Number(args[index + 1]);
+        limitProvided = true;
+        index += 1;
+      } else if (argument === "--json" && !json) {
+        json = true;
+      } else {
+        valid = false;
+      }
+    }
+    if (
+      !valid ||
+      !Number.isSafeInteger(afterSequence) ||
+      afterSequence < 0 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 200
+    ) {
+      throw new CueLineError(
+        "CLI_ARGUMENTS_INVALID",
+        "usage: cueline run graph <run-id> [--after <sequence>] [--limit <1..200>] [--json]",
+      );
+    }
+    return runGraphCommand(args[2], afterSequence, limit, json, environment, io);
   }
   return undefined;
 }

@@ -173,7 +173,9 @@ function attributesFor(payloadValue: unknown): Record<string, string | number | 
   const job = safeRecord(payload.job);
   const command = safeRecord(payload.command);
   const attributes: Record<string, string | number | boolean> = {};
-  const requestId = safePrefixedToken(payload.request_id, "msg_");
+  const requestId =
+    safePrefixedToken(payload.request_id, "msg_") ??
+    safePrefixedToken(command.request_id, "msg_");
   const round = safeInteger(payload.round);
   const jobId =
     safePrefixedToken(payload.job_id, "job_") ?? safePrefixedToken(job.jobId, "job_");

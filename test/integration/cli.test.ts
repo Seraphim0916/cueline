@@ -778,6 +778,82 @@ test("run timeline paginates the authoritative log without exposing payloads or 
   assert.deepEqual(after, before);
 });
 
+test("run graph renders a bounded sanitized Mermaid control-flow view without writing", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  const before = await readEvents(runPaths(context.home, runId).events);
+
+  const result = invoke(
+    ["run", "graph", runId, "--limit", "5", "--json"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const graph = JSON.parse(result.stdout) as {
+    schema: string;
+    runId: string;
+    returnedEvents: number;
+    hasMore: boolean;
+    mermaid: string;
+  };
+  assert.equal(graph.schema, "cueline-run-graph/0.1");
+  assert.equal(graph.runId, runId);
+  assert.equal(graph.returnedEvents, 5);
+  assert.equal(graph.hasMore, true);
+  assert.match(graph.mermaid, /^flowchart TD/m);
+  assert.match(graph.mermaid, /e1\["#1 run/);
+  assert.match(graph.mermaid, /e5\["#5 job/);
+  assert.doesNotMatch(graph.mermaid, /e6\[/);
+  assert.match(graph.mermaid, /e2 -\. request \.-> e3/);
+  assert.match(graph.mermaid, /e3 -\. request \.-> e4/);
+  assert.ok(!result.stdout.includes("Persisted controller prompt"));
+  assert.ok(!result.stdout.includes("Inspect a large project"));
+  assert.ok(!result.stdout.includes("Audit 1"));
+  const after = await readEvents(runPaths(context.home, runId).events);
+  assert.deepEqual(after, before);
+});
+
+test("run graph renders an explicit empty page at the latest sequence", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+
+  const result = invoke(
+    ["run", "graph", runId, "--after", "12", "--limit", "5", "--json"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const graph = JSON.parse(result.stdout) as {
+    returnedEvents: number;
+    hasMore: boolean;
+    mermaid: string;
+  };
+  assert.equal(graph.returnedEvents, 0);
+  assert.equal(graph.hasMore, false);
+  assert.match(graph.mermaid, /No events after sequence 12/);
+});
+
+test("run graph rejects unsafe bounds, duplicate flags, and cursors ahead of the log", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  for (const args of [
+    ["run", "graph", runId, "--limit", "0"],
+    ["run", "graph", runId, "--limit", "201"],
+    ["run", "graph", runId, "--limit", "5", "--limit", "6"],
+    ["run", "graph", runId, "--json", "--json"],
+  ]) {
+    const result = invoke(args, context.environment);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /CLI_ARGUMENTS_INVALID/);
+  }
+  const ahead = invoke(
+    ["run", "graph", runId, "--after", "13", "--json"],
+    context.environment,
+  );
+  assert.equal(ahead.status, 1);
+  assert.match(ahead.stderr, /RUN_TIMELINE_CURSOR_AHEAD/);
+});
+
 test("run handoff emits exact paths without changing durable state", async () => {
   const context = await fixture();
   const runId = await seedActiveRun(context.home);
