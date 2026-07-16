@@ -15,4 +15,6 @@ export const SEND_BUTTON_NAMES = [
   "送出訊息",
 ] as const;
 
+export const ARCHIVE_MENUITEM_NAMES = ["Archive", "封存"] as const;
+
 export const CHATGPT_URL = "https://chatgpt.com/";

@@ -51,6 +51,7 @@ export interface CueLineRunHandoffPacket {
     responseAccepted: boolean;
     lastAcceptedAction: CueLineRunStatusSummary["controller"]["lastAcceptedAction"];
     lastAcceptedRequestId: string | null;
+    archive: CueLineRunStatusSummary["controller"]["archive"];
   };
   pendingControllerTurns: Array<{
     requestId: string;
@@ -208,6 +209,13 @@ function nextStep(
         instruction: "Resolve every active-looking job from durable and process evidence before continuing.",
         apiExample: `cueline jobs --json`,
       };
+    case "settle_controller_archive":
+      return {
+        action,
+        instruction:
+          "Settle the durable post-completion archive state once. A started attempt must become ambiguous; never click Archive again.",
+        apiExample: shared.apiExample,
+      };
     case "return_result":
       return {
         action,
@@ -285,6 +293,7 @@ export function buildCueLineRunHandoff(
       responseAccepted: status.controller.responseAccepted,
       lastAcceptedAction: status.controller.lastAcceptedAction,
       lastAcceptedRequestId: status.controller.lastAcceptedRequestId,
+      archive: { ...status.controller.archive },
     },
     pendingControllerTurns: state.pendingControllerTurns.map((turn) => ({
       requestId: turn.requestId,
@@ -358,6 +367,7 @@ export function renderCueLineRunHandoffMarkdown(packet: CueLineRunHandoffPacket)
     `- Round: ${packet.run.round}/${packet.run.maxRounds}`,
     `- Event sequence: ${packet.run.eventSequence}`,
     `- Conversation: ${json(packet.conversation.url)}`,
+    `- Controller archive: ${packet.conversation.archive.enabled ? packet.conversation.archive.status : "disabled"}`,
     `- Run directory: ${json(packet.paths.runDir)}`,
     `- Event log: ${json(packet.paths.events)}`,
     `- Safe next action: ${packet.run.safeNextAction}`,

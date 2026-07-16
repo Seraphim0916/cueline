@@ -38,6 +38,16 @@ export function safeCueLineRunStatus(status: CueLineRunStatusSummary) {
       lastAcceptedAction: status.controller.lastAcceptedAction,
       lastAcceptedRequestId: status.controller.lastAcceptedRequestId,
       lastAcceptedJobKeys: [...status.controller.lastAcceptedJobKeys],
+      ...(status.controller.archive.enabled
+        ? {
+            archive: {
+              enabled: true,
+              status: status.controller.archive.status,
+              code: status.controller.archive.code,
+              proof: status.controller.archive.proof,
+            },
+          }
+        : {}),
     },
     jobs: {
       total: status.jobs.total,

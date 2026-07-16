@@ -29,6 +29,13 @@ test("the CLI run status view is an explicit metadata allowlist", () => {
       lastAcceptedAction: "dispatch",
       lastAcceptedRequestId: "msg_safe_status",
       lastAcceptedJobKeys: ["local_work"],
+      archive: {
+        enabled: false,
+        status: "disabled",
+        code: null,
+        proof: null,
+        postActionUrl: null,
+      },
     },
     jobs: {
       total: 1,
@@ -99,4 +106,61 @@ test("the CLI run status view is an explicit metadata allowlist", () => {
     startedAt: null,
   });
   assert.deepEqual(safe.jobs.items[0]?.execution, status.jobs.items[0]?.execution);
+});
+
+test("the CLI archive status never exposes a ChatGPT conversation URL", () => {
+  const status = {
+    runId: "run_safe_archive_status",
+    status: "complete",
+    executor: "caller",
+    allowProcessExecution: false,
+    phase: "complete",
+    round: 1,
+    maxRounds: 12,
+    lastEventSequence: 5,
+    runtime: { ownership: "released" },
+    cancellation: { runRequested: false, jobRequests: [] },
+    controller: {
+      pendingTurns: 0,
+      acceptedCommands: 1,
+      responseAccepted: true,
+      lastAcceptedAction: "complete",
+      lastAcceptedRequestId: "msg_safe_archive_status",
+      lastAcceptedJobKeys: [],
+      archive: {
+        enabled: true,
+        status: "archived",
+        code: null,
+        proof: "conversation_url_changed",
+        postActionUrl: "https://chatgpt.com/c/SECRET_ARCHIVE_DESTINATION",
+      },
+    },
+    jobs: {
+      total: 0,
+      counts: {
+        pending: 0,
+        running: 0,
+        succeeded: 0,
+        failed: 0,
+        timed_out: 0,
+        cancelled: 0,
+        ambiguous: 0,
+        orphaned: 0,
+      },
+      items: [],
+    },
+    continueAllowed: false,
+    safeNextAction: "return_result",
+  } satisfies CueLineRunStatusSummary;
+
+  const safe = safeCueLineRunStatus(status);
+  const serialized = JSON.stringify(safe);
+
+  assert.doesNotMatch(serialized, /SECRET_ARCHIVE_DESTINATION|postActionUrl/);
+  assert.deepEqual(safe.controller.archive, {
+    enabled: true,
+    status: "archived",
+    code: null,
+    proof: "conversation_url_changed",
+  });
 });

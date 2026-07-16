@@ -38,6 +38,24 @@ export type ControllerSubmissionState =
   | "possibly_sent"
   | "submitted";
 
+export type ControllerConversationArchiveStatus =
+  | "disabled"
+  | "waiting_for_completion"
+  | "pending"
+  | "started"
+  | "archived"
+  | "ambiguous"
+  | "failed";
+
+export interface ControllerConversationArchiveState {
+  enabled: boolean;
+  status: ControllerConversationArchiveStatus;
+  code: string | null;
+  message: string | null;
+  proof: "conversation_url_changed" | null;
+  postActionUrl: string | null;
+}
+
 export interface PendingControllerTurn {
   round: number;
   requestId: string;
@@ -120,6 +138,7 @@ export interface CueLineRunState {
   status: CueLineRunStatus;
   round: number;
   conversationUrl: string | null;
+  controllerConversationArchive: ControllerConversationArchiveState;
   pendingControllerTurns: PendingControllerTurn[];
   abandonedControllerTurns: PendingControllerTurn[];
   lastFailure: RunFailureEvidence | null;
@@ -211,12 +230,32 @@ function preserveCanonicalConversationUrl(
   return canonical ?? candidate;
 }
 
+function initialControllerConversationArchive(
+  enabled: boolean,
+): ControllerConversationArchiveState {
+  return {
+    enabled,
+    status: enabled ? "waiting_for_completion" : "disabled",
+    code: null,
+    message: null,
+    proof: null,
+    postActionUrl: null,
+  };
+}
+
+function controllerConversationArchive(
+  state: CueLineRunState,
+): ControllerConversationArchiveState {
+  return state.controllerConversationArchive ?? initialControllerConversationArchive(false);
+}
+
 export function initialRunState(
   runId: string,
   request: string,
   executor: CueLineExecutor = "caller",
   maxRounds = DEFAULT_MAX_ROUNDS,
   allowProcessExecution = false,
+  archiveControllerConversationOnComplete = false,
 ): CueLineRunState {
   return {
     runId,
@@ -227,6 +266,9 @@ export function initialRunState(
     status: "running",
     round: 0,
     conversationUrl: null,
+    controllerConversationArchive: initialControllerConversationArchive(
+      archiveControllerConversationOnComplete,
+    ),
     pendingControllerTurns: [],
     abandonedControllerTurns: [],
     lastFailure: null,
@@ -258,6 +300,7 @@ export function isControllerTurnProvenUnsent(
 export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLineRunState {
   const payload = recordPayload(event);
   if (event.type === "run_created" && typeof payload.request === "string") {
+    const archiveEnabled = payload.archive_controller_conversation_on_complete === true;
     return {
       ...state,
       request: payload.request,
@@ -273,6 +316,7 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
         payload.max_rounds >= 1
           ? payload.max_rounds
           : state.maxRounds ?? DEFAULT_MAX_ROUNDS,
+      controllerConversationArchive: initialControllerConversationArchive(archiveEnabled),
     };
   }
   if (event.type === "run_resumed") {
@@ -756,6 +800,7 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     };
   }
   if (event.type === "run_completed" && typeof payload.final_delivery_text === "string") {
+    const archive = controllerConversationArchive(state);
     return {
       ...state,
       status: "complete",
@@ -763,6 +808,96 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       abandonedControllerTurns: [],
       pendingCommandExecution: null,
       finalDeliveryText: payload.final_delivery_text,
+      controllerConversationArchive:
+        archive.enabled && archive.status === "waiting_for_completion"
+          ? { ...archive, status: "pending" }
+          : archive,
+    };
+  }
+  if (
+    event.type === "controller_conversation_archive_preflight_failed" &&
+    controllerConversationArchive(state).status === "pending" &&
+    typeof payload.code === "string" &&
+    typeof payload.message === "string"
+  ) {
+    return {
+      ...state,
+      controllerConversationArchive: {
+        ...controllerConversationArchive(state),
+        code: payload.code,
+        message: payload.message,
+      },
+    };
+  }
+  if (
+    event.type === "controller_conversation_archive_started" &&
+    state.status === "complete" &&
+    controllerConversationArchive(state).status === "pending" &&
+    typeof payload.conversation_url === "string" &&
+    state.conversationUrl !== null &&
+    sameChatGptConversationUrl(payload.conversation_url, state.conversationUrl)
+  ) {
+    return {
+      ...state,
+      controllerConversationArchive: {
+        ...controllerConversationArchive(state),
+        status: "started",
+        code: null,
+        message: null,
+      },
+    };
+  }
+  if (
+    event.type === "controller_conversation_archived" &&
+    controllerConversationArchive(state).status === "started" &&
+    typeof payload.conversation_url === "string" &&
+    state.conversationUrl !== null &&
+    sameChatGptConversationUrl(payload.conversation_url, state.conversationUrl) &&
+    payload.proof === "conversation_url_changed" &&
+    typeof payload.post_action_url === "string" &&
+    payload.post_action_url.startsWith("https://chatgpt.com/") &&
+    !sameChatGptConversationUrl(payload.post_action_url, state.conversationUrl)
+  ) {
+    return {
+      ...state,
+      controllerConversationArchive: {
+        ...controllerConversationArchive(state),
+        status: "archived",
+        proof: "conversation_url_changed",
+        postActionUrl: payload.post_action_url,
+      },
+    };
+  }
+  if (
+    event.type === "controller_conversation_archive_ambiguous" &&
+    controllerConversationArchive(state).status === "started" &&
+    typeof payload.code === "string" &&
+    typeof payload.message === "string"
+  ) {
+    return {
+      ...state,
+      controllerConversationArchive: {
+        ...controllerConversationArchive(state),
+        status: "ambiguous",
+        code: payload.code,
+        message: payload.message,
+      },
+    };
+  }
+  if (
+    event.type === "controller_conversation_archive_failed" &&
+    controllerConversationArchive(state).status === "pending" &&
+    typeof payload.code === "string" &&
+    typeof payload.message === "string"
+  ) {
+    return {
+      ...state,
+      controllerConversationArchive: {
+        ...controllerConversationArchive(state),
+        status: "failed",
+        code: payload.code,
+        message: payload.message,
+      },
     };
   }
   if (event.type === "run_blocked" && typeof payload.reason === "string") {

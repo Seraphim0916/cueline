@@ -30,6 +30,7 @@ import {
   validateControllerRuntimeOptions,
   type CueLineResult,
 } from "./core/controller-loop.js";
+import { controllerConversationArchiveNeedsRecovery } from "./core/controller-conversation-archive.js";
 import { sameChatGptConversationUrl } from "./core/conversation-url.js";
 import { CueLineError } from "./core/errors.js";
 import {
@@ -220,6 +221,12 @@ export async function startCueLineRun(
       ? {}
       : { allowProcessExecution: options.allowProcessExecution }),
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+    ...(options.archiveControllerConversationOnComplete === undefined
+      ? {}
+      : {
+          archiveControllerConversationOnComplete:
+            options.archiveControllerConversationOnComplete,
+        }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
 }
@@ -237,6 +244,12 @@ export async function runCueLine(options: StartCueLineRunOptions): Promise<CueLi
     ...(options.allowProcessExecution === undefined
       ? {}
       : { allowProcessExecution: options.allowProcessExecution }),
+    ...(options.archiveControllerConversationOnComplete === undefined
+      ? {}
+      : {
+          archiveControllerConversationOnComplete:
+            options.archiveControllerConversationOnComplete,
+        }),
     returnAfterControllerSubmission: (options.executor ?? "caller") === "caller",
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
     ...(options.maxRepairAttempts === undefined
@@ -270,6 +283,16 @@ export async function continueCueLineRun(
   }
   let state = await loadPersistedRunState(home, options.runId);
   if (
+    options.archiveControllerConversationOnComplete !== undefined &&
+    options.archiveControllerConversationOnComplete !==
+      (state.controllerConversationArchive?.enabled ?? false)
+  ) {
+    throw new CueLineError(
+      "CONTROLLER_CONVERSATION_ARCHIVE_POLICY_MISMATCH",
+      `Run '${options.runId}' has a different durable controller conversation archive policy.`,
+    );
+  }
+  if (
     options.conversationUrl !== undefined &&
     state.conversationUrl !== null &&
     !sameChatGptConversationUrl(options.conversationUrl, state.conversationUrl)
@@ -279,7 +302,12 @@ export async function continueCueLineRun(
       `Run '${options.runId}' is already bound to a different ChatGPT conversation.`,
     );
   }
-  if (isTerminalRun(state) && options.manualSendConfirmed !== true) {
+  let recoverControllerArchive = controllerConversationArchiveNeedsRecovery(state);
+  if (
+    isTerminalRun(state) &&
+    !recoverControllerArchive &&
+    options.manualSendConfirmed !== true
+  ) {
     return terminalResult(state);
   }
   let preparedRuntime: PreparedRuntime | undefined;
@@ -317,8 +345,9 @@ export async function continueCueLineRun(
         : { conversationUrl: options.conversationUrl }),
     });
     state = await loadPersistedRunState(home, options.runId);
+    recoverControllerArchive = controllerConversationArchiveNeedsRecovery(state);
   }
-  if (isTerminalRun(state)) {
+  if (isTerminalRun(state) && !recoverControllerArchive) {
     return terminalResult(state);
   }
   let runtime = await readRuntimeLease(home, options.runId, {
@@ -389,7 +418,10 @@ export async function continueCueLineRun(
     });
   }
   const cancellation = await readCancellationObservation(home, options.runId);
-  if (!isSafeStaleCallerObservationRecovery(state, runtime, cancellation)) {
+  if (
+    !recoverControllerArchive &&
+    !isSafeStaleCallerObservationRecovery(state, runtime, cancellation)
+  ) {
     assertRunCanContinue(state, runtime, cancellation);
   }
   if (preparedRuntime === undefined) {
@@ -401,6 +433,7 @@ export async function continueCueLineRun(
       );
     }
     if (
+      !recoverControllerArchive &&
       state.executor === "process" &&
       (!state.allowProcessExecution || options.allowProcessExecution !== true)
     ) {
@@ -422,6 +455,8 @@ export async function continueCueLineRun(
     ...preparedRuntime,
     executor: state.executor,
     ...(state.executor === "process" ? { allowProcessExecution: true } : {}),
+    archiveControllerConversationOnComplete:
+      state.controllerConversationArchive?.enabled === true,
     returnAfterControllerSubmission: state.executor === "caller",
     ...(options.reconcileRequestId === undefined
       ? {}

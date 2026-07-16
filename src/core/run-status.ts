@@ -4,6 +4,7 @@ import {
   type CueLineRunState,
   type StoredJobStatus,
 } from "./state-machine.js";
+import { controllerConversationArchiveNeedsRecovery } from "./controller-conversation-archive.js";
 import type { RuntimeLeaseObservation } from "../state/runtime-lease.js";
 import type { CancellationObservation } from "../state/cancellation.js";
 import type { RunEvent } from "../state/event-log.js";
@@ -31,6 +32,7 @@ export type CueLineRunPhase =
   | "controller_response_pending"
   | "jobs_running"
   | "controller_decision_pending"
+  | "controller_archive_pending"
   | "caller_jobs_pending"
   | "caller_work_pending"
   | "caller_work_claimed"
@@ -58,7 +60,8 @@ export type CueLineSafeNextAction =
   | "claim_caller_work"
   | "start_caller_work"
   | "continue_caller_work"
-  | "return_result";
+  | "return_result"
+  | "settle_controller_archive";
 
 export interface CueLineRunStatusSummary {
   runId: string;
@@ -78,6 +81,13 @@ export interface CueLineRunStatusSummary {
     lastAcceptedAction: "dispatch" | "wait" | "inspect" | "complete" | "blocked" | null;
     lastAcceptedRequestId: string | null;
     lastAcceptedJobKeys: string[];
+    archive: {
+      enabled: boolean;
+      status: CueLineRunState["controllerConversationArchive"]["status"];
+      code: string | null;
+      proof: CueLineRunState["controllerConversationArchive"]["proof"];
+      postActionUrl: string | null;
+    };
   };
   jobs: {
     total: number;
@@ -240,6 +250,13 @@ function safeNextActionFor(
   runtime: RuntimeLeaseObservation,
   cancellation: CancellationObservation,
 ): CueLineSafeNextAction {
+  if (controllerConversationArchiveNeedsRecovery(state)) {
+    if (runtime.ownership === "active") return "observe";
+    if (runtime.ownership === "stale" || runtime.ownership === "invalid") {
+      return "inspect_runtime";
+    }
+    return "settle_controller_archive";
+  }
   if (state.status === "complete" || state.status === "blocked" || state.status === "cancelled") {
     return "return_result";
   }
@@ -291,6 +308,11 @@ export function cueLineRunPhase(
   runtime: RuntimeLeaseObservation,
   cancellation: CancellationObservation = { runRequested: false, jobRequests: [] },
 ): CueLineRunPhase {
+  if (controllerConversationArchiveNeedsRecovery(state)) {
+    if (runtime.ownership === "stale") return "runtime_stale";
+    if (runtime.ownership === "invalid") return "runtime_ownership_unknown";
+    return "controller_archive_pending";
+  }
   if (state.status === "complete") return "complete";
   if (state.status === "blocked") return "blocked";
   if (state.status === "cancelled") return "cancelled";
@@ -475,13 +497,21 @@ export function summarizeCueLineRunState(
     };
   });
   const phase = cueLineRunPhase(state, runtime, cancellation);
+  const terminal =
+    state.status === "complete" ||
+    state.status === "blocked" ||
+    state.status === "cancelled";
   const continueAllowed =
-    !cancellation.runRequested &&
-    !roundLimitReached(state) &&
-    (((runtime.ownership === "missing" || runtime.ownership === "released") &&
-      ((state.status === "failed") ||
-        (state.executor === "caller" && activeJobCount(state) === 0))) ||
-      isSafeStaleCallerObservationRecovery(state, runtime, cancellation));
+    controllerConversationArchiveNeedsRecovery(state)
+      ? runtime.ownership === "missing" || runtime.ownership === "released"
+      : terminal
+        ? false
+      : !cancellation.runRequested &&
+        !roundLimitReached(state) &&
+        (((runtime.ownership === "missing" || runtime.ownership === "released") &&
+          ((state.status === "failed") ||
+            (state.executor === "caller" && activeJobCount(state) === 0))) ||
+          isSafeStaleCallerObservationRecovery(state, runtime, cancellation));
   const safeNextAction = safeNextActionFor(state, runtime, cancellation);
   return {
     runId: state.runId,
@@ -503,6 +533,13 @@ export function summarizeCueLineRunState(
       lastAcceptedAction: acceptedCommand.action,
       lastAcceptedRequestId: acceptedCommand.requestId,
       lastAcceptedJobKeys: acceptedCommand.jobKeys,
+      archive: {
+        enabled: state.controllerConversationArchive?.enabled === true,
+        status: state.controllerConversationArchive?.status ?? "disabled",
+        code: state.controllerConversationArchive?.code ?? null,
+        proof: state.controllerConversationArchive?.proof ?? null,
+        postActionUrl: state.controllerConversationArchive?.postActionUrl ?? null,
+      },
     },
     jobs: {
       total: items.length,

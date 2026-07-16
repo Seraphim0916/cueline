@@ -25,6 +25,8 @@ export interface CueLineRuntimeOptions {
   allowProcessExecution?: boolean;
   maxConcurrency?: number;
   laneConcurrency?: Readonly<Record<string, number>>;
+  /** Opt in to archiving the exact ChatGPT controller conversation after a durable complete. */
+  archiveControllerConversationOnComplete?: boolean;
 }
 
 export interface StartCueLineRunOptions extends CueLineRuntimeOptions {

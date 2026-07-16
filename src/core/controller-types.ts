@@ -37,6 +37,7 @@ export interface ControllerRuntimeOptions {
   laneConcurrency?: Readonly<Record<string, number>>;
   runtimeHeartbeatIntervalMs?: number;
   returnAfterControllerSubmission?: boolean;
+  archiveControllerConversationOnComplete?: boolean;
 }
 
 export interface ControllerLoopOptions extends ControllerRuntimeOptions {
@@ -52,6 +53,7 @@ export interface CreateControllerRunOptions {
   executor?: CueLineExecutor;
   allowProcessExecution?: boolean;
   maxRounds?: number;
+  archiveControllerConversationOnComplete?: boolean;
 }
 
 export interface ContinueControllerLoopOptions extends ControllerRuntimeOptions {

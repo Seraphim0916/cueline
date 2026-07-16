@@ -117,6 +117,11 @@ function fakeBrowser(options: {
   responseModelSlug?: string | null;
   composerStates?: PageComposerState[];
   urlReadSequence?: string[];
+  archivePostActionUrl?: string;
+  archiveClickError?: string;
+  archiveClickChangesUrlBeforeThrow?: boolean;
+  archiveButtonAvailable?: boolean;
+  archiveMenuItemAvailable?: boolean;
 }) {
   const composer = new FakeLocator();
   const hydratedComposer = new FakeLocator();
@@ -137,6 +142,20 @@ function fakeBrowser(options: {
   });
   const missingProOption = new FakeLocator();
   missingProOption.countResult = 0;
+  const conversationOptionsButton = new FakeLocator();
+  const missingConversationOptionsButton = new FakeLocator();
+  missingConversationOptionsButton.countResult = 0;
+  const archiveMenuItem = new FakeLocator(() => {
+    url = options.archivePostActionUrl ?? "https://chatgpt.com/";
+  });
+  const missingArchiveMenuItem = new FakeLocator();
+  missingArchiveMenuItem.countResult = 0;
+  if (options.archiveClickError) {
+    archiveMenuItem.failFirstClick = true;
+    archiveMenuItem.firstClickError = options.archiveClickError;
+    archiveMenuItem.invokeOnClickBeforeFailure =
+      options.archiveClickChangesUrlBeforeThrow ?? false;
+  }
   sendButtons[0]!.failFirstClick = options.failFirstClick ?? false;
   sendButtons[0]!.invokeOnClickBeforeFailure =
     options.firstSendClickSubmitsBeforeThrow ?? false;
@@ -158,6 +177,11 @@ function fakeBrowser(options: {
     locator(selector: string) {
       requestedSelectors.push(selector);
       if (selector === "button.__composer-pill") return modelPicker;
+      if (selector === '[data-testid="conversation-options-button"]') {
+        return options.archiveButtonAvailable === false
+          ? missingConversationOptionsButton
+          : conversationOptionsButton;
+      }
       return options.hydratedComposer ? hydratedComposer : missingHydratedComposer;
     },
     getByRole(role: string, query: { name: string }) {
@@ -165,6 +189,11 @@ function fakeBrowser(options: {
       if (role === "textbox") return composer;
       if (role === "menuitemradio" && query.name === "Pro") {
         return options.proOptionAvailable === false ? missingProOption : proOption;
+      }
+      if (role === "menuitem" && (query.name === "Archive" || query.name === "封存")) {
+        return options.archiveMenuItemAvailable === false
+          ? missingArchiveMenuItem
+          : archiveMenuItem;
       }
       if (options.sendButtonAvailable === false) {
         return missingSendButton;
@@ -290,6 +319,8 @@ function fakeBrowser(options: {
     requestedRoles,
     requestedSelectors,
     sendButtons,
+    conversationOptionsButton,
+    archiveMenuItem,
     coordinateClicks: () => coordinateClicks,
     sendSubmissions: () => sendSubmissions,
   };
@@ -327,6 +358,315 @@ test("accepts an explicit zero stabilization window for deterministic tests", ()
   assert.doesNotThrow(() =>
     createCodexIabAdapter({ timeoutMs: 1, pollIntervalMs: 1, stableMs: 0 }),
   );
+});
+
+test("archives one exact completed conversation with one Archive click", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-browser-adapter";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    archivePostActionUrl: "https://chatgpt.com/",
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+  });
+
+  const evidence = await adapter.archiveConversation!({ conversationUrl });
+
+  assert.equal(fixture.conversationOptionsButton.clicks, 1);
+  assert.equal(fixture.archiveMenuItem.clicks, 1);
+  assert.deepEqual(evidence, {
+    conversationUrl,
+    proof: "conversation_url_changed",
+    postActionUrl: "https://chatgpt.com/",
+  });
+});
+
+test("an ambiguous Archive click is never retried", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-browser-ambiguous";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    archiveClickError: "Playwright timeout after Archive click",
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  await assert.rejects(
+    adapter.archiveConversation!({ conversationUrl }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_AMBIGUOUS",
+  );
+  assert.equal(fixture.archiveMenuItem.clicks, 1);
+});
+
+test("a timed-out Archive click is accepted only when URL change proves completion", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-browser-timeout-proven";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    archiveClickError: "Playwright timeout after accepted Archive click",
+    archiveClickChangesUrlBeforeThrow: true,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  const evidence = await adapter.archiveConversation!({ conversationUrl });
+
+  assert.equal(evidence.proof, "conversation_url_changed");
+  assert.equal(fixture.archiveMenuItem.clicks, 1);
+});
+
+test("refuses to archive a conversation other than the adapter binding", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-browser-bound";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  await assert.rejects(
+    adapter.archiveConversation!({
+      conversationUrl: "https://chatgpt.com/c/archive-browser-other",
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_MISMATCH",
+  );
+  assert.equal(fixture.conversationOptionsButton.clicks, 0);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
+});
+
+test("never opens archive controls while ChatGPT Pro is answering", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-pro-active";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: true,
+        assistantText: "still answering",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  await assert.rejects(
+    adapter.archiveConversation!({ conversationUrl }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_PRO_ACTIVE",
+  );
+  assert.equal(fixture.conversationOptionsButton.clicks, 0);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
+});
+
+test("never clicks Archive when Pro starts answering after the menu opens", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-pro-restarted";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+      {
+        pageUrl: conversationUrl,
+        isAnswering: true,
+        assistantText: "new answer",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  await assert.rejects(
+    adapter.archiveConversation!({ conversationUrl }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_PRO_ACTIVE",
+  );
+  assert.equal(fixture.conversationOptionsButton.clicks, 1);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
+});
+
+test("never clicks Archive when the tab navigates after the menu opens", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-navigation-race";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+      {
+        pageUrl: "https://chatgpt.com/c/different-conversation",
+        isAnswering: false,
+        assistantText: "different conversation",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+
+  await assert.rejects(
+    adapter.archiveConversation!({ conversationUrl }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_MISMATCH",
+  );
+  assert.equal(fixture.conversationOptionsButton.clicks, 1);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
+});
+
+test("never clicks Archive when cancellation arrives at the write-ahead checkpoint", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-cancelled-at-checkpoint";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+  const controller = new AbortController();
+
+  await assert.rejects(
+    adapter.archiveConversation!(
+      { conversationUrl, signal: controller.signal },
+      {
+        async onBeforeArchiveClick() {
+          controller.abort();
+        },
+      },
+    ),
+  );
+  assert.equal(fixture.conversationOptionsButton.clicks, 1);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
+});
+
+test("never clicks Archive when Pro starts answering during the durable checkpoint", async () => {
+  const conversationUrl = "https://chatgpt.com/c/archive-pro-active-during-checkpoint";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+      {
+        pageUrl: conversationUrl,
+        isAnswering: true,
+        assistantText: "new response started",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+  });
+  let checkpoints = 0;
+
+  await assert.rejects(
+    adapter.archiveConversation!(
+      { conversationUrl },
+      {
+        async onBeforeArchiveClick() {
+          checkpoints += 1;
+        },
+      },
+    ),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ARCHIVE_PRO_ACTIVE",
+  );
+  assert.equal(checkpoints, 1);
+  assert.equal(fixture.archiveMenuItem.clicks, 0);
 });
 
 test("normalizes contenteditable block newlines without erasing indentation", async () => {
