@@ -519,6 +519,7 @@ export {
   buildCueLineRunTimeline,
   loadCueLineRunTimeline,
 } from "./observation/run-timeline.js";
+export { loadCueLineRunStatusAt } from "./observation/run-status-at.js";
 export { CUELINE_VERSION } from "./version.js";
 export type {
   ContinueCueLineRunOptions,
@@ -571,6 +572,10 @@ export type {
   CueLineRunTimelineOptions,
   CueLineTimelineCategory,
 } from "./observation/run-timeline.js";
+export type {
+  CueLineRunStatusAt,
+  CueLineRunStatusAtOptions,
+} from "./observation/run-status-at.js";
 export type {
   CodexIabBrowserSource,
   CodexIabPageProbe,

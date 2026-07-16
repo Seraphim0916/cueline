@@ -778,6 +778,77 @@ test("run timeline paginates the authoritative log without exposing payloads or 
   assert.deepEqual(after, before);
 });
 
+test("run status-at reconstructs a sanitized historical state without writing", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  const before = await readEvents(runPaths(context.home, runId).events);
+
+  const result = invoke(
+    ["run", "status-at", runId, "--sequence", "4", "--json"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const historical = JSON.parse(result.stdout) as {
+    schema: string;
+    runId: string;
+    requestedSequence: number;
+    latestSequence: number;
+    authoritativeEventsApplied: number;
+    state: {
+      status: string;
+      round: number;
+      pendingControllerTurns: number;
+      acceptedCommands: number;
+      jobs: { total: number; counts: Record<string, number> };
+    };
+  };
+  assert.equal(historical.schema, "cueline-status-at/0.1");
+  assert.equal(historical.runId, runId);
+  assert.equal(historical.requestedSequence, 4);
+  assert.equal(historical.latestSequence, 12);
+  assert.equal(historical.authoritativeEventsApplied, 4);
+  assert.equal(historical.state.status, "running");
+  assert.equal(historical.state.round, 1);
+  assert.equal(historical.state.pendingControllerTurns, 0);
+  assert.equal(historical.state.acceptedCommands, 1);
+  assert.deepEqual(historical.state.jobs, { total: 0, counts: {} });
+  assert.ok(!result.stdout.includes("Persisted controller prompt"));
+  assert.ok(!result.stdout.includes("Inspect a large project"));
+  const after = await readEvents(runPaths(context.home, runId).events);
+  assert.deepEqual(after, before);
+});
+
+test("run status-at rejects a future sequence without guessing or writing", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  const before = await readEvents(runPaths(context.home, runId).events);
+
+  const result = invoke(
+    ["run", "status-at", runId, "--sequence", "13", "--json"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RUN_STATUS_AT_SEQUENCE_AHEAD/);
+  const after = await readEvents(runPaths(context.home, runId).events);
+  assert.deepEqual(after, before);
+});
+
+test("run status-at rejects invalid or duplicate sequence flags as usage errors", async () => {
+  const context = await fixture();
+  const runId = await seedActiveRun(context.home);
+  for (const args of [
+    ["run", "status-at", runId, "--sequence", "0"],
+    ["run", "status-at", runId, "--sequence", "4.5"],
+    ["run", "status-at", runId, "--sequence", "4", "--sequence", "5"],
+  ]) {
+    const result = invoke(args, context.environment);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /CLI_ARGUMENTS_INVALID/);
+  }
+});
+
 test("run handoff emits exact paths without changing durable state", async () => {
   const context = await fixture();
   const runId = await seedActiveRun(context.home);

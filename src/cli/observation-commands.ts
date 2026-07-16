@@ -3,6 +3,7 @@ import {
   diagnoseCueLineRun,
   listCueLineRuns,
   loadCueLineRunTimeline,
+  loadCueLineRunStatusAt,
   verifyCueLineRun,
   waitForCueLineRunChange,
 } from "../api.js";
@@ -164,6 +165,36 @@ async function runTimelineCommand(
   return 0;
 }
 
+async function runStatusAtCommand(
+  runId: string,
+  sequence: number,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const historical = await loadCueLineRunStatusAt(runId, { environment, sequence });
+  if (json) {
+    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...historical }, null, 2));
+  } else {
+    io.stdout(`run\t${historical.runId}`);
+    io.stdout(`version\t${CUELINE_VERSION}`);
+    io.stdout(
+      `sequence\t${historical.requestedSequence}/${historical.latestSequence}\tauthoritative_applied=${historical.authoritativeEventsApplied}`,
+    );
+    io.stdout(`event\t${historical.asOf.type}\t${historical.asOf.timestamp}`);
+    io.stdout(
+      `state\t${historical.state.status}\texecutor=${historical.state.executor}\tround=${historical.state.round}/${historical.state.maxRounds}`,
+    );
+    io.stdout(
+      `controller\tpending=${historical.state.pendingControllerTurns}\tabandoned=${historical.state.abandonedControllerTurns}\taccepted=${historical.state.acceptedCommands}`,
+    );
+    io.stdout(
+      `jobs\ttotal=${historical.state.jobs.total}\tcounts=${JSON.stringify(historical.state.jobs.counts)}`,
+    );
+  }
+  return 0;
+}
+
 export async function handleObservationCommand(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
@@ -190,6 +221,33 @@ export async function handleObservationCommand(
     (args.length === 3 || (args.length === 4 && args[3] === "--json"))
   ) {
     return runDoctorCommand(args[2], args[3] === "--json", environment, io);
+  }
+  if (args[0] === "run" && args[1] === "status-at" && typeof args[2] === "string") {
+    let sequence: number | undefined;
+    let json = false;
+    let valid = true;
+    for (let index = 3; index < args.length; index += 1) {
+      const argument = args[index];
+      if (
+        argument === "--sequence" &&
+        sequence === undefined &&
+        typeof args[index + 1] === "string"
+      ) {
+        sequence = Number(args[index + 1]);
+        index += 1;
+      } else if (argument === "--json" && !json) {
+        json = true;
+      } else {
+        valid = false;
+      }
+    }
+    if (!valid || sequence === undefined || !Number.isSafeInteger(sequence) || sequence < 1) {
+      throw new CueLineError(
+        "CLI_ARGUMENTS_INVALID",
+        "usage: cueline run status-at <run-id> --sequence <positive-integer> [--json]",
+      );
+    }
+    return runStatusAtCommand(args[2], sequence, json, environment, io);
   }
   if (args[0] === "run" && args[1] === "watch" && typeof args[2] === "string") {
     let afterSequence: number | undefined;
