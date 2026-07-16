@@ -24,7 +24,7 @@ CueLine は独立した実装で、**ランタイムの npm 依存はゼロ**で
 - 永続 `complete` 後に正確な会話だけをアーカイブする opt-in 機能を追加しました。クリック前 fence、Pro 再開／遷移チェック、曖昧後の再クリック禁止を備えます。
 - 454/454 テストと使い捨ての実 ChatGPT Web Pro run を検証し、自然完了後に一度だけアーカイブし、既存のユーザー会話には触れませんでした。
 
-詳細は [changelog](CHANGELOG.md#017---2026-07-16) または不変の [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7) を参照してください。
+詳細は [changelog](CHANGELOG.md#017---2026-07-16) またはバージョン指定の [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7) を参照してください。
 
 ## 1 回の実行は実際にどう進むか
 

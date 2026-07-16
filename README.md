@@ -24,7 +24,7 @@ CueLine is a standalone implementation with **no runtime npm dependencies**. It 
 - Added opt-in exact-conversation archiving after durable `complete`, with a one-click write-ahead fence, Pro-active/navigation checks, and no retry after ambiguity.
 - Verified 454/454 tests and a disposable real ChatGPT Web Pro run that completed and archived exactly once without interrupting Pro or touching the existing user conversation.
 
-Read the complete [changelog](CHANGELOG.md#017---2026-07-16) or the immutable [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7).
+Read the complete [changelog](CHANGELOG.md#017---2026-07-16) or the versioned [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7).
 
 ## How a run actually goes
 

@@ -24,7 +24,7 @@ CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 
 - 新增選用的 `complete` 後精確對話封存：點擊前有持久 fence，Pro 又開始回答或換頁就拒絕，進入含糊狀態後絕不重點。
 - 完成 454/454 測試與一次可丟棄的真實 ChatGPT Web Pro 驗收；主控自然完成、只封存一次，原本使用者對話完全未動。
 
-完整內容請看 [changelog](CHANGELOG.md#017---2026-07-16) 或不可變的 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7)。
+完整內容請看 [changelog](CHANGELOG.md#017---2026-07-16) 或版本化的 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7)。
 
 ## 一次執行實際上怎麼跑
 

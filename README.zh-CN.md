@@ -24,7 +24,7 @@ CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnil
 - 新增可选的 `complete` 后精确会话归档：点击前有持久 fence，Pro 再次回答或页面切换时拒绝，进入模糊状态后绝不重复点击。
 - 完成 454/454 测试和一次可丢弃的真实 ChatGPT Web Pro 验收；控制器自然完成、只归档一次，原有用户会话未被触碰。
 
-完整内容请查看 [changelog](CHANGELOG.md#017---2026-07-16) 或不可变的 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7)。
+完整内容请查看 [changelog](CHANGELOG.md#017---2026-07-16) 或版本化的 [v0.1.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.1.7)。
 
 ## 一次运行实际是怎么走的
 
