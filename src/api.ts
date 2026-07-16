@@ -519,6 +519,7 @@ export {
   buildCueLineRunTimeline,
   loadCueLineRunTimeline,
 } from "./observation/run-timeline.js";
+export { compareCueLineRuns } from "./observation/run-diff.js";
 export { CUELINE_VERSION } from "./version.js";
 export type {
   ContinueCueLineRunOptions,
@@ -571,6 +572,12 @@ export type {
   CueLineRunTimelineOptions,
   CueLineTimelineCategory,
 } from "./observation/run-timeline.js";
+export type {
+  CueLineRunDiff,
+  CueLineRunDiffChange,
+  CueLineRunDiffOptions,
+  CueLineRunDiffProjection,
+} from "./observation/run-diff.js";
 export type {
   CodexIabBrowserSource,
   CodexIabPageProbe,
