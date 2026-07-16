@@ -20,7 +20,7 @@
 
 <img alt="CueLine 架构：ChatGPT 网页会话每轮发出一条文本指令，CueLine 校验并记录，当前 Codex 执行获准的本地工作。" src="docs/assets/cueline-architecture-zh-CN.svg" width="100%">
 
-CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 或 GPT Relay 的包装层。
+CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 的包装层。
 
 ## 最新版本：0.2.0
 

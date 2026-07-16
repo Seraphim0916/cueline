@@ -20,7 +20,7 @@
 
 <img alt="CueLine 아키텍처: ChatGPT 웹 대화가 라운드마다 텍스트 명령 하나를 내리고, CueLine이 검증·기록하며, 현재 Codex가 허용된 로컬 작업을 수행합니다." src="docs/assets/cueline-architecture-ko.svg" width="100%">
 
-CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane이나 GPT Relay를 감싼 래퍼가 아닙니다.
+CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane을 감싼 래퍼가 아닙니다.
 
 ## 최신 릴리스: 0.2.0
 

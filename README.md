@@ -20,7 +20,7 @@ The web page never touches your machine and has no local tools. It only emits on
 
 <img alt="CueLine architecture: a ChatGPT web conversation issues one text command per round, CueLine validates and records it, and the current Codex performs the permitted local work." src="docs/assets/cueline-architecture-en.svg" width="100%">
 
-CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane or GPT Relay.
+CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
 ## Latest release: 0.2.0
 
