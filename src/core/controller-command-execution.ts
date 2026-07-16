@@ -318,7 +318,11 @@ async function executeProcessDispatch(
     let started = false;
     for (let index = 0; index < queued.length && active.length < globalLimit; ) {
       const spec = queued[index]!;
-      const laneLimit = options.laneConcurrency?.[spec.lane] ?? globalLimit;
+      const laneLimit =
+        options.laneConcurrency !== undefined &&
+        Object.prototype.hasOwnProperty.call(options.laneConcurrency, spec.lane)
+          ? options.laneConcurrency[spec.lane]!
+          : globalLimit;
       const laneActive = activeByLane.get(spec.lane) ?? 0;
       if (laneActive >= laneLimit) {
         index += 1;
