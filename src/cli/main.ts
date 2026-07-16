@@ -34,7 +34,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|jobs|runs|protocol lint|run status|run doctor|run watch|run handoff|run timeline|run verify|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|routing explain|jobs|runs|protocol lint|run status|run doctor|run watch|run handoff|run timeline|run verify|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -48,6 +48,7 @@ function help(): string {
     "  uninstall      remove only the skill link owned by this package",
     "  doctor         report Node, caller readiness, state home, and process lanes",
     "  routing        list every lane and the candidate that would be selected",
+    "  routing explain  explain candidate selection without exposing runner arguments",
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
     "  protocol lint  validate a Pro control envelope offline and explain corrections",
     "  runs           list safe summaries of every persisted run",
@@ -73,6 +74,7 @@ function help(): string {
     "  cueline uninstall",
     "  cueline doctor [--json]",
     "  cueline routing [--json]",
+    "  cueline routing explain [lane] [--json]",
     "  cueline jobs [--json]",
     "  cueline protocol lint <file> --run-id <id> --round <n> --request-id <id> [--json]",
     "  cueline runs [--json]",
@@ -107,7 +109,7 @@ function help(): string {
     "  2  the arguments were not understood",
     "",
     "state effects:",
-    "  Read-only: doctor, routing, jobs, runs, protocol lint, run status, run doctor, run watch, run handoff, run timeline, run verify, api path, config path, help, version.",
+    "  Read-only: doctor, routing, routing explain, jobs, runs, protocol lint, run status, run doctor, run watch, run handoff, run timeline, run verify, api path, config path, help, version.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",

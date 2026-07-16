@@ -2,6 +2,7 @@ import { routingConfigPath } from "../api.js";
 import { CueLineError } from "../core/errors.js";
 import { executableAvailability } from "../router/availability.js";
 import { loadRoutingConfig } from "../router/config-loader.js";
+import { explainRoutingConfig, type RoutingExplanation } from "../router/explain.js";
 import { resolveRoute } from "../router/resolver.js";
 import { defaultCueLineHome } from "../state/paths.js";
 import { CUELINE_VERSION } from "../version.js";
@@ -23,6 +24,14 @@ interface RoutingReport {
   availableLanes: number;
   lanes: RoutingLaneReport[];
   findings: Array<{ code: string; message: string }>;
+}
+
+interface RoutingExplanationReport extends RoutingExplanation {
+  schema: "cueline-routing-explain/0.1";
+  version: string;
+  config:
+    | { path: string; valid: true }
+    | { path: string; valid: false; errorCode: "ROUTING_CONFIG_INVALID" };
 }
 
 interface DoctorFinding {
@@ -141,6 +150,63 @@ async function routingCommand(
   return report.availableLanes > 0 ? 0 : 1;
 }
 
+async function collectRoutingExplanation(
+  requestedLane: string | undefined,
+  environment: NodeJS.ProcessEnv,
+): Promise<RoutingExplanationReport> {
+  const configPath = routingConfigPath(environment);
+  try {
+    const config = await loadRoutingConfig(configPath);
+    return {
+      schema: "cueline-routing-explain/0.1",
+      version: CUELINE_VERSION,
+      config: { path: configPath, valid: true },
+      ...explainRoutingConfig(config, executableAvailability(environment), requestedLane),
+    };
+  } catch {
+    return {
+      schema: "cueline-routing-explain/0.1",
+      version: CUELINE_VERSION,
+      config: { path: configPath, valid: false, errorCode: "ROUTING_CONFIG_INVALID" },
+      requestedLane: requestedLane ?? null,
+      availableLanes: 0,
+      lanes: [],
+      findings: [
+        {
+          code: "ROUTING_CONFIG_INVALID",
+          message: "Routing configuration could not be loaded.",
+        },
+      ],
+    };
+  }
+}
+
+async function routingExplainCommand(
+  requestedLane: string | undefined,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const report = await collectRoutingExplanation(requestedLane, environment);
+  if (json) {
+    io.stdout(JSON.stringify(report, null, 2));
+  } else if (!report.config.valid) {
+    io.stdout(`config\t${report.config.path}\tinvalid\t${report.config.errorCode}`);
+  } else if (report.findings.length > 0) {
+    for (const finding of report.findings) io.stdout(`finding\t${finding.code}\t${finding.message}`);
+  } else {
+    for (const lane of report.lanes) {
+      io.stdout(`${lane.name}\t${lane.selectedRunnerId ?? "-"}\t${lane.status}`);
+      for (const candidate of lane.candidates) {
+        io.stdout(
+          `candidate\t${candidate.index}\t${candidate.id}\t${candidate.reasonCode}`,
+        );
+      }
+    }
+  }
+  return report.availableLanes > 0 ? 0 : 1;
+}
+
 async function collectDoctorReport(environment: NodeJS.ProcessEnv): Promise<DoctorReport> {
   const configPath = routingConfigPath(environment);
   const home = defaultCueLineHome(environment);
@@ -242,6 +308,32 @@ export async function handleHealthCommand(
   environment: NodeJS.ProcessEnv,
   io: CliIo,
 ): Promise<number | undefined> {
+  if (args[0] === "routing" && args[1] === "explain") {
+    let requestedLane: string | undefined;
+    let json = false;
+    let valid = true;
+    for (let index = 2; index < args.length; index += 1) {
+      const argument = args[index];
+      if (argument === "--json" && !json) {
+        json = true;
+      } else if (
+        typeof argument === "string" &&
+        !argument.startsWith("-") &&
+        requestedLane === undefined
+      ) {
+        requestedLane = argument;
+      } else {
+        valid = false;
+      }
+    }
+    if (!valid) {
+      throw new CueLineError(
+        "CLI_ARGUMENTS_INVALID",
+        "usage: cueline routing explain [lane] [--json]",
+      );
+    }
+    return routingExplainCommand(requestedLane, json, environment, io);
+  }
   if (
     args[0] === "routing" &&
     (args.length === 1 || (args.length === 2 && args[1] === "--json"))

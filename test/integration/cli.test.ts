@@ -326,6 +326,165 @@ test("routing exposes a stable JSON report without runner argv", async () => {
   assert.doesNotMatch(result.stdout, /PRIVATE_ARG_SENTINEL|definitely-missing/);
 });
 
+test("routing explain reports selection and fallback reasons without runner argv", async () => {
+  const context = await fixture();
+  await writeFile(
+    context.config,
+    `${JSON.stringify({
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [
+            { id: "missing", argv: ["PRIVATE_MISSING_ARG"] },
+            { id: "node", argv: [process.execPath, "PRIVATE_NODE_ARG"] },
+            { id: "fallback", argv: [process.execPath, "PRIVATE_FALLBACK_ARG"] },
+            { id: "disabled", argv: [process.execPath, "PRIVATE_DISABLED_ARG"], enabled: false },
+          ],
+        },
+      },
+    })}\n`,
+    "utf8",
+  );
+
+  const result = invoke(
+    ["routing", "explain", "default", "--json"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout) as {
+    schema: string;
+    requestedLane: string | null;
+    lanes: Array<{
+      name: string;
+      selectedRunnerId: string | null;
+      candidates: Array<{
+        id: string;
+        index: number;
+        enabled: boolean;
+        available: boolean | null;
+        selected: boolean;
+        reasonCode: string;
+      }>;
+    }>;
+  };
+  assert.equal(report.schema, "cueline-routing-explain/0.1");
+  assert.equal(report.requestedLane, "default");
+  assert.equal(report.lanes[0]?.selectedRunnerId, "node");
+  assert.deepEqual(report.lanes[0]?.candidates, [
+    {
+      id: "missing",
+      index: 0,
+      enabled: true,
+      available: false,
+      selected: false,
+      reasonCode: "RUNNER_UNAVAILABLE",
+    },
+    {
+      id: "node",
+      index: 1,
+      enabled: true,
+      available: true,
+      selected: true,
+      reasonCode: "SELECTED_FIRST_AVAILABLE",
+    },
+    {
+      id: "fallback",
+      index: 2,
+      enabled: true,
+      available: true,
+      selected: false,
+      reasonCode: "AVAILABLE_FALLBACK",
+    },
+    {
+      id: "disabled",
+      index: 3,
+      enabled: false,
+      available: null,
+      selected: false,
+      reasonCode: "RUNNER_DISABLED",
+    },
+  ]);
+  assert.doesNotMatch(
+    result.stdout,
+    /PRIVATE_MISSING_ARG|PRIVATE_NODE_ARG|PRIVATE_FALLBACK_ARG|PRIVATE_DISABLED_ARG/,
+  );
+});
+
+test("routing explain fails closed for unknown lanes with structured redacted JSON", async () => {
+  const context = await fixture();
+  await writeFile(
+    context.config,
+    `${JSON.stringify({
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [{ id: "node", argv: [process.execPath, "PRIVATE_UNKNOWN_ARG"] }],
+        },
+      },
+    })}\n`,
+    "utf8",
+  );
+
+  const result = invoke(
+    ["routing", "explain", "not-configured", "--json"],
+    context.environment,
+  );
+
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout) as {
+    requestedLane: string;
+    availableLanes: number;
+    lanes: unknown[];
+    findings: Array<{ code: string }>;
+  };
+  assert.equal(report.requestedLane, "not-configured");
+  assert.equal(report.availableLanes, 0);
+  assert.deepEqual(report.lanes, []);
+  assert.deepEqual(report.findings, [{
+    code: "ROUTE_LANE_UNKNOWN",
+    message: "Requested lane is not configured.",
+  }]);
+  assert.doesNotMatch(result.stdout, /PRIVATE_UNKNOWN_ARG/);
+});
+
+test("routing explain keeps invalid configuration output parseable and redacted", async () => {
+  const context = await fixture();
+  await writeFile(context.config, "{PRIVATE_EXPLAIN_CONFIG", "utf8");
+
+  const result = invoke(["routing", "explain", "--json"], context.environment);
+
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout) as {
+    schema: string;
+    config: { valid: boolean; errorCode: string };
+    lanes: unknown[];
+  };
+  assert.equal(report.schema, "cueline-routing-explain/0.1");
+  assert.deepEqual(report.config, {
+    path: context.config,
+    valid: false,
+    errorCode: "ROUTING_CONFIG_INVALID",
+  });
+  assert.deepEqual(report.lanes, []);
+  assert.doesNotMatch(result.stdout, /PRIVATE_EXPLAIN_CONFIG/);
+});
+
+test("routing explain rejects ambiguous duplicate or extra arguments", async () => {
+  const context = await fixture();
+  for (const args of [
+    ["routing", "explain", "default", "other"],
+    ["routing", "explain", "--json", "--json"],
+    ["routing", "explain", "--unknown"],
+  ]) {
+    const result = invoke(args, context.environment);
+    assert.equal(result.status, 2, `${args.join(" ")}\n${result.stderr}`);
+    assert.match(result.stderr, /CLI_ARGUMENTS_INVALID/);
+  }
+});
+
 test("routing JSON remains parseable and redacted for an invalid config", async () => {
   const context = await fixture();
   await writeFile(context.config, "{PRIVATE_ROUTING_SENTINEL", "utf8");
