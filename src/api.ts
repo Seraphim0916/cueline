@@ -47,7 +47,7 @@ import { JobStatusStore } from "./jobs/status.js";
 import { JobSupervisor } from "./jobs/supervisor.js";
 import type { ControllerJobSpec } from "./protocol/types.js";
 import { executableAvailability } from "./router/availability.js";
-import { loadRoutingConfig } from "./router/config-loader.js";
+import { loadRoutingConfig, parseRoutingConfig } from "./router/config-loader.js";
 import { materializeRunnerSpec } from "./router/materialize.js";
 import { resolveRoute, validateRouteReference } from "./router/resolver.js";
 import type { RoutingConfig } from "./router/types.js";
@@ -95,10 +95,9 @@ async function resolvedRoutingConfig(
   options: CueLineRuntimeOptions,
   environment: NodeJS.ProcessEnv,
 ): Promise<RoutingConfig> {
-  return (
-    options.routingConfig ??
-    (await loadRoutingConfig(routingConfigPath(environment, options.routingConfigPath)))
-  );
+  return options.routingConfig === undefined
+    ? loadRoutingConfig(routingConfigPath(environment, options.routingConfigPath))
+    : parseRoutingConfig(options.routingConfig);
 }
 
 function registryFor(config: RoutingConfig): RunnerRegistry {

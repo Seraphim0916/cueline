@@ -74,6 +74,12 @@ test("rejects unknown lanes", () => {
   assert.throws(() => resolveRoute("missing", config(), {}), hasCode("ROUTE_LANE_UNKNOWN"));
 });
 
+test("inherited object names remain unknown lanes", () => {
+  for (const lane of ["constructor", "toString", "hasOwnProperty"]) {
+    assert.throws(() => resolveRoute(lane, config(), {}), hasCode("ROUTE_LANE_UNKNOWN"));
+  }
+});
+
 test("explains when a runner ID was supplied as the lane", () => {
   assert.throws(
     () => resolveRoute("second", config(), {}),
@@ -89,6 +95,39 @@ test("explains when a runner ID was supplied as the lane", () => {
 test("rejects a lane when every candidate is unavailable before spawn", () => {
   assert.throws(
     () => resolveRoute("triage", config(), { first: false, second: false, third: false }),
+    hasCode("ROUTE_NO_CANDIDATE"),
+  );
+});
+
+test("inherited availability flags cannot select a runner", () => {
+  const inheritedAvailability = Object.create({ first: true, second: true, third: true }) as Record<
+    string,
+    boolean
+  >;
+
+  assert.throws(
+    () => resolveRoute("triage", config(), inheritedAvailability),
+    hasCode("ROUTE_NO_CANDIDATE"),
+  );
+});
+
+test("inherited or malformed availability checkers cannot execute or crash routing", () => {
+  let inheritedCalls = 0;
+  const inheritedChecker = Object.create({
+    isAvailable() {
+      inheritedCalls += 1;
+      return true;
+    },
+  }) as Record<string, boolean>;
+
+  assert.throws(
+    () => resolveRoute("triage", config(), inheritedChecker),
+    hasCode("ROUTE_NO_CANDIDATE"),
+  );
+  assert.equal(inheritedCalls, 0);
+
+  assert.throws(
+    () => resolveRoute("triage", config(), { isAvailable: true }),
     hasCode("ROUTE_NO_CANDIDATE"),
   );
 });
@@ -117,6 +156,61 @@ test("validates routing configuration before it can be resolved", () => {
     () => parseRoutingConfig({ version: 1, lanes: { triage: { enabled: true, candidates: [{ id: "bad", argv: [] }] } } }),
     hasCode("ROUTING_CONFIG_INVALID"),
   );
+});
+
+test("rejects unknown routing fields instead of silently enabling a mistyped runner", () => {
+  const validCandidate = { id: "codex", argv: ["codex"] };
+  const fixtures = [
+    {
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [{ ...validCandidate, enable: false }],
+        },
+      },
+    },
+    {
+      version: 1,
+      lanes: {
+        default: {
+          enabled: true,
+          candidates: [validCandidate],
+          concurrency: 1,
+        },
+      },
+    },
+    {
+      version: 1,
+      lanes: {
+        default: { enabled: true, candidates: [validCandidate] },
+      },
+      default_lane: "default",
+    },
+    {
+      $schema: false,
+      version: 1,
+      lanes: {
+        default: { enabled: true, candidates: [validCandidate] },
+      },
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    assert.throws(() => parseRoutingConfig(fixture), hasCode("ROUTING_CONFIG_INVALID"));
+  }
+});
+
+test("routing lane names must be representable by the controller protocol", () => {
+  const lane = { enabled: true, candidates: [{ id: "codex", argv: ["codex"] }] };
+
+  for (const name of ["bad lane", "__proto__", "lane/escape", "x".repeat(65)]) {
+    const lanes = Object.fromEntries([[name, lane]]);
+    assert.throws(
+      () => parseRoutingConfig({ version: 1, lanes }),
+      hasCode("ROUTING_CONFIG_INVALID"),
+    );
+  }
 });
 
 test("checks executables directly without invoking a shell", () => {
