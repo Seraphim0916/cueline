@@ -2382,6 +2382,41 @@ test("an action-incompatible field is rejected and repaired before command accep
   assert.equal(events.filter((event) => event.type === "controller_command_accepted").length, 1);
 });
 
+test("an oversized dispatch is repaired before any job is registered or started", async () => {
+  const runId = "run_dispatch_resource_bound";
+  const stateHome = await home();
+  const jobs = Array.from({ length: 65 }, (_, index) => ({
+    job_key: `review_${index}`,
+    lane: "triage",
+    mode: "advise" as const,
+    task: `Review item ${index}`,
+  }));
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs })),
+    reply((input) => {
+      assert.match(input.prompt, /CONTROL_DISPATCH_JOBS_LIMIT_EXCEEDED/);
+      return { action: "complete", final_delivery_text: "BOUND_REPAIRED" };
+    }),
+  ]);
+  const supervisor = new FakeJobSupervisor([]);
+
+  const result = await runControllerLoop({
+    request: "Bound one controller command",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: supervisor,
+    resolveRunnerSpec: resolver,
+    executor: "process",
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "BOUND_REPAIRED");
+  assert.equal(supervisor.starts.length, 0);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.some((event) => event.type === "job_registered"), false);
+});
+
 test("a repeated deterministic dispatch never spawns a duplicate job", async () => {
   const runId = "run_duplicate";
   const spec = {

@@ -296,7 +296,64 @@ test("rejects unsafe or ambiguous inspect evidence offsets", () => {
           evidence_hash: "a".repeat(64),
         }),
         expected,
-      ),
+    ),
     hasCode("CONTROL_COMMAND_FIELD_INVALID_FOR_ACTION"),
   );
+});
+
+test("rejects a control envelope above the protocol size budget", () => {
+  const command = { ...base("blocked"), reason: "x".repeat(131_072) };
+  assert.throws(
+    () => parseControllerCommand(envelope(command), expected),
+    hasCode("CONTROL_ENVELOPE_TOO_LARGE"),
+  );
+});
+
+test("rejects a dispatch that exceeds the per-command job limit", () => {
+  const command = {
+    ...base("dispatch"),
+    jobs: Array.from({ length: 65 }, (_, index) => ({
+      job_key: `review_${index}`,
+      lane: "triage",
+      mode: "advise",
+      task: `Review item ${index}`,
+    })),
+  };
+  assert.throws(
+    () => parseControllerCommand(envelope(command), expected),
+    hasCode("CONTROL_DISPATCH_JOBS_LIMIT_EXCEEDED"),
+  );
+});
+
+test("rejects wait and inspect commands above the job reference limit", () => {
+  const jobIds = Array.from({ length: 257 }, (_, index) => `job_${index}`);
+  for (const action of ["wait", "inspect"]) {
+    assert.throws(
+      () => parseControllerCommand(envelope({ ...base(action), job_ids: jobIds }), expected),
+      hasCode("CONTROL_JOB_IDS_LIMIT_EXCEEDED"),
+    );
+  }
+});
+
+test("accepts controller commands exactly at the documented resource limits", () => {
+  const jobs = Array.from({ length: 64 }, (_, index) => ({
+    job_key: `review_${index}`,
+    lane: "triage",
+    mode: "advise",
+    task: `Review item ${index}`,
+  }));
+  const dispatch = parseControllerCommand(
+    envelope({ ...base("dispatch"), jobs }),
+    expected,
+  );
+  assert.equal(dispatch.action, "dispatch");
+  if (dispatch.action === "dispatch") assert.equal(dispatch.jobs.length, 64);
+
+  const jobIds = Array.from({ length: 256 }, (_, index) => `job_${index}`);
+  const inspect = parseControllerCommand(
+    envelope({ ...base("inspect"), job_ids: jobIds }),
+    expected,
+  );
+  assert.equal(inspect.action, "inspect");
+  if (inspect.action === "inspect") assert.equal(inspect.job_ids?.length, 256);
 });

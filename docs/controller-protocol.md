@@ -64,6 +64,12 @@ Text outside the envelope is not executed. CueLine does not request or consume p
 
 Each action has an exact field set. Unknown top-level fields and fields defined for a different action are rejected before the command is accepted; CueLine never silently drops them and then executes a different interpretation.
 
+One control envelope is limited to 131,072 characters before JSON parsing. A
+single `dispatch` may contain at most 64 jobs, and `wait` or `inspect` may name
+at most 256 job IDs. Omit `job_ids` to select all current jobs instead of
+building an oversized reference list. Exceeding a bound requests a repaired
+command with the same pending identity; no job is registered or started.
+
 ## Actions
 
 ### `dispatch`

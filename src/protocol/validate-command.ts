@@ -1,5 +1,9 @@
 import { CueLineError } from "../core/errors.js";
 import {
+  MAX_CONTROLLER_DISPATCH_JOBS,
+  MAX_CONTROLLER_JOB_IDS,
+} from "./limits.js";
+import {
   CUELINE_PROTOCOL,
   type BlockedCommand,
   type CompleteCommand,
@@ -136,6 +140,13 @@ function optionalStringArray(record: Record<string, unknown>, key: string): stri
   if (value === undefined) {
     return undefined;
   }
+  if (Array.isArray(value) && value.length > MAX_CONTROLLER_JOB_IDS) {
+    throw new CueLineError(
+      "CONTROL_JOB_IDS_LIMIT_EXCEEDED",
+      `'${key}' may contain at most ${MAX_CONTROLLER_JOB_IDS} job IDs.`,
+      { details: { key, maximum_items: MAX_CONTROLLER_JOB_IDS } },
+    );
+  }
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
@@ -254,6 +265,13 @@ export function validateControllerCommand(
   if (action === "dispatch") {
     if (!Array.isArray(value.jobs) || value.jobs.length === 0) {
       return fail("A dispatch command requires at least one job.");
+    }
+    if (value.jobs.length > MAX_CONTROLLER_DISPATCH_JOBS) {
+      throw new CueLineError(
+        "CONTROL_DISPATCH_JOBS_LIMIT_EXCEEDED",
+        `A dispatch command may contain at most ${MAX_CONTROLLER_DISPATCH_JOBS} jobs.`,
+        { details: { maximum_items: MAX_CONTROLLER_DISPATCH_JOBS } },
+      );
     }
     const jobs = value.jobs.map(validateJob);
     const seen = new Set<string>();
