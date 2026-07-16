@@ -170,6 +170,8 @@ if (result.status === "complete") {
 
 `verifyCueLineRun(runId)` 是只读完整性检查，会核对创建 marker、event replay 与 authority fence、可选 snapshot、runtime lease 和 job status 证据；只返回稳定 finding，不返回持久 run 内容。
 
+`confirmManualControllerSubmission(runId, …)` 与 `confirmControllerTurnNotSent(runId, …)` 是两种 reconcile 确认的编程接口。二者都只追加事件、幂等可重复执行，也都不驱动浏览器、不重发任何内容。
+
 在 Codex 的 runtime 里，import `cueline api path` 打印出的那个绝对路径模块——那就是你安装的那份包构建出来的 API。
 
 `startCueLineRun` 只创建持久 run 并返回 `ready`；`runCueLine` 创建并推进到持久 controller 观测暂停、caller 交接或终态。缺少 owner 的 `controller_response_pending` 若只有一个正常发送的回合且显示 `safeNextAction: observe`，表示同一个 Pro 回复仍待只读观测；稍后继续即可且不得重发。`safeNextAction: reconcile` 只用于模糊、人工发送或多个待对账回合。缺少 owner 的 `caller_jobs_pending` 是正常本地交接，并非 orphan，也不是仍在等 ChatGPT。CLI 的 `run status` 只输出交接所需元数据，不包含 task 正文、caller 身份、task hash、workdir 或 runtime owner ID；正式 claim 后，API 才把精确 task 与 workdir 交给获授权的 caller。
@@ -180,7 +182,7 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 
 | 分组 | 命令 | 效果 |
 | --- | --- | --- |
-| 查看 | `doctor` · `routing` · `jobs` · `runs` · `run status` · `run doctor` · `run watch` · `run timeline` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | 只读 |
+| 查看 | `doctor` · `routing` · `routing explain` · `jobs` · `runs` · `run status` · `run status-at` · `run diff` · `run doctor` · `run watch` · `run timeline` · `run graph` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | 只读 |
 | 安装 | `install` · `uninstall` | 只创建或移除包所拥有的 skill 链接 |
 | 恢复 | `run reconcile` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | 追加审计证据或修改持久 run/job 状态 |
 
@@ -213,6 +215,8 @@ run_...	requested	affected_jobs=0
 
 当 Node 版本过旧、或没有任何已启用的 caller 通道时，`cueline doctor` 会以非零状态退出。`process_available_lanes` 可以为 0 而不影响 caller 模式；只有显式选择 process executor 前才需要用 `cueline routing` 检查 process 可用性。`cueline api path` 打印的就是 skill 会 import 的模块，所以使用打包安装时完全不需要 clone 源码。`cueline help` 会列出每个命令的精确语法，包括 `--json` 和人工 reconcile 的必需确认参数。
 
+0.2.0 新增的四个可观测性命令全部严格只读：`run status-at` 按单个精确事件序号重建脱敏的 run 状态——“那个时刻 CueLine 知道什么”；`run diff` 逐字段比较两份脱敏的 run 摘要，绝不含原始 prompt 或输出；`run graph` 把脱敏的 timeline 条目渲染成有界的 Mermaid 控制流图；`routing explain` 则在任何进程启动前解释通道选择、可用性与淘汰原因，不泄露 runner 参数（见 [multi-model routing](docs/multi-model-routing.md)）。
+
 实验性的诊断命令各有专属文档：
 
 | 命令 | 用途 | 文档 |
@@ -231,6 +235,8 @@ run_...	requested	affected_jobs=0
 
 Caller 模式不会启动路由进程。只有同时选择 `executor: "process"` 与 `allowProcessExecution: true` 时，内置 `default` 通道才以 `codex-default` 运行隔离的 `codex exec --ignore-user-config`；独立 `advise` 默认全局/每 lane 并发上限均为 2，包含 `work` 的批次保持串行。要注册不同的 process worker，复制 [`config/routing.default.json`](config/routing.default.json)、加入你的候选项，再把 `CUELINE_CONFIG` 指过去。
 
+要注册多个对应不同模型的候选项，以及 advise 专用 wrapper 的示例，见 [multi-model routing](docs/multi-model-routing.md)。
+
 状态位于 `CUELINE_HOME` 之下：
 
 ```text
@@ -246,6 +252,8 @@ jobs/<job-id>.json            每个作业的执行证据
 事件日志才是记录本身：控制器这一轮在发送之前先写入、作业在进程启动之前先注册，因此“意图”与“副作用”之间若被中断，会留下痕迹。损坏的快照会被忽略并从第 1 号事件重建，而不是被信任。
 
 续跑只接回完全相同的会话 URL。ChatGPT 自动把长文本转换成附件时，CueLine 识别 `attachment_ready` 且最多点击一次；模糊点击记为 `possibly_sent`，绝不补点或重发。只有实际可见、启用且可操作的 Stop 按钮才表示 Pro 仍在回答；隐藏残留按钮不会挡住已完成的回复。人工发送附件后，使用 `cueline run reconcile RUN_ID --request-id REQUEST_ID --manual-send-confirmed` 写入正式确认；仍须通过完全一致的 conversation、Pro 证据与 protocol/run/round/request identity。
+
+相反方向的确认处理“点击确定没有送达”的情形：操作者亲自检查那个精确会话、确认消息不存在后，用 `cueline run reconcile ... --not-sent-confirmed --conversation-url URL` 以仅追加的方式放弃旧的 request 身份，并授权恰好一次同 prompt 重试（使用新的确定性 request ID）。两个标志互斥；若被放弃的消息或其回复事后仍然出现，CueLine 会冻结该 run 交由人工裁决，绝不接受或重发。
 
 Pro 回答时绝不要打断它，也不要用 `Answer now`、`Respond now`、`Stop` 或任何等效的加速控制。Pro 没有本地工具，也不默认了解 repository 布局或本地路径。Caller 证据必须包含精确的代码/错误标识、相关代码摘录与绝对本地路径，并明确询问 Pro 是否还需要更多本地证据。
 
@@ -278,6 +286,7 @@ npm pack --dry-run
 | [controller protocol](docs/controller-protocol.md) | `<CueLineControl>` 信封、五个动作与修复规则 |
 | [runner contract](docs/runner-contract.md) | 已注册的 process worker 必须做与不得做的事 |
 | [state and recovery](docs/state-and-recovery.md) | 持久状态布局、ownership 与每一条恢复路径 |
+| [multi-model routing](docs/multi-model-routing.md) | 如何注册额外的 process worker，以及控制器实际能看到什么 |
 | [compatibility](docs/compatibility.md) | 支持的平台、runtime 与 UI 假设 |
 | [provenance](docs/provenance.md) | 设计从哪里来、它不是什么 |
 

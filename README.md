@@ -181,6 +181,8 @@ if (result.status === "complete") {
 
 `verifyCueLineRun(runId)` is a read-only integrity check for the creation marker, event replay and authority fences, optional snapshot, runtime lease, and job status evidence. It returns stable findings without returning durable run content.
 
+`confirmManualControllerSubmission(runId, …)` and `confirmControllerTurnNotSent(runId, …)` are the programmatic forms of the two reconcile confirmations. Both are append-only and idempotent, and neither drives the browser or resends anything.
+
 Inside Codex's runtime, import the absolute module that `cueline api path` prints — that is the built API of the package you installed.
 
 ## The CLI
@@ -189,7 +191,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 | Group | Commands | Effect |
 | --- | --- | --- |
-| Inspect | `doctor` · `routing` · `jobs` · `runs` · `run status` · `run doctor` · `run watch` · `run timeline` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | Read-only |
+| Inspect | `doctor` · `routing` · `routing explain` · `jobs` · `runs` · `run status` · `run status-at` · `run diff` · `run doctor` · `run watch` · `run timeline` · `run graph` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | Read-only |
 | Install | `install` · `uninstall` | Create or remove only the package-owned skill link |
 | Recover | `run reconcile` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | Append evidence or change durable local run/job state |
 
@@ -221,6 +223,8 @@ run_...	requested	affected_jobs=0
 ```
 
 `cueline doctor` exits non-zero when Node is too old or no enabled caller lane exists. `process_available_lanes` may be zero without degrading caller mode; use `cueline routing` to inspect process availability before explicitly selecting that executor. `cueline api path` is what the skill imports, so a packaged install needs no repository checkout. Every command supports `--json` where shown by `cueline help`.
+
+Four observability commands added in 0.2.0 are strictly read-only: `run status-at` reconstructs the sanitized run state at one exact durable event sequence — what CueLine knew at that moment; `run diff` compares two sanitized run summaries field by field, never raw prompts or output; `run graph` renders a bounded Mermaid control-flow graph from sanitized timeline entries; and `routing explain` reports pre-spawn lane selection, availability, and rejection reasons without exposing runner arguments (see [multi-model routing](docs/multi-model-routing.md)).
 
 The experimental diagnosis commands each have a focused doc:
 
@@ -258,6 +262,8 @@ The event log is the record: the controller turn is written before it is sent, a
 
 Recovery reattaches only to the exact recorded conversation URL. CueLine recognizes long prompts that ChatGPT automatically converts into attachment chips and makes at most one send attempt. Contenteditable block newlines are normalized before readiness comparison. An ambiguous click is `possibly_sent` and is never clicked again. A response is considered in progress only while a visible, enabled, actionable Stop control exists; hidden residual buttons do not suppress a completed Pro response. If an operator manually sends an attachment after ChatGPT creates the first `/c/...` URL, `cueline run reconcile ... --manual-send-confirmed --conversation-url URL` atomically binds the exact URL and records an append-only confirmation; CueLine then requires exact conversation, Pro model, and protocol/run/round/request identity before importing the response without resend or duplicate dispatch.
 
+The opposite confirmation exists for a click that provably never landed. After directly inspecting the exact conversation and finding the message absent, `cueline run reconcile ... --not-sent-confirmed --conversation-url URL` abandons the old request identity append-only and authorizes exactly one same-prompt retry under a new deterministic request ID. The two flags are mutually exclusive, and if the abandoned message or its response later appears anyway, CueLine freezes the run for manual review instead of accepting or resending.
+
 Never interrupt Pro or use `Answer now`, `Respond now`, `Stop`, or an equivalent acceleration control while it is answering. Pro has no local tools and no default knowledge of repository layout or local paths. Caller evidence must include exact code/error identifiers, relevant code excerpts, and absolute local paths, then explicitly ask whether Pro needs more local evidence.
 
 Controller observations prefer successful non-empty stdout, retain full stdout/stderr in local job status, and share one 12,000-character evidence budget with an explicit truncation marker. Every preferred output/error field includes a raw-character `evidence_window` and SHA-256 `content_hash`. When `next_offset` is non-null, Pro can inspect exactly one job by copying it as `evidence_offset` and the hash as `evidence_hash`; CueLine returns the next bounded window without rerunning the job. Changed evidence invalidates the cursor instead of mixing versions. An accepted `inspect(job_ids)` reserves that budget for the named jobs before unrelated evidence, so the next Pro turn receives the requested output instead of only its terminal status. `wait` and `inspect` targets must be exact job IDs from the current observation; one unknown target rejects the entire command for repair before any partial wait or inspection. Controller commands are exact per action: unknown top-level fields, fields belonging to another action, empty/duplicate/malformed `job_ids`, `prompt` in place of `task`, and `runner_id` in place of `runner` are rejected with a repair error instead of silently ignored.
@@ -289,6 +295,7 @@ See [compatibility](docs/compatibility.md) for the full matrix.
 | [controller protocol](docs/controller-protocol.md) | The `<CueLineControl>` envelope, the five actions, and repair rules |
 | [runner contract](docs/runner-contract.md) | What a registered process worker must and must not do |
 | [state and recovery](docs/state-and-recovery.md) | Durable state layout, ownership, and every recovery path |
+| [multi-model routing](docs/multi-model-routing.md) | Registering additional process workers and what the controller can actually see |
 | [compatibility](docs/compatibility.md) | Supported platforms, runtimes, and UI assumptions |
 | [provenance](docs/provenance.md) | Where the design comes from and what it is not |
 

@@ -179,6 +179,8 @@ if (result.status === "complete") {
 
 `verifyCueLineRun(runId)` 是唯讀完整性檢查，會核對建立 marker、event replay 與 authority fence、選用 snapshot、runtime lease 和 job status 證據；只回傳穩定 finding，不回傳持久 run 內容。
 
+`confirmManualControllerSubmission(runId, …)` 與 `confirmControllerTurnNotSent(runId, …)` 是兩種 reconcile 確認的程式介面。兩者都只追加事件、可重複執行（冪等），也都不驅動瀏覽器、不重送任何東西。
+
 在 Codex 的 runtime 裡，import `cueline api path` 印出的那個絕對路徑模組——那就是你安裝的那份套件建置出來的 API。
 
 `startCueLineRun` 只建立持久 run 並回傳 `ready`；`runCueLine` 會建立並推進到持久 controller 觀測暫停、caller 交接或終態。續跑前先執行 `cueline run status <run-id> --json`。單一正常送出、非人工、具精確 URL、無 job／pending command／取消的 stale caller observer 可被 fencing 後唯讀恢復；其他 stale 狀態仍須正式接管。`caller_work_pending`、`caller_work_claimed`、`caller_work_running` 分別只允許 `claim_caller_work`、`start_caller_work`、`continue_caller_work`，主控的 `dispatch` 本身不代表本機工作已開始。CLI 的 `run status` 只輸出交接所需 metadata，不包含 task 內文、caller 身分、task hash、workdir 或 runtime owner ID；完成正式 claim 後，API 才會把精確 task 與 workdir 交給獲授權的 caller。
@@ -189,7 +191,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 | 分組 | 命令 | 效果 |
 | --- | --- | --- |
-| 檢視 | `doctor` · `routing` · `jobs` · `runs` · `run status` · `run doctor` · `run watch` · `run timeline` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | 唯讀 |
+| 檢視 | `doctor` · `routing` · `routing explain` · `jobs` · `runs` · `run status` · `run status-at` · `run diff` · `run doctor` · `run watch` · `run timeline` · `run graph` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | 唯讀 |
 | 安裝 | `install` · `uninstall` | 只建立或移除套件擁有的 skill 連結 |
 | 恢復 | `run reconcile` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | 追加稽核證據或修改持久 run/job 狀態 |
 
@@ -222,6 +224,8 @@ run_...	requested	affected_jobs=0
 
 Node 版本太舊、或沒有任何已啟用的 caller 通道時，`cueline doctor` 會以非零狀態結束。`process_available_lanes` 可以是 0 而不影響 caller 模式；只有明確選用 process executor 前才需要用 `cueline routing` 檢查 process 可用性。`cueline api path` 印出的就是 skill 會 import 的模組，所以用打包安裝時完全不需要 clone 原始碼。`cueline help` 會列出每個命令的精確語法，包括 `--json` 與人工 reconcile 的必要確認參數。
 
+0.2.0 新增的四個可觀測性命令全部嚴格唯讀：`run status-at` 依單一精確事件序號重建去敏感的 run 狀態——「那個當下 CueLine 知道什麼」；`run diff` 逐欄比較兩份去敏感的 run 摘要，絕不含原始 prompt 或輸出；`run graph` 把去敏感的 timeline 條目畫成有界的 Mermaid 控制流程圖；`routing explain` 則在任何行程啟動前解釋通道選擇、可用性與淘汰原因，不洩漏 runner 參數（見 [multi-model routing](docs/multi-model-routing.md)）。
+
 實驗性的診斷命令各有專屬文件：
 
 | 命令 | 用途 | 文件 |
@@ -240,6 +244,8 @@ Node 版本太舊、或沒有任何已啟用的 caller 通道時，`cueline doct
 
 Caller 模式不會啟動路由行程。只有同時選擇 `executor: "process"` 與 `allowProcessExecution: true` 時，內建的 `default` 通道才會以 `codex-default` 執行隔離的 `codex exec --ignore-user-config`；`advise` 用 `read-only`、`work` 用 `workspace-write`。要註冊不同的 process worker，複製 [`config/routing.default.json`](config/routing.default.json)、加入你的候選項，再把 `CUELINE_CONFIG` 指過去。
 
+要註冊多個對應不同模型的候選項，以及 advise 專用 wrapper 的範例，見 [multi-model routing](docs/multi-model-routing.md)。
+
 狀態放在 `CUELINE_HOME` 底下：
 
 ```text
@@ -255,6 +261,8 @@ jobs/<job-id>.json            每個工作的執行證據
 事件日誌才是紀錄本身：主控端的這一輪在送出之前就先寫下、工作在行程啟動之前就先註冊，所以「意圖」與「副作用」之間若被中斷，會留下痕跡。壞掉的快照會被忽略、從第 1 號事件重建，而不是硬信它。
 
 續跑只會接回完全相同的對話網址。ChatGPT 把長文字自動轉成附件時，CueLine 會辨識 `attachment_ready`，且最多只點一次；模糊點擊一律記為 `possibly_sent`，絕不補點或重送。只有實際可見、啟用且可操作的 Stop 按鈕才表示 Pro 仍在回答；隱藏殘留按鈕不會擋住完成回覆。若操作者手動送出附件，用 `cueline run reconcile RUN_ID --request-id REQUEST_ID --manual-send-confirmed` 寫入正式確認；之後仍須通過完全相同的 conversation、Pro 證據與 protocol/run/round/request identity 才能唯讀接回。
+
+相反方向的確認則處理「點擊確定沒送達」的情境：操作者親自檢視那個精確對話、確認訊息不存在後，用 `cueline run reconcile ... --not-sent-confirmed --conversation-url URL` 以只追加的方式放棄舊的 request 身分，並授權恰好一次同 prompt 重試（使用新的確定性 request ID）。兩個旗標互斥；若被放棄的訊息或其回應事後仍然出現，CueLine 會凍結該 run 交人工裁決，絕不接受或重送。
 
 Pro 回答時絕不要打斷它，也不要用 `Answer now`、`Respond now`、`Stop` 或任何等效的加速控制。Pro 沒有本機工具，也不預設知道 repository 佈局或本機路徑。Caller 證據必須包含精確的代碼／錯誤識別字、相關程式碼摘錄與絕對本機路徑，並明確詢問 Pro 是否還需要更多本機證據。
 
@@ -287,6 +295,7 @@ npm pack --dry-run
 | [controller protocol](docs/controller-protocol.md) | `<CueLineControl>` 封包、五個動作與修正規則 |
 | [runner contract](docs/runner-contract.md) | 已註冊的 process worker 必須做與不得做的事 |
 | [state and recovery](docs/state-and-recovery.md) | 持久狀態佈局、ownership 與每一條恢復路徑 |
+| [multi-model routing](docs/multi-model-routing.md) | 如何註冊額外的 process worker，以及主控端實際看得到什麼 |
 | [compatibility](docs/compatibility.md) | 支援的平台、runtime 與 UI 假設 |
 | [provenance](docs/provenance.md) | 設計從哪裡來、它不是什麼 |
 
