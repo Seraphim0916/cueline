@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add `cueline run status-at <run-id> --sequence <n>` to reconstruct a
+  sanitized, event-derived historical run state without mutating durable data.
+- Add `cueline run diff <left-run-id> <right-run-id>` to compare safe run
+  projections without exposing prompts, tasks, outputs, or conversation data.
+- Add `cueline run graph <run-id>` to render a bounded Mermaid control-flow
+  graph from sanitized timeline entries and exact safe correlations.
+- Add `cueline routing explain [lane]` to report pre-spawn runner selection,
+  availability, fallback, and rejection reasons without exposing runner argv.
+
 ## 0.1.7 - 2026-07-16
 
 ### Added
