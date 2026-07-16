@@ -31,6 +31,12 @@ import {
   type RetirementLeaseSnapshot,
   type RuntimeOwnerRetirementEvidence,
 } from "./runtime-retirement.js";
+import {
+  isCanonicalRuntimeTimestamp,
+  isNonEmptyRuntimeIdentity,
+  isSafeRuntimeGeneration,
+  parseRetiredRuntimeOwners,
+} from "./runtime-record-validation.js";
 import { persistRuntimeTakeoverIntent } from "./runtime-takeover-intent.js";
 
 const LEASE_PROTOCOL = "cueline/runtime-lease/0.1";
@@ -330,45 +336,18 @@ function isNotFound(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
-function parseRetiredOwners(value: unknown): RuntimeOwnerRetirementEvidence[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new Error("RUNTIME_LEASE_INVALID");
-  return value.map((candidate) => {
-    if (
-      typeof candidate !== "object" ||
-      candidate === null ||
-      Array.isArray(candidate)
-    ) {
-      throw new Error("RUNTIME_LEASE_INVALID");
-    }
-    const record = candidate as Record<string, unknown>;
-    if (
-      typeof record.owner_id !== "string" ||
-      record.owner_id === "" ||
-      !Number.isSafeInteger(record.events_after_sequence) ||
-      (record.events_after_sequence as number) < 0 ||
-      typeof record.retired_at !== "string"
-    ) {
-      throw new Error("RUNTIME_LEASE_INVALID");
-    }
-    return {
-      owner_id: record.owner_id,
-      events_after_sequence: record.events_after_sequence as number,
-      retired_at: record.retired_at,
-    };
-  });
-}
-
 function parseLease(source: string, runId: string): RuntimeLeaseRecord {
   const value = JSON.parse(source) as Partial<RuntimeLeaseRecord>;
   if (
     value.protocol !== LEASE_PROTOCOL ||
     value.run_id !== runId ||
-    typeof value.owner_id !== "string" ||
-    typeof value.pid !== "string" ||
+    !isNonEmptyRuntimeIdentity(value.owner_id) ||
+    !isNonEmptyRuntimeIdentity(value.pid) ||
     (value.state !== "active" && value.state !== "released") ||
-    typeof value.claimed_at !== "string" ||
-    typeof value.heartbeat_at !== "string"
+    !isCanonicalRuntimeTimestamp(value.claimed_at) ||
+    !isCanonicalRuntimeTimestamp(value.heartbeat_at) ||
+    (value.state === "active" && value.released_at !== undefined) ||
+    (value.state === "released" && !isCanonicalRuntimeTimestamp(value.released_at))
   ) {
     throw new Error("RUNTIME_LEASE_INVALID");
   }
@@ -376,7 +355,7 @@ function parseLease(source: string, runId: string): RuntimeLeaseRecord {
     ...(value as RuntimeLeaseRecord),
     ...(value.retired_owners === undefined
       ? {}
-      : { retired_owners: parseRetiredOwners(value.retired_owners) }),
+      : { retired_owners: parseRetiredRuntimeOwners(value.retired_owners) }),
   };
 }
 
@@ -385,9 +364,8 @@ function parseFence(source: string, runId: string): RuntimeFenceRecord {
   if (
     value.protocol !== FENCE_PROTOCOL ||
     value.run_id !== runId ||
-    typeof value.generation !== "string" ||
-    value.generation === "" ||
-    typeof value.created_at !== "string" ||
+    !isSafeRuntimeGeneration(value.generation) ||
+    !isCanonicalRuntimeTimestamp(value.created_at) ||
     (value.lease_source !== undefined &&
       value.lease_source !== "legacy" &&
       value.lease_source !== "epoch")
