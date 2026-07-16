@@ -239,6 +239,8 @@ Use `run takeover` only when `run status` reports an exact stale owner. It refus
 
 Caller execution needs no spawned route. When `executor: "process"` and `allowProcessExecution: true` are both selected, the bundled `default` lane holds one candidate, `codex-default`: isolated `codex exec --ignore-user-config` with the task on stdin, `read-only` for `advise`, and `workspace-write` for `work`. To register a different process worker, copy [`config/routing.default.json`](config/routing.default.json), add your candidate, and point `CUELINE_CONFIG` at it.
 
+For multiple model-specific candidates and advise-only wrapper examples, see [Multi-model routing](docs/multi-model-routing.md).
+
 State lives under `CUELINE_HOME`:
 
 ```text
