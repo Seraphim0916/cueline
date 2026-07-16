@@ -1,4 +1,8 @@
 import { CueLineError } from "../../core/errors.js";
+import {
+  isExactChatGptConversationUrl,
+  sameChatGptConversationUrl,
+} from "../../core/conversation-url.js";
 import type { IabTab } from "./bootstrap.js";
 
 // ChatGPT can spend several seconds converting a large composer payload into
@@ -6,19 +10,6 @@ import type { IabTab } from "./bootstrap.js";
 // the common 30-second outer tool window while leaving enough time for that
 // real transition.
 const CAPTURE_TIMEOUT_MS = 15_000;
-
-function isConversationUrl(url: string): boolean {
-  return /^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+/.test(url);
-}
-
-function normalizedConversationUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return url;
-  }
-}
 
 function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -46,14 +37,16 @@ export async function captureConversationUrlAfterSubmit(
   signal?: AbortSignal,
 ): Promise<string> {
   const expectedUrl =
-    knownUrl !== undefined && isConversationUrl(knownUrl) ? knownUrl : undefined;
+    knownUrl !== undefined && isExactChatGptConversationUrl(knownUrl)
+      ? knownUrl
+      : undefined;
   const deadline = Date.now() + Math.min(timeoutMs, CAPTURE_TIMEOUT_MS);
   do {
     const currentUrl = (await tab.url().catch(() => "")) ?? "";
-    if (isConversationUrl(currentUrl)) {
+    if (isExactChatGptConversationUrl(currentUrl)) {
       if (
         expectedUrl !== undefined &&
-        normalizedConversationUrl(currentUrl) !== normalizedConversationUrl(expectedUrl)
+        !sameChatGptConversationUrl(currentUrl, expectedUrl)
       ) {
         throw new CueLineError(
           "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",

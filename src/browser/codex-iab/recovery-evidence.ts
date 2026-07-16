@@ -1,15 +1,7 @@
 import type { ExpectedControllerIdentity } from "../../protocol/types.js";
+export { normalizedConversationUrl } from "../../core/conversation-url.js";
 
 const CONTROL_ENVELOPE = /<CueLineControl>([\s\S]*?)<\/CueLineControl>/g;
-
-export function normalizedConversationUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return url;
-  }
-}
 
 export function isProLabel(label: string | null): label is string {
   return /^Pro(?:\s+(?:Standard|Extended))?$/i.test(label ?? "");

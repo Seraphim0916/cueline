@@ -256,15 +256,18 @@ test("invalid target URLs are rejected before touching the Browser runtime", asy
     },
   };
 
-  const result = await probeCodexIab({
-    browser,
-    conversationUrl: `not-a-url?token=${sentinel}`,
-  });
-
-  assert.equal(result.status, "target_invalid");
-  assert.equal(result.errorCode, "IAB_CONVERSATION_URL_INVALID");
-  assert.equal(result.targetConversationUrl, null);
-  assert.equal(JSON.stringify(result).includes(sentinel), false);
+  for (const conversationUrl of [
+    `not-a-url?token=${sentinel}`,
+    "https://user@chatgpt.com/c/credentialed",
+    "https://chatgpt.com/c/real/nested",
+    "https://chatgpt.com.evil/c/lookalike",
+  ]) {
+    const result = await probeCodexIab({ browser, conversationUrl });
+    assert.equal(result.status, "target_invalid", conversationUrl);
+    assert.equal(result.errorCode, "IAB_CONVERSATION_URL_INVALID", conversationUrl);
+    assert.equal(result.targetConversationUrl, null, conversationUrl);
+    assert.equal(JSON.stringify(result).includes(sentinel), false, conversationUrl);
+  }
   assert.equal(documentationCalls, 0);
 });
 

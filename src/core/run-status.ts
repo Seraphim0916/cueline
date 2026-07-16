@@ -8,6 +8,10 @@ import type { RuntimeLeaseObservation } from "../state/runtime-lease.js";
 import type { CancellationObservation } from "../state/cancellation.js";
 import type { RunEvent } from "../state/event-log.js";
 import type { JobStatus } from "../jobs/status.js";
+import {
+  isExactChatGptConversationUrl,
+  sameChatGptConversationUrl,
+} from "./conversation-url.js";
 
 const JOB_STATUSES = [
   "pending",
@@ -164,25 +168,6 @@ function activeCallerWorkJobs(state: CueLineRunState) {
   );
 }
 
-function isExactChatGptConversationUrl(value: string | null): boolean {
-  if (value === null) return false;
-  try {
-    const parsed = new URL(value);
-    return (
-      parsed.protocol === "https:" &&
-      parsed.hostname === "chatgpt.com" &&
-      /^\/c\/[^/]+\/?$/.test(parsed.pathname)
-    );
-  } catch {
-    return false;
-  }
-}
-
-function normalizedConversationUrl(value: string): string {
-  const parsed = new URL(value);
-  return `${parsed.origin}${parsed.pathname.replace(/\/$/, "")}`;
-}
-
 /**
  * A stale lease may be fenced automatically only when the abandoned operation
  * was a side-effect-free observation of one durably submitted caller turn.
@@ -212,8 +197,7 @@ export function isSafeStaleCallerObservationRecovery(
   if (
     turn.conversationUrl !== null &&
     state.conversationUrl !== null &&
-    normalizedConversationUrl(turn.conversationUrl) !==
-      normalizedConversationUrl(state.conversationUrl)
+    !sameChatGptConversationUrl(turn.conversationUrl, state.conversationUrl)
   ) {
     return false;
   }

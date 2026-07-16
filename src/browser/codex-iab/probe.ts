@@ -1,3 +1,8 @@
+import {
+  isExactChatGptConversationUrl as isConversationUrl,
+  normalizedConversationUrl,
+  sameChatGptConversationUrl,
+} from "../../core/conversation-url.js";
 import { CueLineError } from "../../core/errors.js";
 import {
   readPageProbeState,
@@ -10,7 +15,6 @@ import {
 import {
   isProLabel,
   isProModelSlug,
-  normalizedConversationUrl,
 } from "./recovery-evidence.js";
 import { CHATGPT_URL } from "./selectors.js";
 
@@ -70,16 +74,13 @@ interface ExistingTabResult {
 function isChatGptUrl(value: string): boolean {
   try {
     const parsed = new URL(value);
-    return parsed.origin === new URL(CHATGPT_URL).origin;
-  } catch {
-    return false;
-  }
-}
-
-function isConversationUrl(value: string): boolean {
-  try {
-    const parsed = new URL(value);
-    return parsed.origin === new URL(CHATGPT_URL).origin && /^\/c\/[A-Za-z0-9-]+\/?$/.test(parsed.pathname);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.hostname === new URL(CHATGPT_URL).hostname &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.port === ""
+    );
   } catch {
     return false;
   }
@@ -87,7 +88,7 @@ function isConversationUrl(value: string): boolean {
 
 function matchesTarget(url: string, target: string | undefined): boolean {
   if (target === undefined) return isChatGptUrl(url);
-  return normalizedConversationUrl(url) === normalizedConversationUrl(target);
+  return sameChatGptConversationUrl(url, target);
 }
 
 function uniqueCandidates(

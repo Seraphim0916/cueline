@@ -6,6 +6,10 @@ import type {
   ControllerModelEvidence,
   ControllerTurn,
 } from "../browser-adapter.js";
+import {
+  isExactChatGptConversationUrl as isConversationUrl,
+  sameChatGptConversationUrl,
+} from "../../core/conversation-url.js";
 import { CueLineError } from "../../core/errors.js";
 import {
   readPageChatState,
@@ -17,8 +21,12 @@ import {
   type PageChatState,
 } from "./bootstrap.js";
 import { CHATGPT_URL, COMPOSER_TEXTBOX_NAMES, SEND_BUTTON_NAMES } from "./selectors.js";
-import { hasExactControllerEnvelopeIdentity, isProLabel, isProModelSlug,
-  normalizedConversationUrl, normalizedMessageText } from "./recovery-evidence.js";
+import {
+  hasExactControllerEnvelopeIdentity,
+  isProLabel,
+  isProModelSlug,
+  normalizedMessageText,
+} from "./recovery-evidence.js";
 import { captureConversationUrlAfterSubmit } from "./submission-url.js";
 import { findVisibleSendButtonCoordinates } from "./send-button.js";
 import { acquireChatGptTab, isTabUnavailableError } from "./tab-discovery.js";
@@ -112,10 +120,6 @@ async function findHydratedComposer(tab: IabTab): Promise<IabLocator | undefined
   }
 }
 
-function isConversationUrl(url: string): boolean {
-  return /^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+/.test(url);
-}
-
 function ambiguousSubmissionError(error: unknown): CueLineError {
   return new CueLineError(
     "CONTROLLER_SUBMISSION_AMBIGUOUS",
@@ -182,6 +186,15 @@ class CodexIabAdapter implements BrowserAdapter {
   #conversationUrl: string | undefined;
 
   constructor(options: CodexIabAdapterOptions) {
+    if (
+      options.conversationUrl !== undefined &&
+      !isConversationUrl(options.conversationUrl)
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_URL_REQUIRED",
+        "CueLine requires an exact ChatGPT /c/<conversation-id> URL for an existing controller conversation.",
+      );
+    }
     this.#options = {
       timeoutMs: validatedTimingOption(
         "timeoutMs",
@@ -220,7 +233,7 @@ class CodexIabAdapter implements BrowserAdapter {
         if (
           cachedUrl.startsWith(CHATGPT_URL) &&
           (expected === undefined ||
-            normalizedConversationUrl(cachedUrl) === normalizedConversationUrl(expected))
+            sameChatGptConversationUrl(cachedUrl, expected))
         ) {
           return this.#tab;
         }
@@ -294,10 +307,10 @@ class CodexIabAdapter implements BrowserAdapter {
         assistantModelSlug: null,
         lastUserText: null,
         lastMessageRole: null,
-      }));
+    }));
     if (
       isConversationUrl(previousUrl) &&
-      normalizedConversationUrl(state.pageUrl) !== normalizedConversationUrl(previousUrl)
+      !sameChatGptConversationUrl(state.pageUrl, previousUrl)
     ) {
       return false;
     }
@@ -435,10 +448,7 @@ class CodexIabAdapter implements BrowserAdapter {
     expectedIdentity: ExpectedControllerIdentity,
   ): Promise<PageChatState | undefined> {
     const state = await readPageChatState(tab);
-    if (
-      normalizedConversationUrl(state.pageUrl) !==
-      normalizedConversationUrl(expectedConversationUrl)
-    ) {
+    if (!sameChatGptConversationUrl(state.pageUrl, expectedConversationUrl)) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
         "The response evidence was read from a different ChatGPT conversation DOM.",
@@ -872,10 +882,7 @@ class CodexIabAdapter implements BrowserAdapter {
         );
     if (completed === undefined) return undefined;
     const recoveredUrl = (await tab.url()) ?? "";
-    if (
-      normalizedConversationUrl(recoveredUrl) !==
-      normalizedConversationUrl(this.#conversationUrl)
-    ) {
+    if (!sameChatGptConversationUrl(recoveredUrl, this.#conversationUrl)) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
         "The recovered response is no longer on the exact persisted ChatGPT conversation URL.",

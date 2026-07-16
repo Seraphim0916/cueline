@@ -29,6 +29,7 @@ import {
   validateControllerRuntimeOptions,
   type CueLineResult,
 } from "./core/controller-loop.js";
+import { sameChatGptConversationUrl } from "./core/conversation-url.js";
 import { CueLineError } from "./core/errors.js";
 import {
   loadPersistedRunState,
@@ -88,15 +89,6 @@ export function routingConfigPath(
   explicitPath?: string,
 ): string {
   return explicitPath ?? environment.CUELINE_CONFIG ?? defaultRoutingConfigPath();
-}
-
-function normalizedConversationUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return value;
-  }
 }
 
 async function resolvedRoutingConfig(
@@ -266,8 +258,7 @@ export async function continueCueLineRun(
   if (
     options.conversationUrl !== undefined &&
     state.conversationUrl !== null &&
-    normalizedConversationUrl(options.conversationUrl) !==
-      normalizedConversationUrl(state.conversationUrl)
+    !sameChatGptConversationUrl(options.conversationUrl, state.conversationUrl)
   ) {
     throw new CueLineError(
       "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
