@@ -4,7 +4,7 @@
 
 | Surface | Current status | Notes |
 |---|---|---|
-| Node.js 22+ ESM | Supported | Core protocol, state, router, runners, fake browser tests |
+| Node.js 22+ ESM | Supported | CI: 22, 24, 26 on Ubuntu and macOS; core protocol, state, router, runners, fake browser tests |
 | Codex Node REPL + built-in Browser (IAB) | Required for live control | Provides the imported API with the authenticated ChatGPT tab/browser client |
 | Current Codex caller | Default local executor | Performs caller `advise`; caller `work` requires durable claim/start/heartbeat/result proof |
 | `codex` CLI | Required only by bundled process route | Double authorization plus `--ignore-user-config`; auth remains under `CODEX_HOME`, user MCP config is not loaded |
