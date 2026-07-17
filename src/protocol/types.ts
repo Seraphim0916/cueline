@@ -80,7 +80,11 @@ export interface JobObservation {
     | "cancelled"
     | "ambiguous";
   output?: string;
+  /** True source length before the per-job controller evidence cap. */
+  output_total_chars?: number;
   error?: string;
+  /** True source length before the per-job controller evidence cap. */
+  error_total_chars?: number;
   evidence_window?: {
     field: "output" | "error";
     offset: number;

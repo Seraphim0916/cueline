@@ -12,11 +12,22 @@
   protocol, run, round, and request envelope matches even if the recorded
   assistant-message baseline already includes that fast response. Non-exact
   responses remain behind the assistant-count freshness gate.
+- Add a durable, configurable per-job controller-evidence cap. Full runner
+  status remains local, while controller observations receive a deterministic
+  capped representation with an explicit marker and the true source length;
+  hashes and inspect offsets remain fenced to that representation.
+- Warn when total unserved evidence exceeds the remaining-round delivery
+  capacity, and tell the controller it may decide from sufficient evidence or
+  request focused summarization instead of paging every omitted tail.
 
 ### Verification
 
-- Verified 481/481 tests, TypeScript typecheck, plugin validation, and diff
+- Verified 488/488 tests, TypeScript typecheck, plugin validation, and diff
   whitespace checks.
+- Verified the public API with the real process runner: two 75,762-character
+  advise outputs were each projected through a 4,000-character cap, retained
+  their true totals, emitted the remaining-capacity warning, completed, and
+  produced a verified run.
 - Verified the real built-in Browser recovery path on the original CueLine run:
   round 3 request `msg_f40d51990236834c1add1c5b6e7c5580` and round 4 request
   `msg_d859cbe692ae7c70b5b9dc402ca6de49` were each accepted exactly once,

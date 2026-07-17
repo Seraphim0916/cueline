@@ -6,6 +6,7 @@ import type {
   JobObservation,
 } from "../protocol/types.js";
 import type { RunEvent } from "../state/event-log.js";
+import { DEFAULT_MAX_JOB_EVIDENCE_CHARS } from "./controller-evidence.js";
 import {
   isExactChatGptConversationUrl,
   sameChatGptConversationUrl,
@@ -127,7 +128,9 @@ export interface StoredJob {
   spec: ControllerJobSpec;
   status: StoredJobStatus;
   output: string | null;
+  outputTotalChars?: number;
   error: string | null;
+  errorTotalChars?: number;
   callerWork?: CallerWorkState;
   runtime?: {
     runnerId?: string;
@@ -150,6 +153,7 @@ export interface CueLineRunState {
   executor: CueLineExecutor;
   allowProcessExecution: boolean;
   maxRounds: number;
+  maxJobEvidenceChars: number;
   status: CueLineRunStatus;
   round: number;
   conversationUrl: string | null;
@@ -272,6 +276,7 @@ export function initialRunState(
   maxRounds = DEFAULT_MAX_ROUNDS,
   allowProcessExecution = false,
   archiveControllerConversationOnComplete = false,
+  maxJobEvidenceChars = DEFAULT_MAX_JOB_EVIDENCE_CHARS,
 ): CueLineRunState {
   return {
     runId,
@@ -279,6 +284,7 @@ export function initialRunState(
     executor,
     allowProcessExecution,
     maxRounds,
+    maxJobEvidenceChars,
     status: "running",
     round: 0,
     conversationUrl: null,
@@ -333,6 +339,12 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
         payload.max_rounds >= 1
           ? payload.max_rounds
           : state.maxRounds ?? DEFAULT_MAX_ROUNDS,
+      maxJobEvidenceChars:
+        typeof payload.max_job_evidence_chars === "number" &&
+        Number.isSafeInteger(payload.max_job_evidence_chars) &&
+        payload.max_job_evidence_chars >= 1
+          ? payload.max_job_evidence_chars
+          : state.maxJobEvidenceChars ?? DEFAULT_MAX_JOB_EVIDENCE_CHARS,
       controllerConversationArchive: initialControllerConversationArchive(archiveEnabled),
     };
   }
@@ -903,7 +915,21 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           ...existing,
           status,
           output: typeof payload.output === "string" ? payload.output : existing.output,
+          ...(typeof payload.output_total_chars === "number" &&
+          Number.isSafeInteger(payload.output_total_chars) &&
+          payload.output_total_chars >= 0
+            ? { outputTotalChars: payload.output_total_chars }
+            : existing.outputTotalChars === undefined
+              ? {}
+              : { outputTotalChars: existing.outputTotalChars }),
           error: typeof payload.error === "string" ? payload.error : existing.error,
+          ...(typeof payload.error_total_chars === "number" &&
+          Number.isSafeInteger(payload.error_total_chars) &&
+          payload.error_total_chars >= 0
+            ? { errorTotalChars: payload.error_total_chars }
+            : existing.errorTotalChars === undefined
+              ? {}
+              : { errorTotalChars: existing.errorTotalChars }),
           runtime: {
             ...(existing.runtime ?? {}),
             ...(typeof payload.runner_id === "string"
@@ -1108,6 +1134,12 @@ export function jobObservations(state: CueLineRunState): JobObservation[] {
       required: job.required,
       status: job.status,
       ...(job.output === null ? {} : { output: job.output }),
+      ...(job.outputTotalChars === undefined
+        ? {}
+        : { output_total_chars: job.outputTotalChars }),
       ...(job.error === null ? {} : { error: job.error }),
+      ...(job.errorTotalChars === undefined
+        ? {}
+        : { error_total_chars: job.errorTotalChars }),
     }));
 }

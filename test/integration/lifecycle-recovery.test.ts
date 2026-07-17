@@ -408,8 +408,10 @@ test("runtime reconciliation bounds terminal evidence copied from full job statu
   assert.equal(typeof payload.error, "string");
   assert.match(payload.output as string, /RECOVERED_STDOUT/);
   assert.doesNotMatch(payload.output as string, /RECOVERED_TRACE_SENTINEL/);
-  assert.match(payload.output as string, /\.\.\.\[truncated \d+ chars\]/);
-  assert.match(payload.error as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.match(payload.output as string, /\[job evidence capped: \d+ chars omitted;/);
+  assert.match(payload.error as string, /\[job evidence capped: \d+ chars omitted;/);
+  assert.equal(payload.output_total_chars, stdout.length);
+  assert.equal(payload.error_total_chars, error.length);
   assert.ok((payload.output as string).length < 20_000);
   assert.ok((payload.error as string).length < 20_000);
 });

@@ -55,6 +55,7 @@ interface RunnerSpec {
 - A pre-existing `CUELINE_DEPTH` in the process or job environment rejects nested routing.
 - Standard input is closed unless the route explicitly selects stdin task input; stdout and stderr are captured as UTF-8 text.
 - Each stream keeps up to 512,000 characters. Output within that bound is persisted in full. Larger output preserves its head and tail around an explicit truncation marker, with exact `stdoutTruncatedChars` or `stderrTruncatedChars` metadata, so a noisy worker cannot grow CueLine memory and status JSON without limit.
+- Controller evidence has a separate durable per-job cap, configured with `maxJobEvidenceChars` and defaulting to 12,000 raw characters. CueLine persists that run-scoped contract, keeps the full captured runner status locally, and exposes only a deterministic prefix plus an explicit marker carrying the true `total_chars`. Evidence hashes and offsets are computed from that capped representation, so an inspect cursor can never page into discarded output or mix cap versions.
 - Stdout and stderr are persisted separately. Successful non-empty stdout is the preferred controller evidence; combined output remains diagnostic status only.
 - Exit code 0 is `succeeded`; a non-zero exit or spawn error is `failed`.
 - At timeout CueLine sends `SIGTERM`, then schedules `SIGKILL` after 250 ms if needed; the result is `timed_out`.
@@ -63,6 +64,8 @@ interface RunnerSpec {
 - Any non-normal owned process-loop exit, including controller repair or round-limit exhaustion, cancels and settles every active job before releasing runtime ownership. `advise` becomes `cancelled` when termination is proven; started `work` remains `ambiguous` when side effects cannot be disproved.
 - Empty output is explicitly recorded instead of being replaced with invented content.
 - Results are never marked retryable by the process runner.
+
+Advise workers must return focused evidence, not whole-file dumps: absolute paths, relevant line references, exact code or error identifiers, and short excerpts sufficient for the decision. When total unserved evidence exceeds the remaining rounds multiplied by the 12,000-character per-round budget, CueLine warns the controller to decide from available summaries or dispatch a summarization task instead of paging every omitted tail. The controller may decide as soon as evidence is sufficient and is never required to read every omitted tail.
 
 For an unsuccessful process `work` job, `ambiguousSideEffects` is true because CueLine cannot prove how much mutation occurred before failure. That flag is preserved in the job result. For caller work, every non-success result after durable start is normalized to terminal `ambiguous`, so the controller cannot mistake `failed`, `timed_out`, or `cancelled` for proof of no side effects. Such work must be inspected and explicitly decided by the web controller; it must not be auto-retried.
 

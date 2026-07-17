@@ -20,6 +20,10 @@ import {
   type CommandExecutionOutcome,
 } from "./controller-command-execution.js";
 import {
+  capControllerEvidence,
+  DEFAULT_MAX_JOB_EVIDENCE_CHARS,
+} from "./controller-evidence.js";
+import {
   assertConversationUrlCompatible,
   controllerResultOutput,
   observationFor,
@@ -317,6 +321,7 @@ function watchOwnedCancellation(
 type ControllerRuntimeLimitOptions = Pick<
   ControllerRuntimeOptions,
   | "maxRounds"
+  | "maxJobEvidenceChars"
   | "maxRepairAttempts"
   | "runTimeoutMs"
   | "cancellationPollIntervalMs"
@@ -328,11 +333,13 @@ type ControllerRuntimeLimitOptions = Pick<
 
 export function validateControllerRuntimeOptions(options: ControllerRuntimeLimitOptions): {
   maxRounds: number;
+  maxJobEvidenceChars: number;
   maxRepairAttempts: number;
   laneConcurrency: Readonly<Record<string, number>> | undefined;
 } {
   validatedArchivePolicy(options.archiveControllerConversationOnComplete);
   const maxRounds = validatedMaxRounds(options.maxRounds);
+  const maxJobEvidenceChars = validatedMaxJobEvidenceChars(options.maxJobEvidenceChars);
   const maxRepairAttempts = options.maxRepairAttempts ?? 2;
   if (!Number.isSafeInteger(maxRepairAttempts) || maxRepairAttempts < 0) {
     throw new CueLineError(
@@ -390,7 +397,12 @@ export function validateControllerRuntimeOptions(options: ControllerRuntimeLimit
     }
     normalizedLaneConcurrency = Object.freeze(ownLimits);
   }
-  return { maxRounds, maxRepairAttempts, laneConcurrency: normalizedLaneConcurrency };
+  return {
+    maxRounds,
+    maxJobEvidenceChars,
+    maxRepairAttempts,
+    laneConcurrency: normalizedLaneConcurrency,
+  };
 }
 
 function validatedRuntimeOptions<Options extends ControllerRuntimeOptions>(
@@ -409,6 +421,17 @@ function validatedMaxRounds(value: number | undefined): number {
     throw new CueLineError("MAX_ROUNDS_INVALID", "maxRounds must be a positive integer.");
   }
   return maxRounds;
+}
+
+function validatedMaxJobEvidenceChars(value: number | undefined): number {
+  const maximum = value ?? DEFAULT_MAX_JOB_EVIDENCE_CHARS;
+  if (!Number.isSafeInteger(maximum) || maximum < 1) {
+    throw new CueLineError(
+      "MAX_JOB_EVIDENCE_CHARS_INVALID",
+      "maxJobEvidenceChars must be a positive integer.",
+    );
+  }
+  return maximum;
 }
 
 function validatedArchivePolicy(value: boolean | undefined): boolean {
@@ -436,6 +459,27 @@ function persistedMaxRounds(
   return persisted;
 }
 
+function persistedMaxJobEvidenceChars(
+  state: CueLineRunState,
+  requested: number | undefined,
+): number {
+  const persisted = state.maxJobEvidenceChars ?? DEFAULT_MAX_JOB_EVIDENCE_CHARS;
+  if (requested !== undefined && requested !== persisted) {
+    throw new CueLineError(
+      "RUN_MAX_JOB_EVIDENCE_CHARS_MISMATCH",
+      `Run '${state.runId}' has a durable maxJobEvidenceChars limit of ${persisted}, not ${requested}.`,
+      {
+        details: {
+          run_id: state.runId,
+          max_job_evidence_chars: persisted,
+          requested_max_job_evidence_chars: requested,
+        },
+      },
+    );
+  }
+  return persisted;
+}
+
 function maxRoundsExceeded(maxRounds: number): CueLineError {
   return new CueLineError(
     "MAX_ROUNDS_EXCEEDED",
@@ -454,6 +498,41 @@ async function controllerEvidenceJobs(
 ): Promise<ReturnType<typeof jobObservations>> {
   const observations = jobObservations(store.state);
   const statusStore = new JobStatusStore(store.paths.home);
+  const capObservation = (
+    observation: (typeof observations)[number],
+    output = observation.output,
+    error = observation.error,
+  ): (typeof observations)[number] => {
+    const cappedOutput =
+      output === undefined
+        ? undefined
+        : capControllerEvidence(output, store.state.maxJobEvidenceChars);
+    const cappedError =
+      error === undefined
+        ? undefined
+        : capControllerEvidence(error, store.state.maxJobEvidenceChars);
+    return {
+      ...observation,
+      ...(cappedOutput === undefined
+        ? {}
+        : {
+            output: cappedOutput.value,
+            output_total_chars: Math.max(
+              cappedOutput.totalChars,
+              observation.output_total_chars ?? 0,
+            ),
+          }),
+      ...(cappedError === undefined
+        ? {}
+        : {
+            error: cappedError.value,
+            error_total_chars: Math.max(
+              cappedError.totalChars,
+              observation.error_total_chars ?? 0,
+            ),
+          }),
+    };
+  };
   return Promise.all(
     observations.map(async (observation) => {
       const job = store.state.jobs[observation.job_id];
@@ -465,16 +544,12 @@ async function controllerEvidenceJobs(
           (persisted.runId !== undefined && persisted.runId !== store.runId) ||
           (persisted.jobKey !== undefined && persisted.jobKey !== job?.jobKey)
         ) {
-          return observation;
+          return capObservation(observation);
         }
         const output = controllerResultOutput(persisted);
-        return {
-          ...observation,
-          ...(output === undefined ? {} : { output }),
-          ...(persisted.error === undefined ? {} : { error: persisted.error }),
-        };
+        return capObservation(observation, output, persisted.error);
       } catch {
-        return observation;
+        return capObservation(observation);
       }
     }),
   );
@@ -727,6 +802,7 @@ async function createControllerRunStore(
     );
   }
   const maxRounds = validatedMaxRounds(options.maxRounds);
+  const maxJobEvidenceChars = validatedMaxJobEvidenceChars(options.maxJobEvidenceChars);
   const archiveControllerConversationOnComplete = validatedArchivePolicy(
     options.archiveControllerConversationOnComplete,
   );
@@ -737,6 +813,7 @@ async function createControllerRunStore(
     maxRounds,
     allowProcessExecution,
     archiveControllerConversationOnComplete,
+    maxJobEvidenceChars,
   );
   const home = options.home ?? defaultCueLineHome();
   const store = await RunStore.createWithInitialEvent({
@@ -750,6 +827,9 @@ async function createControllerRunStore(
     executor,
     ...(allowProcessExecution ? { allow_process_execution: true } : {}),
     ...(options.maxRounds === undefined ? {} : { max_rounds: maxRounds }),
+    ...(options.maxJobEvidenceChars === undefined
+      ? {}
+      : { max_job_evidence_chars: maxJobEvidenceChars }),
     ...(archiveControllerConversationOnComplete
       ? { archive_controller_conversation_on_complete: true }
       : {}),
@@ -859,6 +939,7 @@ export async function continueControllerLoop(
     );
   }
   const maxRounds = persistedMaxRounds(initialState, options.maxRounds);
+  persistedMaxJobEvidenceChars(initialState, options.maxJobEvidenceChars);
   if (durableRoundLimitReached(initialState, maxRounds)) {
     throw maxRoundsExceeded(maxRounds);
   }

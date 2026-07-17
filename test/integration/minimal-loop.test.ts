@@ -104,9 +104,12 @@ function observationFromPrompt(prompt: string): {
   jobs: Array<{
     job_id: string;
     output?: string;
+    output_total_chars?: number;
     error?: string;
+    error_total_chars?: number;
     evidence_window?: EvidenceWindowView;
   }>;
+  notices: string[];
 } {
   const match = /<CueLineObservation>\n([\s\S]*?)\n<\/CueLineObservation>/.exec(prompt);
   assert.ok(match?.[1], "controller prompt did not contain an observation");
@@ -114,9 +117,12 @@ function observationFromPrompt(prompt: string): {
     jobs: Array<{
       job_id: string;
       output?: string;
+      output_total_chars?: number;
       error?: string;
+      error_total_chars?: number;
       evidence_window?: EvidenceWindowView;
     }>;
+    notices: string[];
   };
 }
 
@@ -1043,6 +1049,39 @@ test("start persists an explicit max round contract before any browser access", 
     }),
     (error: unknown) =>
       error instanceof CueLineError && error.code === "RUN_MAX_ROUNDS_MISMATCH",
+  );
+  assert.equal(browser.calls.length, 0);
+});
+
+test("start persists the per-job evidence cap and continuation cannot change it", async () => {
+  const runId = "run_start_job_evidence_contract";
+  const stateHome = await home();
+  const created = await startCueLineRun({
+    request: "Persist the evidence cap before sending",
+    runId,
+    home: stateHome,
+    maxJobEvidenceChars: 4_000,
+  });
+
+  assert.equal(created.status, "ready");
+  assert.equal(created.state.maxJobEvidenceChars, 4_000);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    (events[0]?.payload as Record<string, unknown>).max_job_evidence_chars,
+    4_000,
+  );
+
+  const browser = new FakeBrowserAdapter([]);
+  await assert.rejects(
+    continueCueLineRun({
+      runId,
+      home: stateHome,
+      browser,
+      maxJobEvidenceChars: 5_000,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "RUN_MAX_JOB_EVIDENCE_CHARS_MISMATCH",
   );
   assert.equal(browser.calls.length, 0);
 });
@@ -5258,7 +5297,7 @@ test("controller feedback prefers successful stdout and bounds oversized worker 
     reply((input) => {
       assert.match(input.prompt, /FINAL_SUMMARY/);
       assert.doesNotMatch(input.prompt, /TRACE_SENTINEL/);
-      assert.match(input.prompt, /\.\.\.\[truncated \d+ chars\]/);
+      assert.match(input.prompt, /"total_chars": 12076/);
       assert.ok(input.prompt.length < 20_000, `prompt was ${input.prompt.length} chars`);
       return { action: "complete", final_delivery_text: "COMPACT" };
     }),
@@ -5285,7 +5324,11 @@ test("controller feedback prefers successful stdout and bounds oversized worker 
   const eventOutput = (terminalEvent?.payload as Record<string, unknown>)?.output;
   assert.equal(typeof eventOutput, "string");
   assert.match(eventOutput as string, /FINAL_SUMMARY/);
-  assert.match(eventOutput as string, /\.\.\.\[truncated \d+ chars\]/);
+  assert.match(eventOutput as string, /\[job evidence capped: \d+ chars omitted;/);
+  assert.equal(
+    (terminalEvent?.payload as Record<string, unknown>)?.output_total_chars,
+    status.result!.stdout.length,
+  );
   assert.doesNotMatch(eventOutput as string, /TRACE_SENTINEL/);
   assert.ok((eventOutput as string).length < 20_000);
 });
@@ -5326,6 +5369,61 @@ test("controller evidence budget is global across multiple large jobs", async ()
   });
 
   assert.equal(result.finalDeliveryText, "GLOBAL_BUDGET_OK");
+});
+
+test("controller caps each persisted runner output before building the prompt", async () => {
+  const runId = "run_per_job_evidence_cap";
+  const totals = [75_762, 70_738] as const;
+  const specs = totals.map((_, index) => ({
+    job_key: `large_${index + 1}`,
+    lane: "default",
+    mode: "advise" as const,
+    task: `Return large evidence ${index + 1}`,
+  }));
+  const statuses = specs.map((spec, index) => {
+    const suffix = `DISCARDED_TAIL_${index + 1}`;
+    return terminalStatus(
+      jobId(runId, spec.job_key, spec),
+      `${String(index + 1).repeat(totals[index]! - suffix.length)}${suffix}`,
+    );
+  });
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: specs })),
+    reply((input) => {
+      const observation = observationFromPrompt(input.prompt);
+      assert.equal(observation.jobs.length, 2);
+      for (const [index, job] of observation.jobs.entries()) {
+        assert.equal(job.output_total_chars, totals[index]);
+        assert.match(job.output ?? "", /\[job evidence capped:/);
+        assert.doesNotMatch(job.output ?? "", /DISCARDED_TAIL_/);
+        assert.ok((job.output?.length ?? 0) < 4_200);
+      }
+      assert.ok(
+        observation.notices.some((notice) =>
+          notice.includes(
+            "evidence total 146500 chars exceeds remaining round capacity 132000 chars",
+          ),
+        ),
+      );
+      assert.match(
+        input.prompt,
+        /MAY decide once the available evidence is sufficient; you are not required to read every omitted tail/,
+      );
+      return { action: "complete", final_delivery_text: "PER_JOB_CAP_OK" };
+    }),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Review bounded runner evidence",
+    runId,
+    home: await home(),
+    browser,
+    jobSupervisor: new FakeJobSupervisor(statuses),
+    resolveRunnerSpec: resolver,
+    maxJobEvidenceChars: 4_000,
+  });
+
+  assert.equal(result.finalDeliveryText, "PER_JOB_CAP_OK");
 });
 
 test("controller prompt bounds accumulated notices and keeps the newest evidence", async () => {
@@ -5654,6 +5752,7 @@ test("a paginated inspect reveals the tail without starting the job twice", asyn
     browser,
     jobSupervisor: supervisor,
     resolveRunnerSpec: resolver,
+    maxJobEvidenceChars: 20_000,
   });
 
   assert.equal(result.status, "complete");

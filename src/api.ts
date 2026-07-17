@@ -224,6 +224,9 @@ export async function startCueLineRun(
       ? {}
       : { allowProcessExecution: options.allowProcessExecution }),
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+    ...(options.maxJobEvidenceChars === undefined
+      ? {}
+      : { maxJobEvidenceChars: options.maxJobEvidenceChars }),
     ...(options.archiveControllerConversationOnComplete === undefined
       ? {}
       : {
@@ -255,6 +258,9 @@ export async function runCueLine(options: StartCueLineRunOptions): Promise<CueLi
         }),
     returnAfterControllerSubmission: (options.executor ?? "caller") === "caller",
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+    ...(options.maxJobEvidenceChars === undefined
+      ? {}
+      : { maxJobEvidenceChars: options.maxJobEvidenceChars }),
     ...(options.maxRepairAttempts === undefined
       ? {}
       : { maxRepairAttempts: options.maxRepairAttempts }),
@@ -468,6 +474,9 @@ export async function continueCueLineRun(
       ? {}
       : { abandonOtherPendingTurns: options.abandonOtherPendingTurns }),
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+    ...(options.maxJobEvidenceChars === undefined
+      ? {}
+      : { maxJobEvidenceChars: options.maxJobEvidenceChars }),
     ...(options.maxRepairAttempts === undefined
       ? {}
       : { maxRepairAttempts: options.maxRepairAttempts }),
