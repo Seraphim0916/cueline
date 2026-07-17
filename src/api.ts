@@ -534,6 +534,12 @@ export {
   loadCueLineRunTimeline,
 } from "./observation/run-timeline.js";
 export { loadCueLineRunStatusAt } from "./observation/run-status-at.js";
+export {
+  buildCueLineRunSupportBundle,
+  RUN_BUNDLE_PROTOCOL,
+  type CueLineRunSupportBundle,
+  type CueLineRunSupportBundleOptions,
+} from "./observation/run-bundle.js";
 export { compareCueLineRuns } from "./observation/run-diff.js";
 export {
   buildCueLineRunGraph,

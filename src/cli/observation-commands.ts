@@ -1,4 +1,5 @@
 import {
+  buildCueLineRunSupportBundle,
   compareCueLineRuns,
   createCueLineRunHandoff,
   diagnoseCueLineRun,
@@ -36,6 +37,51 @@ async function runsCommand(
     }
   }
   return runs.some((run) => !run.readable) ? 1 : 0;
+}
+
+async function runExportCommand(
+  runId: string,
+  outPath: string | undefined,
+  timelineLimit: number | undefined,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const bundle = await buildCueLineRunSupportBundle(runId, {
+    environment,
+    ...(timelineLimit === undefined ? {} : { timelineLimit }),
+  });
+  const serialized = JSON.stringify(bundle, null, 2);
+  if (outPath !== undefined) {
+    const { writeFile } = await import("node:fs/promises");
+    try {
+      await writeFile(outPath, `${serialized}\n`, { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new CueLineError(
+          "RUN_BUNDLE_OUT_EXISTS",
+          `refusing to overwrite existing file: ${outPath}`,
+        );
+      }
+      throw error;
+    }
+  }
+  if (json && outPath === undefined) {
+    io.stdout(serialized);
+  } else {
+    io.stdout(`run\t${bundle.runId}`);
+    io.stdout(`version\t${bundle.version}`);
+    io.stdout(`protocol\t${bundle.protocol}`);
+    io.stdout(`generated_at\t${bundle.generatedAt}`);
+    io.stdout(`status\t${bundle.status.status}\tphase=${bundle.status.phase}`);
+    io.stdout(`verification\t${bundle.verification.outcome}`);
+    io.stdout(`diagnosis\t${bundle.diagnosis.outcome}`);
+    io.stdout(
+      `timeline\treturned=${bundle.timeline.returnedEvents}\ttotal=${bundle.timeline.totalEvents}`,
+    );
+    io.stdout(outPath === undefined ? "written\t-" : `written\t${outPath}`);
+  }
+  return 0;
 }
 
 async function runVerifyCommand(
@@ -255,6 +301,44 @@ export async function handleObservationCommand(
     (args.length === 3 || (args.length === 4 && args[3] === "--json"))
   ) {
     return runVerifyCommand(args[2], args[3] === "--json", environment, io);
+  }
+  if (args[0] === "run" && args[1] === "export" && typeof args[2] === "string") {
+    let outPath: string | undefined;
+    let limit: number | undefined;
+    let json = false;
+    let valid = true;
+    for (let index = 3; index < args.length; index += 1) {
+      const argument = args[index];
+      if (
+        argument === "--out" &&
+        outPath === undefined &&
+        typeof args[index + 1] === "string"
+      ) {
+        outPath = args[index + 1];
+        index += 1;
+      } else if (
+        argument === "--limit" &&
+        limit === undefined &&
+        typeof args[index + 1] === "string"
+      ) {
+        limit = Number(args[index + 1]);
+        index += 1;
+      } else if (argument === "--json" && !json) {
+        json = true;
+      } else {
+        valid = false;
+      }
+    }
+    if (
+      !valid ||
+      (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000))
+    ) {
+      throw new CueLineError(
+        "CLI_ARGUMENTS_INVALID",
+        "usage: cueline run export <run-id> [--out <new-file>] [--limit <1..1000>] [--json]",
+      );
+    }
+    return runExportCommand(args[2], outPath, limit, json, environment, io);
   }
   if (
     args[0] === "run" &&
