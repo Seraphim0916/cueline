@@ -2,7 +2,6 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cueline.dev/schemas/cli-run-export.schema.json",
   "title": "cueline run export --json output (support bundle)",
-  "description": "Strict at the top level. The four section objects reuse existing sanitized surfaces (run status view, verification report, doctor diagnosis, audit timeline) and keep their own compatibility rules, so they are typed as objects here rather than duplicated.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,11 +19,392 @@
     "schema": { "const": "cueline-run-export/1" },
     "protocol": { "const": "cueline-run-bundle/0.1" },
     "version": { "type": "string", "minLength": 1 },
-    "generatedAt": { "type": "string", "minLength": 1 },
+    "generatedAt": { "$ref": "#/$defs/isoTimestamp" },
     "runId": { "type": "string", "minLength": 1 },
-    "status": { "type": "object" },
-    "verification": { "type": "object" },
-    "diagnosis": { "type": "object" },
-    "timeline": { "type": "object" }
+    "status": { "$ref": "#/$defs/status" },
+    "verification": { "$ref": "#/$defs/verification" },
+    "diagnosis": { "$ref": "#/$defs/diagnosis" },
+    "timeline": { "$ref": "#/$defs/timeline" }
+  },
+  "$defs": {
+    "isoTimestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "status",
+        "executor",
+        "allowProcessExecution",
+        "phase",
+        "round",
+        "maxRounds",
+        "lastEventSequence",
+        "runtime",
+        "cancellation",
+        "controller",
+        "jobs",
+        "continueAllowed",
+        "safeNextAction"
+      ],
+      "properties": {
+        "runId": { "type": "string", "minLength": 1 },
+        "status": {
+          "enum": ["running", "complete", "blocked", "cancelled", "failed"]
+        },
+        "executor": { "enum": ["caller", "process"] },
+        "allowProcessExecution": { "type": "boolean" },
+        "phase": { "type": "string", "minLength": 1 },
+        "round": { "type": "integer", "minimum": 0 },
+        "maxRounds": { "type": "integer", "minimum": 0 },
+        "lastEventSequence": { "type": "integer", "minimum": 0 },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ownership"],
+          "properties": {
+            "ownership": {
+              "enum": ["missing", "active", "stale", "released", "invalid"]
+            },
+            "heartbeatAt": { "type": "string", "minLength": 1 },
+            "ageMs": { "type": "number", "minimum": 0 },
+            "pid": { "anyOf": [{ "type": "string" }, { "type": "number" }] }
+          }
+        },
+        "cancellation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runRequested", "jobRequests"],
+          "properties": {
+            "runRequested": { "type": "boolean" },
+            "jobRequests": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "controller": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "pendingTurns",
+            "acceptedCommands",
+            "responseAccepted",
+            "lastAcceptedAction",
+            "lastAcceptedRequestId",
+            "lastAcceptedJobKeys"
+          ],
+          "properties": {
+            "pendingTurns": { "type": "integer", "minimum": 0 },
+            "acceptedCommands": { "type": "integer", "minimum": 0 },
+            "responseAccepted": { "type": "boolean" },
+            "lastAcceptedAction": {
+              "enum": ["dispatch", "wait", "inspect", "complete", "blocked", null]
+            },
+            "lastAcceptedRequestId": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+            "lastAcceptedJobKeys": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "reconciliation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "requiredReason",
+                "operatorConfirmation",
+                "abandonedRequestId",
+                "retryRequestId",
+                "promptHash",
+                "resendBlockedReason"
+              ],
+              "properties": {
+                "requiredReason": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                "operatorConfirmation": {
+                  "enum": ["not_sent_confirmed", "manual_send_confirmed", null]
+                },
+                "abandonedRequestId": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                "retryRequestId": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                "promptHash": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                "resendBlockedReason": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+              }
+            },
+            "archive": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["enabled", "status", "code", "proof"],
+              "properties": {
+                "enabled": { "const": true },
+                "status": { "type": "string", "minLength": 1 },
+                "code": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                "proof": {}
+              }
+            }
+          }
+        },
+        "jobs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total", "counts", "items"],
+          "properties": {
+            "total": { "type": "integer", "minimum": 0 },
+            "counts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pending",
+                "running",
+                "succeeded",
+                "failed",
+                "timed_out",
+                "cancelled",
+                "ambiguous",
+                "orphaned"
+              ],
+              "properties": {
+                "pending": { "type": "integer", "minimum": 0 },
+                "running": { "type": "integer", "minimum": 0 },
+                "succeeded": { "type": "integer", "minimum": 0 },
+                "failed": { "type": "integer", "minimum": 0 },
+                "timed_out": { "type": "integer", "minimum": 0 },
+                "cancelled": { "type": "integer", "minimum": 0 },
+                "ambiguous": { "type": "integer", "minimum": 0 },
+                "orphaned": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "jobId",
+                  "jobKey",
+                  "required",
+                  "lane",
+                  "mode",
+                  "status",
+                  "persistedStatus"
+                ],
+                "properties": {
+                  "jobId": { "type": "string", "minLength": 1 },
+                  "jobKey": { "type": "string", "minLength": 1 },
+                  "required": { "type": "boolean" },
+                  "lane": { "type": "string", "minLength": 1 },
+                  "mode": { "enum": ["advise", "work"] },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "running",
+                      "succeeded",
+                      "failed",
+                      "timed_out",
+                      "cancelled",
+                      "ambiguous",
+                      "orphaned"
+                    ]
+                  },
+                  "persistedStatus": { "type": "string", "minLength": 1 },
+                  "workClaim": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["claimed"],
+                    "properties": {
+                      "claimed": { "type": "boolean" },
+                      "claimedAt": { "type": "string", "minLength": 1 },
+                      "heartbeatAt": { "type": "string", "minLength": 1 },
+                      "expiresAt": { "type": "string", "minLength": 1 },
+                      "startedAt": { "type": "string", "minLength": 1 }
+                    }
+                  },
+                  "execution": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "runnerId": { "type": "string", "minLength": 1 },
+                      "pid": { "type": "number" },
+                      "model": { "type": "string", "minLength": 1 },
+                      "provider": { "type": "string", "minLength": 1 },
+                      "phase": { "type": "string", "minLength": 1 },
+                      "lastProgressAt": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "continueAllowed": { "type": "boolean" },
+        "safeNextAction": { "type": "string", "minLength": 1 }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "outcome",
+        "marker",
+        "eventLog",
+        "snapshot",
+        "runtimeOwnership",
+        "findings"
+      ],
+      "properties": {
+        "runId": { "type": "string", "minLength": 1 },
+        "outcome": { "enum": ["verified", "degraded", "unreadable"] },
+        "marker": { "enum": ["valid", "missing", "invalid"] },
+        "eventLog": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "readable",
+            "totalEvents",
+            "authoritativeEvents",
+            "lastSequence"
+          ],
+          "properties": {
+            "readable": { "type": "boolean" },
+            "totalEvents": { "type": "integer", "minimum": 0 },
+            "authoritativeEvents": { "type": "integer", "minimum": 0 },
+            "lastSequence": { "anyOf": [{ "type": "integer" }, { "type": "null" }] }
+          }
+        },
+        "snapshot": { "enum": ["missing", "valid", "stale", "invalid"] },
+        "runtimeOwnership": {
+          "enum": ["missing", "active", "stale", "released", "invalid"]
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "severity", "surface", "message"],
+            "properties": {
+              "code": { "type": "string", "minLength": 1 },
+              "severity": { "enum": ["warning", "error"] },
+              "surface": {
+                "enum": ["marker", "events", "snapshot", "runtime", "jobs"]
+              },
+              "message": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "diagnosis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "outcome",
+        "phase",
+        "summary",
+        "nextAction",
+        "eventSequence",
+        "findings"
+      ],
+      "properties": {
+        "runId": { "type": "string", "minLength": 1 },
+        "outcome": { "enum": ["healthy", "action_required", "blocked"] },
+        "phase": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "nextAction": { "type": "string", "minLength": 1 },
+        "eventSequence": { "type": "integer", "minimum": 0 },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "severity", "message", "action", "evidence"],
+            "properties": {
+              "code": { "type": "string", "minLength": 1 },
+              "severity": { "enum": ["info", "warning", "error"] },
+              "message": { "type": "string", "minLength": 1 },
+              "action": { "type": "string", "minLength": 1 },
+              "evidence": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    { "type": "string" },
+                    { "type": "number" },
+                    { "type": "boolean" },
+                    { "type": "null" }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "timeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "runId",
+        "sourceEventsPath",
+        "afterSequence",
+        "limit",
+        "totalEvents",
+        "latestSequence",
+        "returnedEvents",
+        "hasMore",
+        "nextAfterSequence",
+        "entries"
+      ],
+      "properties": {
+        "schema": { "const": "cueline-timeline/0.1" },
+        "runId": { "type": "string", "minLength": 1 },
+        "sourceEventsPath": { "type": "string", "minLength": 1 },
+        "afterSequence": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 1 },
+        "totalEvents": { "type": "integer", "minimum": 0 },
+        "latestSequence": { "type": "integer", "minimum": 0 },
+        "returnedEvents": { "type": "integer", "minimum": 0 },
+        "hasMore": { "type": "boolean" },
+        "nextAfterSequence": { "type": "integer", "minimum": 0 },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sequence",
+              "timestamp",
+              "type",
+              "category",
+              "summary",
+              "attributes",
+              "payloadHash"
+            ],
+            "properties": {
+              "sequence": { "type": "integer", "minimum": 1 },
+              "timestamp": {
+                "anyOf": [{ "$ref": "#/$defs/isoTimestamp" }, { "type": "null" }]
+              },
+              "type": { "type": "string", "minLength": 1 },
+              "category": { "type": "string", "minLength": 1 },
+              "summary": { "type": "string" },
+              "attributes": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    { "type": "string" },
+                    { "type": "number" },
+                    { "type": "boolean" }
+                  ]
+                }
+              },
+              "payloadHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "ownerFingerprint": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
   }
 }

@@ -117,6 +117,77 @@ test("prune, audit-secrets, and export conform to published schemas", async () =
   assert.equal(exportValidate({ ...bundle, token: "must-not-appear" }), false);
 });
 
+test("contracts reject nested injection, empty sections, and contradictions", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-cli-contract-neg-"));
+  const runId = "run_negative";
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+    now: () => new Date("2026-06-01T00:00:00.000Z"),
+  });
+  await store.append("run_created", {
+    request: "api_key=CONTRACTFAKECRED1234567890",
+    executor: "caller",
+  });
+  await store.append("run_completed", { final_delivery_text: "done" });
+  const environment = {
+    ...process.env,
+    CUELINE_HOME: home,
+    HOME: home,
+    CUELINE_CONFIG: path.join(root, "config/routing.default.json"),
+  };
+
+  const exportValidate = await validator("cli-run-export.schema.json");
+  const bundle = await output(["run", "export", runId, "--json"], environment);
+  const status = bundle.status as Record<string, unknown>;
+  assert.equal(
+    exportValidate({ ...bundle, status: { ...status, token: "leak" } }),
+    false,
+    "a field injected into a nested section must be rejected",
+  );
+  assert.equal(
+    exportValidate({ ...bundle, status: {} }),
+    false,
+    "an empty section must be rejected",
+  );
+  assert.equal(
+    exportValidate({ ...bundle, generatedAt: "not-a-date" }),
+    false,
+    "a non-ISO generatedAt must be rejected",
+  );
+
+  const auditValidate = await validator("cli-run-audit-secrets.schema.json");
+  const audit = await output(
+    ["run", "audit-secrets", runId, "--json"],
+    environment,
+  );
+  assert.equal(
+    auditValidate({ ...audit, clean: true }),
+    false,
+    "clean=true with findings present must be rejected",
+  );
+
+  const pruneValidate = await validator("cli-runs-prune.schema.json");
+  const prune = await output(["runs", "prune", "--json"], environment);
+  assert.equal(
+    pruneValidate({ ...prune, states: ["complete", "complete", "blocked", "cancelled"] }),
+    false,
+    "duplicate states must be rejected",
+  );
+  assert.equal(
+    pruneValidate({
+      ...prune,
+      decisions: [
+        { runId: "x", decision: "pruned", reason: "delete_failed" },
+      ],
+    }),
+    false,
+    "a pruned decision carrying a kept reason must be rejected",
+  );
+});
+
 test("degraded outputs from an invalid routing config still conform", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "cueline-cli-contract-invalid-"));
   const config = path.join(directory, "routing.json");
