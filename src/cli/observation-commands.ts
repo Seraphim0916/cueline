@@ -1,4 +1,5 @@
 import {
+  auditCueLineRunSecrets,
   compareCueLineRuns,
   createCueLineRunHandoff,
   diagnoseCueLineRun,
@@ -36,6 +37,32 @@ async function runsCommand(
     }
   }
   return runs.some((run) => !run.readable) ? 1 : 0;
+}
+
+async function runAuditSecretsCommand(
+  runId: string,
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const report = await auditCueLineRunSecrets(runId, { environment });
+  if (json) {
+    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...report }, null, 2));
+  } else {
+    io.stdout(`run\t${report.runId}`);
+    io.stdout(`version\t${CUELINE_VERSION}`);
+    io.stdout(`protocol\t${report.protocol}`);
+    io.stdout(
+      `scanned\tevents=${report.scannedEvents}\tfields=${report.scannedFields}`,
+    );
+    for (const finding of report.findings) {
+      io.stdout(
+        `finding\t${finding.kind}\tsequence=${finding.sequence}\tevent=${finding.eventType}\tpath=${finding.path}\tlength=${finding.matchLength}\tpreview=${finding.maskedPreview}`,
+      );
+    }
+    io.stdout(`clean\t${report.clean ? "yes" : "no"}`);
+  }
+  return report.clean ? 0 : 1;
 }
 
 async function runVerifyCommand(
@@ -255,6 +282,14 @@ export async function handleObservationCommand(
     (args.length === 3 || (args.length === 4 && args[3] === "--json"))
   ) {
     return runVerifyCommand(args[2], args[3] === "--json", environment, io);
+  }
+  if (
+    args[0] === "run" &&
+    args[1] === "audit-secrets" &&
+    typeof args[2] === "string" &&
+    (args.length === 3 || (args.length === 4 && args[3] === "--json"))
+  ) {
+    return runAuditSecretsCommand(args[2], args[3] === "--json", environment, io);
   }
   if (
     args[0] === "run" &&
