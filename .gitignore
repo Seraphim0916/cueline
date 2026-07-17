@@ -5,5 +5,6 @@ docs/superpowers/
 .DS_Store
 .cueline/
 coverage/
+release-artifacts/
 *.log
 *.tmp

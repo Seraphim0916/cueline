@@ -73,15 +73,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.2.0
+npm install -g cueline@0.2.2
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.2.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.0), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.2.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.2), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.2.0/cueline-0.2.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.2.2/cueline-0.2.2.tgz
 cueline install
 cueline doctor
 ```
@@ -197,7 +197,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.2.0
+CueLine 0.2.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -301,7 +301,7 @@ See [compatibility](docs/compatibility.md) for the full matrix.
 
 ## Development
 
-TypeScript, ESM, Node built-ins only. `npm run build` compiles to `dist/`; tests run on the compiled output with `node --test`. CI covers Node 22 and 24 on Ubuntu and macOS.
+TypeScript, ESM, Node built-ins only. `npm run build` compiles to `dist/`; tests run on the compiled output with `node --test`. CI covers Node 22, 24, and 26 on Ubuntu and macOS.
 
 CueLine is an independent project and is not affiliated with, endorsed by, or sponsored by OpenAI or any other company. See [provenance](docs/provenance.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
 

@@ -2,9 +2,9 @@
 
 ## Runtime matrix
 
-| Surface | v0.1 status | Notes |
+| Surface | Current status | Notes |
 |---|---|---|
-| Node.js 22+ ESM | Supported | Core protocol, state, router, runners, fake browser tests |
+| Node.js 22+ ESM | Supported | CI: 22, 24, 26 on Ubuntu and macOS; core protocol, state, router, runners, fake browser tests |
 | Codex Node REPL + built-in Browser (IAB) | Required for live control | Provides the imported API with the authenticated ChatGPT tab/browser client |
 | Current Codex caller | Default local executor | Performs caller `advise`; caller `work` requires durable claim/start/heartbeat/result proof |
 | `codex` CLI | Required only by bundled process route | Double authorization plus `--ignore-user-config`; auth remains under `CODEX_HOME`, user MCP config is not loaded |
@@ -19,9 +19,9 @@ The npm package has no runtime dependencies. Development requires TypeScript and
 
 CueLine is designed for a conversation already authenticated by the user at `chatgpt.com`. CueLine neither handles credentials nor verifies plan entitlement. Before each controller turn it may switch the composer to `Pro`; that is its only automatic model switch. It also requires Pro evidence on the completed response.
 
-The v0.1 adapter relies on accessible textbox/button roles, attachment chips, and assistant-message markup in the current ChatGPT web UI. ChatGPT's automatic conversion of a long filled prompt into an attachment is supported. Deliberate file upload is not. UI changes can cause explicit `COMPOSER_MISSING`, `SEND_BUTTON_MISSING`, or response-timeout errors. A fake adapter test cannot prove that the current live page still matches.
+The browser adapter relies on accessible textbox/button roles, attachment chips, and assistant-message markup in the current ChatGPT web UI. ChatGPT's automatic conversion of a long filled prompt into an attachment is supported. Deliberate file upload is not. UI changes can cause explicit `COMPOSER_MISSING`, `SEND_BUTTON_MISSING`, or response-timeout errors. A fake adapter test cannot prove that the current live page still matches.
 
-## Supported in v0.1
+## Supported contract
 
 - one ChatGPT conversation per run
 - text controller observations and commands
@@ -40,7 +40,7 @@ The v0.1 adapter relies on accessible textbox/button roles, attachment chips, an
 - process status with resolved runner, PID, phase, last progress, and safely observed model/provider
 - injected fake browser/runner for offline tests
 
-## Not supported in v0.1
+## Not supported
 
 - model switching other than CueLine selecting `Pro`
 - images, screenshots as controller input, audio, or binary payloads

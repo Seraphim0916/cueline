@@ -333,6 +333,7 @@ test("routing exposes a stable JSON report without runner argv", async () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {
+    schema: "cueline-routing/1",
     version: await packageVersion(),
     config: {
       path: context.config,
@@ -532,6 +533,7 @@ test("routing JSON remains parseable and redacted for an invalid config", async 
 
   assert.equal(result.status, 1, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {
+    schema: "cueline-routing/1",
     version: await packageVersion(),
     config: {
       path: context.config,
@@ -611,6 +613,7 @@ test("doctor exposes a stable machine-readable report", async () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {
+    schema: "cueline-doctor/1",
     version: await packageVersion(),
     status: "ok",
     node: {
@@ -642,6 +645,7 @@ test("doctor JSON remains parseable and redacted when routing config is invalid"
 
   assert.equal(result.status, 1, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {
+    schema: "cueline-doctor/1",
     version: await packageVersion(),
     status: "degraded",
     node: {

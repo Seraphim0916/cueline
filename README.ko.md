@@ -71,15 +71,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.2.0
+npm install -g cueline@0.2.2
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.2.0 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.0)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.2.2 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.2)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.2.0/cueline-0.2.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.2.2/cueline-0.2.2.tgz
 cueline install
 cueline doctor
 ```
@@ -186,7 +186,7 @@ CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에
 
 ```console
 $ cueline doctor
-CueLine 0.2.0
+CueLine 0.2.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -292,7 +292,7 @@ npm pack --dry-run
 
 ## 개발
 
-TypeScript, ESM, Node 내장 모듈만 사용합니다. `npm run build`는 `dist/`로 컴파일하고, 테스트는 `node --test`로 컴파일된 결과물을 대상으로 실행합니다. CI는 Ubuntu와 macOS의 Node 22와 24를 다룹니다.
+TypeScript, ESM, Node 내장 모듈만 사용합니다. `npm run build`는 `dist/`로 컴파일하고, 테스트는 `node --test`로 컴파일된 결과물을 대상으로 실행합니다. CI는 Ubuntu와 macOS의 Node 22, 24, 26을 다룹니다.
 
 CueLine은 독립 프로젝트이며 OpenAI를 비롯한 어떤 회사와도 제휴하거나 보증·후원을 받지 않았습니다. [provenance](docs/provenance.md)와 [third-party notices](THIRD_PARTY_NOTICES.md)를 참고하세요.
 
