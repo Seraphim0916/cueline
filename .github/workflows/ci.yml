@@ -28,6 +28,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npm run validate:cli-contracts
       - run: npm run smoke:fake
       - run: bash test/shell/install.test.sh
       - run: bash test/shell/npm-package-install.test.sh

@@ -66,10 +66,12 @@
     "test:unit": "npm run build && node --test dist/test/unit/*.test.js",
     "test:integration": "npm run build && node --test dist/test/integration/*.test.js",
     "smoke:fake": "npm run build && node --test dist/test/smoke/fake-smoke.test.js",
+    "validate:cli-contracts": "npm run build && node scripts/validate-cli-contracts.mjs",
     "validate:plugin": "node scripts/validate-plugin.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
+    "ajv": "^8.20.0",
     "typescript": "^7.0.2"
   }
 }
