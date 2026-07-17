@@ -82,12 +82,18 @@ function normalizedStates(
   return unique;
 }
 
-async function pathExists(target: string): Promise<boolean> {
+/**
+ * Only a definite ENOENT counts as "gone". Any other filesystem error
+ * (EACCES, EIO, …) must propagate, otherwise the RUNTIME_MUTATION_FENCED
+ * recovery path would misclassify an unverifiable directory as pruned.
+ */
+async function definitelyMissing(target: string): Promise<boolean> {
   try {
     await access(target);
-    return true;
-  } catch {
     return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
   }
 }
 
@@ -245,7 +251,7 @@ export async function pruneCueLineRuns(
       if (
         error instanceof CueLineError &&
         error.code === "RUNTIME_MUTATION_FENCED" &&
-        !(await pathExists(runPaths(home, run.runId).runDir))
+        (await definitelyMissing(runPaths(home, run.runId).runDir).catch(() => false))
       ) {
         prunedRunIds.add(run.runId);
         decisions.push({ ...base, decision: "pruned" });
