@@ -516,9 +516,26 @@ export {
   takeoverCueLineRuntime,
 } from "./api-runtime-lifecycle.js";
 export {
+  PRUNABLE_RUN_STATES,
+  pruneCueLineRuns,
+  type CueLineRunPruneDecision,
+  type CueLineRunPruneError,
+  type CueLineRunPruneKeptReason,
+  type CueLineRunPruneOptions,
+  type CueLineRunPruneResult,
+  type PrunableRunState,
+} from "./api-run-prune.js";
+export {
   diagnoseCueLineRun,
   diagnoseCueLineRunStatus,
 } from "./diagnostics/run-doctor.js";
+export {
+  auditCueLineRunSecrets,
+  SECRET_AUDIT_PROTOCOL,
+  type CueLineSecretAuditReport,
+  type CueLineSecretFinding,
+  type SecretFindingKind,
+} from "./diagnostics/secret-audit.js";
 export { verifyCueLineRun };
 export { createCodexIabAdapter, probeCodexIab };
 export { waitForCueLineRunChange } from "./observation/run-watch.js";
@@ -534,6 +551,12 @@ export {
   loadCueLineRunTimeline,
 } from "./observation/run-timeline.js";
 export { loadCueLineRunStatusAt } from "./observation/run-status-at.js";
+export {
+  buildCueLineRunSupportBundle,
+  RUN_BUNDLE_PROTOCOL,
+  type CueLineRunSupportBundle,
+  type CueLineRunSupportBundleOptions,
+} from "./observation/run-bundle.js";
 export { compareCueLineRuns } from "./observation/run-diff.js";
 export {
   buildCueLineRunGraph,

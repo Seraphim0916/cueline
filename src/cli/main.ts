@@ -12,9 +12,12 @@ import {
   confirmManualControllerSubmission,
   loadCueLineRunStatus,
   lintControllerCommandText,
+  PRUNABLE_RUN_STATES,
+  pruneCueLineRuns,
   reconcileCueLineRuntime,
   routingConfigPath,
   takeoverCueLineRuntime,
+  type PrunableRunState,
 } from "../api.js";
 import { CueLineError } from "../core/errors.js";
 import { runOfflineSelfTest } from "../diagnostics/offline-self-test.js";
@@ -36,7 +39,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|self-test|upgrade preflight|routing|routing explain|jobs|runs|protocol lint|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|self-test|upgrade preflight|routing|routing explain|jobs|runs|runs prune|protocol lint|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run audit-secrets|run export|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -56,6 +59,7 @@ function help(): string {
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
     "  protocol lint  validate a Pro control envelope offline and explain corrections",
     "  runs           list safe summaries of every persisted run",
+    "  runs prune     sweep old terminal runs; dry-run unless --apply is given",
     "  run status     metadata-only summary for safe cross-session handoff",
     "  run status-at  reconstruct sanitized run state at one event sequence",
     "  run diff       compare two sanitized run summaries field by field",
@@ -65,6 +69,8 @@ function help(): string {
     "  run timeline   show a sanitized, cursor-paginated audit timeline",
     "  run graph      render a bounded Mermaid graph from sanitized timeline entries",
     "  run verify     verify durable run evidence without returning its content",
+    "  run audit-secrets  scan durable events for secret-shaped strings; never prints them",
+    "  run export     emit one sanitized support bundle (status, verify, doctor, timeline)",
     "  run reconcile  confirm one manually sent controller turn; never resends it",
     "  run takeover   explicitly retire one exact stale runtime owner",
     "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
@@ -87,6 +93,7 @@ function help(): string {
     "  cueline jobs [--json]",
     "  cueline protocol lint <file> --run-id <id> --round <n> --request-id <id> [--json]",
     "  cueline runs [--json]",
+    "  cueline runs prune [--older-than-days <0..3650>] [--state <complete|blocked|cancelled>]... [--apply] [--json]",
     "  cueline run status <run-id> [--json]",
     "  cueline run status-at <run-id> --sequence <positive-integer> [--json]",
     "  cueline run diff <left-run-id> <right-run-id> [--json]",
@@ -96,6 +103,8 @@ function help(): string {
     "  cueline run timeline <run-id> [--after <sequence>] [--limit <1..1000>] [--json]",
     "  cueline run graph <run-id> [--after <sequence>] [--limit <1..200>] [--json]",
     "  cueline run verify <run-id> [--json]",
+    "  cueline run audit-secrets <run-id> [--json]",
+    "  cueline run export <run-id> [--out <new-file>] [--limit <1..1000>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --not-sent-confirmed [--conversation-url <url>] [--json]",
     "  cueline run takeover <run-id> [--json]",
@@ -122,11 +131,15 @@ function help(): string {
     "  2  the arguments were not understood",
     "",
     "state effects:",
-    "  Read-only: doctor, upgrade preflight, routing, routing explain, jobs, runs, protocol lint, run status, run status-at, run diff, run doctor, run watch, run handoff, run timeline, run graph, run verify, api path, config path, help, version.",
+    "  Read-only: doctor, upgrade preflight, routing, routing explain, jobs, runs, protocol lint, run status, run status-at, run diff, run doctor, run watch, run handoff, run timeline, run graph, run verify, run audit-secrets, api path, config path, help, version.",
     "  Isolated check: self-test writes only temporary state and spawns the bundled Node executable; it never drives a browser or provider.",
+    "  run export reads run state read-only and writes only the file named by --out,",
+    "  refusing to overwrite an existing file.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
+    "  Deletion: runs prune with --apply permanently removes eligible terminal runs;",
+    "  without --apply it only reports what would be removed.",
     "",
     "No CLI command drives the browser. A live run is driven through the imported API",
     "inside Codex, where the built-in Browser lives.",
@@ -446,6 +459,41 @@ async function runStatusCommand(
   return 0;
 }
 
+async function runsPruneCommand(
+  options: {
+    olderThanMs: number;
+    states?: PrunableRunState[];
+    apply: boolean;
+  },
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const result = await pruneCueLineRuns({ ...options, environment });
+  if (json) {
+    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...result }, null, 2));
+  } else {
+    io.stdout(
+      `prune\tmode=${result.apply ? "apply" : "dry-run"}\tcutoff=${result.cutoff}\tstates=${result.states.join(",")}`,
+    );
+    for (const decision of result.decisions) {
+      io.stdout(
+        `run\t${decision.runId}\t${decision.decision}\t${decision.reason ?? "-"}\t${decision.status ?? "-"}\t${decision.lastEventAt ?? "-"}`,
+      );
+    }
+    for (const error of result.errors) {
+      io.stdout(`error\t${error.runId}\t${error.message}`);
+    }
+    io.stdout(
+      `summary\tpruned=${result.prunedRuns}\teligible=${result.eligibleRuns}\tkept=${result.keptRuns}\tremoved_job_records=${result.removedJobRecords}\terrors=${result.errors.length}`,
+    );
+    if (!result.apply && result.eligibleRuns > 0) {
+      io.stdout("next\trerun with --apply to delete the eligible runs");
+    }
+  }
+  return result.errors.length === 0 ? 0 : 1;
+}
+
 export async function main(
   args: readonly string[] = process.argv.slice(2),
   environment: NodeJS.ProcessEnv = process.env,
@@ -564,6 +612,52 @@ export async function main(
       return await protocolLintCommand(
         args[2],
         { runId, round, requestId },
+        json,
+        environment,
+        io,
+      );
+    }
+    if (args[0] === "runs" && args[1] === "prune") {
+      let olderThanDays: number | undefined;
+      const states: PrunableRunState[] = [];
+      let apply = false;
+      let json = false;
+      let valid = true;
+      for (let index = 2; index < args.length; index += 1) {
+        const argument = args[index];
+        if (
+          argument === "--older-than-days" &&
+          olderThanDays === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          olderThanDays = Number(args[index + 1]);
+          index += 1;
+        } else if (argument === "--state" && typeof args[index + 1] === "string") {
+          const state = args[index + 1] as PrunableRunState;
+          if (!PRUNABLE_RUN_STATES.includes(state)) valid = false;
+          else if (!states.includes(state)) states.push(state);
+          index += 1;
+        } else if (argument === "--apply" && !apply) {
+          apply = true;
+        } else if (argument === "--json" && !json) {
+          json = true;
+        } else {
+          valid = false;
+        }
+      }
+      const days = olderThanDays ?? 30;
+      if (!valid || !Number.isFinite(days) || days < 0 || days > 3650) {
+        throw new CueLineError(
+          "CLI_ARGUMENTS_INVALID",
+          "usage: cueline runs prune [--older-than-days <0..3650>] [--state <complete|blocked|cancelled>]... [--apply] [--json]",
+        );
+      }
+      return await runsPruneCommand(
+        {
+          olderThanMs: days * 24 * 60 * 60 * 1000,
+          ...(states.length === 0 ? {} : { states }),
+          apply,
+        },
         json,
         environment,
         io,
