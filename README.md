@@ -22,15 +22,15 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.2.0
+## Latest release: 0.2.2
 
-- Add four read-only observability commands and strengthen confirmed-not-sent submission recovery, with fail-closed redaction and pre-spawn routing explanations.
-- Added safe run inventory, doctor, watch, timeline, handoff, verification, protocol lint, browser diagnostics, and deterministic inspected-evidence pagination.
-- Hardened browser tab/control evidence, command/routing bounds, atomic job status, private durable state, workdir identity, runtime/cancellation records, and redacted CLI output.
-- Added opt-in exact-conversation archiving after durable `complete`, with a one-click write-ahead fence, Pro-active/navigation checks, and no retry after ambiguity.
-- Verified 479/479 tests and a disposable real ChatGPT Web Pro run that completed and archived exactly once without interrupting Pro or touching the existing user conversation.
+- Added a durable, configurable per-job controller-evidence cap (0.2.1), now applied to every recorded job event so event-log and controller-served evidence always share one cap.
+- Fixed the evidence-starvation deadlock observed in a real run: oversized worker output can no longer force the controller into an inspect-pagination treadmill that cannot finish within the round limit.
+- Capacity warnings count only evidence the controller can actually page through; true totals beyond the durable cap are reported in a separate deterministic notice, and the controller may decide as soon as evidence is sufficient.
+- Replayed evidence stays byte-stable: a validated canonical cap marker is preserved as-is, and legacy truncation markers re-cap deterministically without integrity errors.
+- Verified 490/490 tests, plus a real process-runner run that wrote one capped event marker carrying the true total and completed in two controller turns.
 
-Read the complete [changelog](CHANGELOG.md#020---2026-07-16) or the versioned [v0.2.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.0).
+Read the complete [changelog](CHANGELOG.md#022---2026-07-17) or the versioned [v0.2.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.2).
 
 ## How a run actually goes
 
