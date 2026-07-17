@@ -22,15 +22,15 @@
 
 CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane을 감싼 래퍼가 아닙니다.
 
-## 최신 릴리스: 0.2.2
+## 최신 릴리스: 0.3.0
 
-- 설정 가능한 영속적 job별 컨트롤러 증거 상한을 추가하고(0.2.1), 기록되는 모든 job 이벤트에도 적용했습니다. 이벤트 로그와 컨트롤러에 제공되는 증거는 항상 같은 상한을 공유합니다.
-- 실제 run에서 관측된 증거 고갈 교착을 수정했습니다. 과대한 워커 출력이 컨트롤러를 라운드 한도 안에 끝나지 않는 inspect 페이징 루프로 몰아넣는 일은 더 이상 없습니다.
-- 용량 경고는 컨트롤러가 실제로 페이징할 수 있는 증거만 계산합니다. 영속 상한을 넘는 실제 총량은 별도의 결정적 알림으로 공개되며, 증거가 충분하면 컨트롤러는 조기에 결정할 수 있습니다.
-- 재생된 증거는 바이트 단위로 안정적입니다. 검증된 정규 상한 마커는 그대로 유지되고, 구형 절단 마커는 무결성 오류 없이 결정적으로 다시 상한이 적용됩니다.
-- 490/490 테스트와 함께 실제 process runner로 검증했습니다. 실제 총량을 담은 상한 이벤트 마커 하나를 기록하고 컨트롤러 2턴 안에 완료했습니다.
+- 운영 도구 추가: 종료된 run을 정리하는 `runs prune`(기본 dry-run, 삭제는 runtime lease 잠금과 직렬화), 영속 이벤트에서 비밀 형태 문자열을 마스킹 방식으로 검사하는 `run audit-secrets`, 정제된 지원 번들을 한 파일로 내보내는 `run export`.
+- 릴리스 엔지니어링 추가: 오프라인 제어 루프 점검 `self-test`, 읽기 전용 마이그레이션 리포트 `upgrade preflight`, 릴리스 게이트 `release:check`, SHA-256 검증이 붙은 재현 가능한 패키지 산출물, 문서 버전 가드, CI에서 증거로 뒷받침되는 Node 지원 계약.
+- 모든 읽기 전용 `--json` 출력에 버전이 붙은 엄격한 JSON 계약을 공개. 계약 테스트는 추가 필드, 중첩 주입, 빈 섹션, 모순된 형태를 거부합니다.
+- fail-closed 동작 강화: 적대적 프로토콜 퍼즈 코퍼스, 전체 run 명령의 누락 run 점검, ENOENT만 삭제 완료로 인정하는 prune 회계.
+- 통합 후보에서 532/532 테스트와 모든 릴리스 게이트를 검증했으며, 독립된 두 라인이 상호 적대적 검토를 수행했습니다.
 
-전체 내용은 [changelog](CHANGELOG.md#022---2026-07-17) 또는 버전이 지정된 [v0.2.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.2)에서 확인할 수 있습니다.
+전체 내용은 [changelog](CHANGELOG.md#030---2026-07-17) 또는 버전이 지정된 [v0.3.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0)에서 확인할 수 있습니다.
 
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
@@ -71,15 +71,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.2.2
+npm install -g cueline@0.3.0
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.2.2 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.2)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.3.0 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.2.2/cueline-0.2.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.0/cueline-0.3.0.tgz
 cueline install
 cueline doctor
 ```
@@ -186,7 +186,7 @@ CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에
 
 ```console
 $ cueline doctor
-CueLine 0.2.2
+CueLine 0.3.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

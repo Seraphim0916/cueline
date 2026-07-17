@@ -22,15 +22,15 @@
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 的包装层。
 
-## 最新版本：0.2.2
+## 最新版本：0.3.0
 
-- 新增可配置的持久单 job 控制器证据上限（0.2.1），并应用到每一条写入的 job 事件，事件日志与提供给控制器的证据始终共用同一个上限。
-- 修复真实 run 中观察到的证据饥饿死锁：过大的 worker 输出不再能把控制器拖进轮次上限内走不完的 inspect 翻页循环。
-- 容量警告只统计控制器实际能翻到的证据；超过持久上限的真实总量改由独立的确定性通知披露，控制器在证据充分时即可提前决策。
-- 重放证据字节稳定：通过校验的规范上限标记原样保留，旧版截断标记则确定性地重新套用上限，不产生完整性错误。
-- 完成 490/490 测试，并用真实 process runner 验证：单个上限事件标记携带真实总量写入，两个控制器轮次内完成。
+- 新增运维工具：`runs prune` 清理已结束的 run（默认 dry-run，删除与 runtime lease 锁串行化）、`run audit-secrets` 以掩码方式扫描持久事件中的密钥形字符串、`run export` 一键导出脱敏支持包。
+- 新增发布工程：`self-test` 离线控制环检查、`upgrade preflight` 只读升级体检、`release:check` 发布闸门、可复现打包产物与 SHA-256 校验、文档版本守卫、以及 CI 上以证据背书的 Node 支持契约。
+- 为每个只读 `--json` 输出发布带版本的严格 JSON 契约；契约测试拒绝多余字段、嵌套注入、空区段与矛盾形状。
+- 强化 fail-closed 行为：对抗式协议 fuzz 语料、全 run 命令的缺失 run 扫描、prune 仅认 ENOENT 的删除记账。
+- 统一候选完成 532/532 测试与全部发布闸门，并由两条独立线互相对抗式复验。
 
-完整内容请查看 [changelog](CHANGELOG.md#022---2026-07-17) 或版本化的 [v0.2.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.2)。
+完整内容请查看 [changelog](CHANGELOG.md#030---2026-07-17) 或版本化的 [v0.3.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0)。
 
 ## 一次运行实际是怎么走的
 
@@ -71,15 +71,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.2.2
+npm install -g cueline@0.3.0
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.2.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.2) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.3.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.2.2/cueline-0.2.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.0/cueline-0.3.0.tgz
 cueline install
 cueline doctor
 ```
@@ -188,7 +188,7 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.2.2
+CueLine 0.3.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

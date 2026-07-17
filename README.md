@@ -22,15 +22,15 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.2.2
+## Latest release: 0.3.0
 
-- Added a durable, configurable per-job controller-evidence cap (0.2.1), now applied to every recorded job event so event-log and controller-served evidence always share one cap.
-- Fixed the evidence-starvation deadlock observed in a real run: oversized worker output can no longer force the controller into an inspect-pagination treadmill that cannot finish within the round limit.
-- Capacity warnings count only evidence the controller can actually page through; true totals beyond the durable cap are reported in a separate deterministic notice, and the controller may decide as soon as evidence is sufficient.
-- Replayed evidence stays byte-stable: a validated canonical cap marker is preserved as-is, and legacy truncation markers re-cap deterministically without integrity errors.
-- Verified 490/490 tests, plus a real process-runner run that wrote one capped event marker carrying the true total and completed in two controller turns.
+- Added operator tooling: `runs prune` retention sweep over terminal runs (dry-run by default, deletion serialized with the runtime lease lock), `run audit-secrets` masked scan of durable events for secret-shaped strings, and `run export` one-file sanitized support bundles.
+- Added release engineering: `self-test` offline controller-loop check, `upgrade preflight` read-only migration report, `release:check` gate, reproducible pack artifacts with SHA-256 verification, a documentation version guard, and an evidence-backed Node support contract in CI.
+- Published versioned strict JSON contracts for every read-only `--json` surface; contract tests reject added fields, nested injection, empty sections, and contradictory shapes.
+- Hardened fail-closed behavior: an adversarial protocol fuzz corpus, a missing-run sweep across all run-scoped commands, and ENOENT-only prune removal accounting.
+- Verified 532/532 tests plus all release gates on the unified candidate, cross-reviewed adversarially by two independent lines.
 
-Read the complete [changelog](CHANGELOG.md#022---2026-07-17) or the versioned [v0.2.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.2).
+Read the complete [changelog](CHANGELOG.md#030---2026-07-17) or the versioned [v0.3.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0).
 
 ## How a run actually goes
 
@@ -73,15 +73,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.2.2
+npm install -g cueline@0.3.0
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.2.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.2.2), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.3.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.2.2/cueline-0.2.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.0/cueline-0.3.0.tgz
 cueline install
 cueline doctor
 ```
@@ -197,7 +197,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.2.2
+CueLine 0.3.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

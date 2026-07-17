@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.0 - 2026-07-17
+
+### Added
+
+- Operator tooling: `runs prune` retention sweep over terminal runs (dry-run
+  by default, deletion serialized with the runtime lease lock), `run
+  audit-secrets` masked scan of durable events for secret-shaped strings, and
+  `run export` one-file sanitized support bundles.
+- Release engineering: `self-test` offline controller-loop check, `upgrade
+  preflight` read-only migration report, `npm run release:check` release
+  gate, reproducible pack artifacts with SHA-256 verification, a
+  documentation version guard, and a Node 22/24/26 support contract in CI.
+- Machine-output contracts: versioned strict JSON Schemas for `doctor`,
+  `routing`, `routing explain`, `runs prune`, `run audit-secrets`, and
+  `run export`; contract tests reject added fields, nested injection, empty
+  sections, and contradictory shapes.
+
+### Fixed
+
+- Run-scoped commands fail closed for an absent run instead of fabricating a
+  healthy view; a sweep pins this for every read and mutating surface.
+- Secret audit reports a secret-shaped object key as a finding and masks it
+  in the finding path instead of echoing it verbatim.
+- Prune re-reads runtime ownership inside the lease mutation lock before
+  deletion, and only a definite ENOENT counts as a completed removal; any
+  other filesystem error keeps the run and records the error.
+
+### Verification
+
+- Verified TypeScript typecheck, build, 532/532 unit/integration/smoke tests,
+  plugin validation, pack dry-run, release:check, offline self-test, and
+  upgrade preflight on the unified candidate, cross-reviewed adversarially by
+  two independent lines (AJV negative oracle: seven malicious mutations all
+  rejected).
+
 ## 0.2.2 - 2026-07-17
 
 ### Fixed
