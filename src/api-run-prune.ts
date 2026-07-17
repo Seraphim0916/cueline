@@ -1,4 +1,4 @@
-import { readdir, rm } from "node:fs/promises";
+import { access, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 import type { CueLineRuntimeOptions } from "./api-contracts.js";
@@ -7,7 +7,10 @@ import { CueLineError } from "./core/errors.js";
 import { runtimeEnvironment } from "./core/runtime.js";
 import { JobStatusStore } from "./jobs/status.js";
 import { defaultCueLineHome, runPaths } from "./state/paths.js";
-import { readRuntimeLease } from "./state/runtime-lease.js";
+import {
+  readRuntimeLease,
+  withRuntimeLeaseMutation,
+} from "./state/runtime-lease.js";
 
 export const PRUNABLE_RUN_STATES = ["complete", "blocked", "cancelled"] as const;
 
@@ -77,6 +80,15 @@ function normalizedStates(
     );
   }
   return unique;
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await access(target);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function removeJobRecordsForRuns(
@@ -205,19 +217,40 @@ export async function pruneCueLineRuns(
     }
     try {
       // The inventory above is a snapshot; a runtime could claim the lease
-      // between listing and deletion. Re-read ownership at the last moment.
-      const recheck = await readRuntimeLease(home, run.runId, {
-        ...(options.now === undefined ? {} : { now: options.now }),
+      // between listing and deletion. Re-read and delete inside the lease
+      // mutation lock so this serializes with RuntimeLease.claim — a plain
+      // re-read before rm still leaves a window for a claim to land between
+      // the two awaits.
+      const deleted = await withRuntimeLeaseMutation(home, run.runId, async () => {
+        const recheck = await readRuntimeLease(home, run.runId, {
+          ...(options.now === undefined ? {} : { now: options.now }),
+        });
+        if (recheck.ownership === "active") return false;
+        await rm(runPaths(home, run.runId).runDir, { recursive: true, force: true });
+        return true;
       });
-      if (recheck.ownership === "active") {
+      if (!deleted) {
         decisions.push({ ...base, decision: "kept", reason: "runtime_active" });
         keptRuns += 1;
         continue;
       }
-      await rm(runPaths(home, run.runId).runDir, { recursive: true, force: true });
       prunedRunIds.add(run.runId);
       decisions.push({ ...base, decision: "pruned" });
     } catch (error) {
+      // Deleting the run directory removes its own fence record, so the
+      // lock's post-operation fence check reports RUNTIME_MUTATION_FENCED
+      // for runs that ever had a runtime generation. Under the mutation lock
+      // nobody else can rotate the fence, so if the directory is gone the
+      // mismatch is self-inflicted and the deletion succeeded.
+      if (
+        error instanceof CueLineError &&
+        error.code === "RUNTIME_MUTATION_FENCED" &&
+        !(await pathExists(runPaths(home, run.runId).runDir))
+      ) {
+        prunedRunIds.add(run.runId);
+        decisions.push({ ...base, decision: "pruned" });
+        continue;
+      }
       errors.push({
         runId: run.runId,
         message: error instanceof Error ? error.message : String(error),

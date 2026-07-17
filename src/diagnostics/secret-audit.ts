@@ -98,6 +98,18 @@ function scanText(
   }
 }
 
+/**
+ * Path segments are part of the report, so a secret-shaped object key must
+ * never appear verbatim: mask it in the path and report the key itself.
+ */
+function safePathSegment(key: string): string {
+  for (const detector of DETECTORS) {
+    detector.pattern.lastIndex = 0;
+    if (detector.pattern.test(key)) return maskedPreview(key);
+  }
+  return key;
+}
+
 function walk(
   value: unknown,
   sequence: number,
@@ -119,7 +131,10 @@ function walk(
   }
   if (typeof value === "object" && value !== null) {
     for (const [key, item] of Object.entries(value)) {
-      walk(item, sequence, eventType, `${fieldPath}.${key}`, findings, counter);
+      const segment = safePathSegment(key);
+      const childPath = `${fieldPath}.${segment}`;
+      scanText(key, sequence, eventType, childPath, findings);
+      walk(item, sequence, eventType, childPath, findings, counter);
     }
   }
 }

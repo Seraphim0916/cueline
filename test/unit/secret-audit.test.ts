@@ -101,6 +101,47 @@ test("overlapping detectors claim each span once: sk-ant is not also sk-", async
   );
 });
 
+test("a secret-shaped object key is reported and never echoed in any path", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-secret-audit-key-"));
+  const runId = "run_key_leak";
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+    now: () => new Date("2026-07-17T00:00:00.000Z"),
+  });
+  await store.append("run_created", {
+    request: "plain request",
+    executor: "caller",
+    [FAKE_GITHUB]: `api_key=${FAKE_AWS}FILLERFILLER`,
+  });
+
+  const report = await auditCueLineRunSecrets(runId, { home });
+
+  assert.equal(report.clean, false);
+  const kinds = new Set(report.findings.map((finding) => finding.kind));
+  assert.equal(kinds.has("github_token"), true, "the key itself must be a finding");
+  const serialized = JSON.stringify(report);
+  assert.equal(
+    serialized.includes(FAKE_GITHUB),
+    false,
+    "a secret-shaped key must not appear verbatim anywhere in the report",
+  );
+  assert.equal(
+    serialized.includes(FAKE_AWS),
+    false,
+    "the value must stay masked as before",
+  );
+  for (const finding of report.findings) {
+    assert.equal(
+      finding.path.includes(FAKE_GITHUB),
+      false,
+      `path leaked the key: ${finding.path}`,
+    );
+  }
+});
+
 test("a missing run fails closed instead of reporting clean", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "cueline-secret-audit-missing-"));
   await assert.rejects(

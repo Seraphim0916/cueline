@@ -8,6 +8,10 @@ import { pruneCueLineRuns } from "../../src/api.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
 import { JobStatusStore } from "../../src/jobs/status.js";
 import { runPaths } from "../../src/state/paths.js";
+import {
+  RuntimeLease,
+  withRuntimeLeaseMutation,
+} from "../../src/state/runtime-lease.js";
 import { RunStore } from "../../src/state/store.js";
 import { main } from "../../src/cli/main.js";
 import type { CliIo } from "../../src/cli/io.js";
@@ -195,6 +199,62 @@ test("state filters, active leases, unreadable runs, and symlinks are protected"
   assert.equal(guarded?.decision, "kept");
   assert.equal(guarded?.reason, "runtime_active");
   assert.equal(await exists(runPaths(stateHome, "run_leased").runDir), true);
+});
+
+test("a run whose fence generation exists is still prunable", async () => {
+  const stateHome = await home();
+  await seedRun(stateHome, "run_fenced", "2026-06-01T00:00:00.000Z", "run_completed");
+  const lease = await RuntimeLease.claim({ home: stateHome, runId: "run_fenced" });
+  await lease.release();
+
+  const result = await pruneCueLineRuns({
+    home: stateHome,
+    olderThanMs: 30 * DAY_MS,
+    apply: true,
+    now: () => NOW,
+  });
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(
+    result.decisions.find((entry) => entry.runId === "run_fenced")?.decision,
+    "pruned",
+  );
+  assert.equal(await exists(runPaths(stateHome, "run_fenced").runDir), false);
+});
+
+test("a lease claimed while prune waits on the mutation lock survives", async () => {
+  const stateHome = await home();
+  await seedRun(stateHome, "run_raced", "2026-06-01T00:00:00.000Z", "run_completed");
+  const nowReal = new Date();
+
+  const holder = withRuntimeLeaseMutation(stateHome, "run_raced", async () => {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await writeFile(
+      runPaths(stateHome, "run_raced").runtimeLease,
+      `${JSON.stringify({
+        protocol: "cueline/runtime-lease/0.1",
+        run_id: "run_raced",
+        owner_id: "owner_race_test",
+        pid: "shared-runtime",
+        state: "active",
+        claimed_at: nowReal.toISOString(),
+        heartbeat_at: nowReal.toISOString(),
+      })}\n`,
+      "utf8",
+    );
+  });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const pruning = pruneCueLineRuns({
+    home: stateHome,
+    olderThanMs: 30 * DAY_MS,
+    apply: true,
+  });
+  const [, result] = await Promise.all([holder, pruning]);
+
+  const decision = result.decisions.find((entry) => entry.runId === "run_raced");
+  assert.equal(decision?.decision, "kept");
+  assert.equal(decision?.reason, "runtime_active");
+  assert.equal(await exists(runPaths(stateHome, "run_raced").runDir), true);
 });
 
 test("the CLI wires dry-run, apply, and usage validation", async () => {
