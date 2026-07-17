@@ -38,7 +38,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|routing explain|jobs|runs|runs prune|protocol lint|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run audit-secrets|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|routing explain|jobs|runs|runs prune|protocol lint|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run audit-secrets|run export|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -67,6 +67,7 @@ function help(): string {
     "  run graph      render a bounded Mermaid graph from sanitized timeline entries",
     "  run verify     verify durable run evidence without returning its content",
     "  run audit-secrets  scan durable events for secret-shaped strings; never prints them",
+    "  run export     emit one sanitized support bundle (status, verify, doctor, timeline)",
     "  run reconcile  confirm one manually sent controller turn; never resends it",
     "  run takeover   explicitly retire one exact stale runtime owner",
     "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
@@ -98,6 +99,7 @@ function help(): string {
     "  cueline run graph <run-id> [--after <sequence>] [--limit <1..200>] [--json]",
     "  cueline run verify <run-id> [--json]",
     "  cueline run audit-secrets <run-id> [--json]",
+    "  cueline run export <run-id> [--out <new-file>] [--limit <1..1000>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --not-sent-confirmed [--conversation-url <url>] [--json]",
     "  cueline run takeover <run-id> [--json]",
@@ -125,6 +127,8 @@ function help(): string {
     "",
     "state effects:",
     "  Read-only: doctor, routing, routing explain, jobs, runs, protocol lint, run status, run status-at, run diff, run doctor, run watch, run handoff, run timeline, run graph, run verify, run audit-secrets, api path, config path, help, version.",
+    "  run export reads run state read-only and writes only the file named by --out,",
+    "  refusing to overwrite an existing file.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
