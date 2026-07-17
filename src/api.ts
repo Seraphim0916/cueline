@@ -529,6 +529,13 @@ export {
   diagnoseCueLineRun,
   diagnoseCueLineRunStatus,
 } from "./diagnostics/run-doctor.js";
+export {
+  auditCueLineRunSecrets,
+  SECRET_AUDIT_PROTOCOL,
+  type CueLineSecretAuditReport,
+  type CueLineSecretFinding,
+  type SecretFindingKind,
+} from "./diagnostics/secret-audit.js";
 export { verifyCueLineRun };
 export { createCodexIabAdapter, probeCodexIab };
 export { waitForCueLineRunChange } from "./observation/run-watch.js";
