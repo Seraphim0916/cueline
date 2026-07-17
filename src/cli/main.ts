@@ -17,6 +17,7 @@ import {
   takeoverCueLineRuntime,
 } from "../api.js";
 import { CueLineError } from "../core/errors.js";
+import { runOfflineSelfTest } from "../diagnostics/offline-self-test.js";
 import { JobStatusStore, type JobStatus } from "../jobs/status.js";
 import { loadRoutingConfig } from "../router/config-loader.js";
 import { defaultCueLineHome } from "../state/paths.js";
@@ -35,7 +36,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|routing explain|jobs|runs|protocol lint|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|self-test|routing|routing explain|jobs|runs|protocol lint|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -48,6 +49,7 @@ function help(): string {
     "  install        link the bundled skill into Codex",
     "  uninstall      remove only the skill link owned by this package",
     "  doctor         report Node, caller readiness, state home, and process lanes",
+    "  self-test      exercise the controller loop offline with temporary state",
     "  routing        list every lane and the candidate that would be selected",
     "  routing explain  explain candidate selection without exposing runner arguments",
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
@@ -77,6 +79,7 @@ function help(): string {
     "  cueline install",
     "  cueline uninstall",
     "  cueline doctor [--json]",
+    "  cueline self-test [--json]",
     "  cueline routing [--json]",
     "  cueline routing explain [lane] [--json]",
     "  cueline jobs [--json]",
@@ -118,6 +121,7 @@ function help(): string {
     "",
     "state effects:",
     "  Read-only: doctor, routing, routing explain, jobs, runs, protocol lint, run status, run status-at, run diff, run doctor, run watch, run handoff, run timeline, run graph, run verify, api path, config path, help, version.",
+    "  Isolated check: self-test writes only temporary state and spawns the bundled Node executable; it never drives a browser or provider.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
@@ -480,6 +484,24 @@ export async function main(
     if (args[0] === "uninstall" && args.length === 1) {
       io.stdout(await uninstallSkill(environment));
       return 0;
+    }
+    if (args[0] === "self-test") {
+      if (!(args.length === 1 || (args.length === 2 && args[1] === "--json"))) {
+        throw new CueLineError(
+          "CLI_ARGUMENTS_INVALID",
+          "usage: cueline self-test [--json]",
+        );
+      }
+      const report = await runOfflineSelfTest(environment);
+      if (args[1] === "--json") io.stdout(JSON.stringify(report, null, 2));
+      else {
+        io.stdout(
+          report.status === "ok"
+            ? `offline self-test ok: rounds=${report.checks.controllerRounds} jobs=${report.checks.completedJobs}`
+            : `offline self-test failed: ${report.findings[0]?.code ?? "UNKNOWN"}`,
+        );
+      }
+      return report.status === "ok" ? 0 : 1;
     }
     const healthResult = await handleHealthCommand(args, environment, io);
     if (healthResult !== undefined) return healthResult;
