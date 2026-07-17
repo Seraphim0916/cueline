@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-doctor.schema.json",
+  "title": "CueLine doctor machine output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "status", "node", "config", "home", "caller", "process", "findings"],
+  "properties": {
+    "schema": { "const": "cueline-doctor/1" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "status": { "enum": ["ok", "degraded"] },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "ok", "requirement"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "ok": { "type": "boolean" },
+        "requirement": { "const": ">=22" }
+      }
+    },
+    "config": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "valid"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "valid": { "const": true }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "valid", "errorCode"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "valid": { "const": false },
+            "errorCode": { "const": "ROUTING_CONFIG_INVALID" }
+          }
+        }
+      ]
+    },
+    "home": { "type": "string", "minLength": 1 },
+    "caller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ready", "enabledLanes"],
+      "properties": {
+        "ready": { "type": "boolean" },
+        "enabledLanes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["availableLanes"],
+      "properties": {
+        "availableLanes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "surface", "message"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "surface": { "enum": ["node", "config", "caller"] },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-routing.schema.json",
+  "title": "CueLine routing machine output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "config", "availableLanes", "lanes", "findings"],
+  "properties": {
+    "schema": { "const": "cueline-routing/1" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "config": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "valid"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "valid": { "const": true }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "valid", "errorCode"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "valid": { "const": false },
+            "errorCode": { "const": "ROUTING_CONFIG_INVALID" }
+          }
+        }
+      ]
+    },
+    "availableLanes": { "type": "integer", "minimum": 0 },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "enabled", "status", "selectedRunnerId"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "enabled": { "type": "boolean" },
+          "status": { "enum": ["available", "unavailable", "disabled"] },
+          "selectedRunnerId": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "errorCode": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

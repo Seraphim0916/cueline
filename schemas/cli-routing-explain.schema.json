@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-routing-explain.schema.json",
+  "title": "CueLine routing explanation machine output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "config", "requestedLane", "availableLanes", "lanes", "findings"],
+  "properties": {
+    "schema": { "const": "cueline-routing-explain/0.1" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "config": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "valid"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "valid": { "const": true }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "valid", "errorCode"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "valid": { "const": false },
+            "errorCode": { "const": "ROUTING_CONFIG_INVALID" }
+          }
+        }
+      ]
+    },
+    "requestedLane": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "availableLanes": { "type": "integer", "minimum": 0 },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "enabled", "status", "selectedRunnerId", "candidates"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "enabled": { "type": "boolean" },
+          "status": { "enum": ["available", "unavailable", "disabled"] },
+          "selectedRunnerId": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "errorCode": { "const": "ROUTE_NO_CANDIDATE" },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "index", "enabled", "available", "selected", "reasonCode"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "index": { "type": "integer", "minimum": 0 },
+                "enabled": { "type": "boolean" },
+                "available": {
+                  "anyOf": [{ "type": "boolean" }, { "type": "null" }]
+                },
+                "selected": { "type": "boolean" },
+                "reasonCode": {
+                  "enum": ["LANE_DISABLED", "RUNNER_DISABLED", "RUNNER_UNAVAILABLE", "SELECTED_FIRST_AVAILABLE", "AVAILABLE_FALLBACK"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

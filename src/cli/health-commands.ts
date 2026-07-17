@@ -18,6 +18,7 @@ interface RoutingLaneReport {
 }
 
 interface RoutingReport {
+  schema: "cueline-routing/1";
   version: string;
   config:
     | { path: string; valid: true }
@@ -42,6 +43,7 @@ interface DoctorFinding {
 }
 
 interface DoctorReport {
+  schema: "cueline-doctor/1";
   version: string;
   status: "ok" | "degraded";
   node: {
@@ -74,6 +76,7 @@ async function collectRoutingReport(environment: NodeJS.ProcessEnv): Promise<Rou
     config = await loadRoutingConfig(configPath);
   } catch {
     return {
+      schema: "cueline-routing/1",
       version: CUELINE_VERSION,
       config: {
         path: configPath,
@@ -121,6 +124,7 @@ async function collectRoutingReport(environment: NodeJS.ProcessEnv): Promise<Rou
     }
   }
   return {
+    schema: "cueline-routing/1",
     version: CUELINE_VERSION,
     config: { path: configPath, valid: true },
     availableLanes: lanes.filter((lane) => lane.status === "available").length,
@@ -255,6 +259,7 @@ async function collectDoctorReport(environment: NodeJS.ProcessEnv): Promise<Doct
   }
   const callerReady = nodeOk && config !== undefined && callerLanes > 0;
   return {
+    schema: "cueline-doctor/1",
     version: CUELINE_VERSION,
     status: callerReady ? "ok" : "degraded",
     node: {
