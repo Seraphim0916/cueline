@@ -1,5 +1,6 @@
 import { routingConfigPath } from "../api.js";
 import { CueLineError } from "../core/errors.js";
+import { collectUpgradePreflight } from "../diagnostics/upgrade-preflight.js";
 import { executableAvailability } from "../router/availability.js";
 import { loadRoutingConfig } from "../router/config-loader.js";
 import { explainRoutingConfig, type RoutingExplanation } from "../router/explain.js";
@@ -308,6 +309,37 @@ export async function handleHealthCommand(
   environment: NodeJS.ProcessEnv,
   io: CliIo,
 ): Promise<number | undefined> {
+  if (args[0] === "upgrade" && args[1] === "preflight") {
+    let targetVersion: string | undefined;
+    let json = false;
+    let valid = true;
+    for (let index = 2; index < args.length; index += 1) {
+      const argument = args[index];
+      if (argument === "--to" && targetVersion === undefined && typeof args[index + 1] === "string") {
+        targetVersion = args[index + 1];
+        index += 1;
+      } else if (argument === "--json" && !json) {
+        json = true;
+      } else {
+        valid = false;
+      }
+    }
+    if (!valid || targetVersion === undefined) {
+      throw new CueLineError(
+        "CLI_ARGUMENTS_INVALID",
+        "usage: cueline upgrade preflight --to <version> [--json]",
+      );
+    }
+    const report = await collectUpgradePreflight({ targetVersion, environment });
+    if (json) io.stdout(JSON.stringify(report, null, 2));
+    else {
+      io.stdout(`upgrade ${report.version} -> ${report.targetVersion}\t${report.status}`);
+      for (const finding of report.findings) {
+        io.stdout(`finding\t${finding.code}\t${finding.surface}\t${finding.message}`);
+      }
+    }
+    return report.status === "ready" ? 0 : 1;
+  }
   if (args[0] === "routing" && args[1] === "explain") {
     let requestedLane: string | undefined;
     let json = false;
