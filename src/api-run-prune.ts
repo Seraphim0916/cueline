@@ -7,6 +7,7 @@ import { CueLineError } from "./core/errors.js";
 import { runtimeEnvironment } from "./core/runtime.js";
 import { JobStatusStore } from "./jobs/status.js";
 import { defaultCueLineHome, runPaths } from "./state/paths.js";
+import { readRuntimeLease } from "./state/runtime-lease.js";
 
 export const PRUNABLE_RUN_STATES = ["complete", "blocked", "cancelled"] as const;
 
@@ -203,6 +204,16 @@ export async function pruneCueLineRuns(
       continue;
     }
     try {
+      // The inventory above is a snapshot; a runtime could claim the lease
+      // between listing and deletion. Re-read ownership at the last moment.
+      const recheck = await readRuntimeLease(home, run.runId, {
+        ...(options.now === undefined ? {} : { now: options.now }),
+      });
+      if (recheck.ownership === "active") {
+        decisions.push({ ...base, decision: "kept", reason: "runtime_active" });
+        keptRuns += 1;
+        continue;
+      }
       await rm(runPaths(home, run.runId).runDir, { recursive: true, force: true });
       prunedRunIds.add(run.runId);
       decisions.push({ ...base, decision: "pruned" });
