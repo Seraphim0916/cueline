@@ -12,9 +12,12 @@ import {
   confirmManualControllerSubmission,
   loadCueLineRunStatus,
   lintControllerCommandText,
+  PRUNABLE_RUN_STATES,
+  pruneCueLineRuns,
   reconcileCueLineRuntime,
   routingConfigPath,
   takeoverCueLineRuntime,
+  type PrunableRunState,
 } from "../api.js";
 import { CueLineError } from "../core/errors.js";
 import { JobStatusStore, type JobStatus } from "../jobs/status.js";
@@ -35,7 +38,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|routing|routing explain|jobs|runs|protocol lint|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|routing|routing explain|jobs|runs|runs prune|protocol lint|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -53,6 +56,7 @@ function help(): string {
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
     "  protocol lint  validate a Pro control envelope offline and explain corrections",
     "  runs           list safe summaries of every persisted run",
+    "  runs prune     sweep old terminal runs; dry-run unless --apply is given",
     "  run status     metadata-only summary for safe cross-session handoff",
     "  run status-at  reconstruct sanitized run state at one event sequence",
     "  run diff       compare two sanitized run summaries field by field",
@@ -82,6 +86,7 @@ function help(): string {
     "  cueline jobs [--json]",
     "  cueline protocol lint <file> --run-id <id> --round <n> --request-id <id> [--json]",
     "  cueline runs [--json]",
+    "  cueline runs prune [--older-than-days <0..3650>] [--state <complete|blocked|cancelled>]... [--apply] [--json]",
     "  cueline run status <run-id> [--json]",
     "  cueline run status-at <run-id> --sequence <positive-integer> [--json]",
     "  cueline run diff <left-run-id> <right-run-id> [--json]",
@@ -121,6 +126,8 @@ function help(): string {
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
+    "  Deletion: runs prune with --apply permanently removes eligible terminal runs;",
+    "  without --apply it only reports what would be removed.",
     "",
     "No CLI command drives the browser. A live run is driven through the imported API",
     "inside Codex, where the built-in Browser lives.",
@@ -440,6 +447,41 @@ async function runStatusCommand(
   return 0;
 }
 
+async function runsPruneCommand(
+  options: {
+    olderThanMs: number;
+    states?: PrunableRunState[];
+    apply: boolean;
+  },
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const result = await pruneCueLineRuns({ ...options, environment });
+  if (json) {
+    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...result }, null, 2));
+  } else {
+    io.stdout(
+      `prune\tmode=${result.apply ? "apply" : "dry-run"}\tcutoff=${result.cutoff}\tstates=${result.states.join(",")}`,
+    );
+    for (const decision of result.decisions) {
+      io.stdout(
+        `run\t${decision.runId}\t${decision.decision}\t${decision.reason ?? "-"}\t${decision.status ?? "-"}\t${decision.lastEventAt ?? "-"}`,
+      );
+    }
+    for (const error of result.errors) {
+      io.stdout(`error\t${error.runId}\t${error.message}`);
+    }
+    io.stdout(
+      `summary\tpruned=${result.prunedRuns}\teligible=${result.eligibleRuns}\tkept=${result.keptRuns}\tremoved_job_records=${result.removedJobRecords}\terrors=${result.errors.length}`,
+    );
+    if (!result.apply && result.eligibleRuns > 0) {
+      io.stdout("next\trerun with --apply to delete the eligible runs");
+    }
+  }
+  return result.errors.length === 0 ? 0 : 1;
+}
+
 export async function main(
   args: readonly string[] = process.argv.slice(2),
   environment: NodeJS.ProcessEnv = process.env,
@@ -540,6 +582,52 @@ export async function main(
       return await protocolLintCommand(
         args[2],
         { runId, round, requestId },
+        json,
+        environment,
+        io,
+      );
+    }
+    if (args[0] === "runs" && args[1] === "prune") {
+      let olderThanDays: number | undefined;
+      const states: PrunableRunState[] = [];
+      let apply = false;
+      let json = false;
+      let valid = true;
+      for (let index = 2; index < args.length; index += 1) {
+        const argument = args[index];
+        if (
+          argument === "--older-than-days" &&
+          olderThanDays === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          olderThanDays = Number(args[index + 1]);
+          index += 1;
+        } else if (argument === "--state" && typeof args[index + 1] === "string") {
+          const state = args[index + 1] as PrunableRunState;
+          if (!PRUNABLE_RUN_STATES.includes(state)) valid = false;
+          else if (!states.includes(state)) states.push(state);
+          index += 1;
+        } else if (argument === "--apply" && !apply) {
+          apply = true;
+        } else if (argument === "--json" && !json) {
+          json = true;
+        } else {
+          valid = false;
+        }
+      }
+      const days = olderThanDays ?? 30;
+      if (!valid || !Number.isFinite(days) || days < 0 || days > 3650) {
+        throw new CueLineError(
+          "CLI_ARGUMENTS_INVALID",
+          "usage: cueline runs prune [--older-than-days <0..3650>] [--state <complete|blocked|cancelled>]... [--apply] [--json]",
+        );
+      }
+      return await runsPruneCommand(
+        {
+          olderThanMs: days * 24 * 60 * 60 * 1000,
+          ...(states.length === 0 ? {} : { states }),
+          apply,
+        },
         json,
         environment,
         io,

@@ -516,6 +516,16 @@ export {
   takeoverCueLineRuntime,
 } from "./api-runtime-lifecycle.js";
 export {
+  PRUNABLE_RUN_STATES,
+  pruneCueLineRuns,
+  type CueLineRunPruneDecision,
+  type CueLineRunPruneError,
+  type CueLineRunPruneKeptReason,
+  type CueLineRunPruneOptions,
+  type CueLineRunPruneResult,
+  type PrunableRunState,
+} from "./api-run-prune.js";
+export {
   diagnoseCueLineRun,
   diagnoseCueLineRunStatus,
 } from "./diagnostics/run-doctor.js";
