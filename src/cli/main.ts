@@ -36,7 +36,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|self-test|routing|routing explain|jobs|runs|protocol lint|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|self-test|upgrade preflight|routing|routing explain|jobs|runs|protocol lint|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -50,6 +50,7 @@ function help(): string {
     "  uninstall      remove only the skill link owned by this package",
     "  doctor         report Node, caller readiness, state home, and process lanes",
     "  self-test      exercise the controller loop offline with temporary state",
+    "  upgrade preflight  check upgrade safety without changing state or configuration",
     "  routing        list every lane and the candidate that would be selected",
     "  routing explain  explain candidate selection without exposing runner arguments",
     "  jobs           list persisted local jobs with run, key, lane, mode, and PID",
@@ -80,6 +81,7 @@ function help(): string {
     "  cueline uninstall",
     "  cueline doctor [--json]",
     "  cueline self-test [--json]",
+    "  cueline upgrade preflight --to <version> [--json]",
     "  cueline routing [--json]",
     "  cueline routing explain [lane] [--json]",
     "  cueline jobs [--json]",
@@ -120,7 +122,7 @@ function help(): string {
     "  2  the arguments were not understood",
     "",
     "state effects:",
-    "  Read-only: doctor, routing, routing explain, jobs, runs, protocol lint, run status, run status-at, run diff, run doctor, run watch, run handoff, run timeline, run graph, run verify, api path, config path, help, version.",
+    "  Read-only: doctor, upgrade preflight, routing, routing explain, jobs, runs, protocol lint, run status, run status-at, run diff, run doctor, run watch, run handoff, run timeline, run graph, run verify, api path, config path, help, version.",
     "  Isolated check: self-test writes only temporary state and spawns the bundled Node executable; it never drives a browser or provider.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
     "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
