@@ -27,9 +27,10 @@ nested structure.
 
 ## Verified evidence
 
-- Targeted contract and CLI tests: 66 passed, 0 failed.
+- Targeted contract and CLI tests: 67 passed, 0 failed, including all three
+  degraded invalid-config variants.
 - Contract validation command: 3 passed, 0 failed.
-- Full test suite: 493 passed, 0 failed after updating four authoritative
+- Full test suite: 494 passed, 0 failed after updating four authoritative
   machine-output snapshots for the new schema identifiers.
 - TypeScript build: passed.
 - Plugin validation: passed.

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -17,12 +18,18 @@ async function validator(name: string): Promise<ValidateFunction> {
   return new Ajv2020({ allErrors: true, strict: true }).compile(schema);
 }
 
-async function output(args: string[]): Promise<Record<string, unknown>> {
+async function output(
+  args: string[],
+  environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    CUELINE_CONFIG: path.join(root, "config/routing.default.json"),
+  },
+): Promise<Record<string, unknown>> {
   const stdout: string[] = [];
   const stderr: string[] = [];
   await main(
     args,
-    { ...process.env, CUELINE_CONFIG: path.join(root, "config/routing.default.json") },
+    environment,
     { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) },
   );
   assert.deepEqual(stderr, []);
@@ -63,4 +70,25 @@ test("routing contract rejects runner argv and wrong schema versions", async () 
   lanes[0] = { ...lanes[0], argv: ["secret", "argument"] };
   assert.equal(validate({ ...value, lanes }), false);
   assert.equal(validate({ ...value, schema: "cueline-routing/2" }), false);
+});
+
+test("degraded outputs from an invalid routing config still conform", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-cli-contract-invalid-"));
+  const config = path.join(directory, "routing.json");
+  await writeFile(config, "{invalid-routing", "utf8");
+  const environment = { ...process.env, CUELINE_CONFIG: config };
+  const cases = [
+    { args: ["doctor", "--json"], schema: "cli-doctor.schema.json" },
+    { args: ["routing", "--json"], schema: "cli-routing.schema.json" },
+    {
+      args: ["routing", "explain", "--json"],
+      schema: "cli-routing-explain.schema.json",
+    },
+  ];
+  for (const candidate of cases) {
+    const validate = await validator(candidate.schema);
+    const value = await output(candidate.args, environment);
+    assert.equal(validate(value), true, JSON.stringify(validate.errors));
+    assert.equal(JSON.stringify(value).includes("invalid-routing"), false);
+  }
 });
