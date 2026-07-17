@@ -515,14 +515,18 @@ class CodexIabAdapter implements BrowserAdapter {
         "The response evidence was read from a different ChatGPT conversation DOM.",
       );
     }
+    const hasExactManualEnvelope =
+      manualSendConfirmed &&
+      hasExactControllerEnvelopeIdentity(state.assistantText, expectedIdentity);
     if (
       attachmentBaseline !== undefined &&
-      state.assistantMessageCount <= attachmentBaseline
+      state.assistantMessageCount <= attachmentBaseline &&
+      !hasExactManualEnvelope
     ) return undefined;
     if (
       manualSendConfirmed &&
       attachmentBaseline === undefined &&
-      !hasExactControllerEnvelopeIdentity(state.assistantText, expectedIdentity)
+      !hasExactManualEnvelope
     ) return undefined;
     if (state.lastUserText === null && !manualSendConfirmed) return undefined;
     if (
@@ -1028,6 +1032,7 @@ class CodexIabAdapter implements BrowserAdapter {
     if (completed === undefined) return undefined;
     if (
       input.notSentRecovery !== undefined &&
+      input.manualSendConfirmed !== true &&
       (completed.userMessageCount ?? 0) >
         input.notSentRecovery.baselineUserMessageCount + 1
     ) {

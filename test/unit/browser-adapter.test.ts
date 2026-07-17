@@ -1886,6 +1886,101 @@ test("allows operator-confirmed attachment recovery without matching visible use
   assert.deepEqual(fixture.composer.fills, []);
 });
 
+test("treats the new user message as the confirmed retry during manual recovery", async () => {
+  const conversationUrl = "https://chatgpt.com/c/manual-confirmed-retry";
+  const response = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: "run_manual_confirmed_retry",
+    round: 2,
+    request_id: "msg_retry",
+    action: "complete",
+    final_delivery_text: "RETRY_CONFIRMED",
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: response,
+        assistantMessageCount: 2,
+        userMessageCount: 3,
+        lastUserText: "Pasted text(35).txt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_manual_confirmed_retry",
+    round: 2,
+    requestId: "msg_retry",
+    prompt: "retry prompt",
+    manualSendConfirmed: true,
+    notSentRecovery: {
+      abandonedRequestId: "msg_original",
+      promptHash: commandHash("original prompt"),
+      conversationUrl,
+      baselineUserMessageCount: 1,
+    },
+  });
+
+  assert.equal(turn.text, response);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("accepts an exact manually confirmed envelope when the assistant count already reached baseline", async () => {
+  const conversationUrl = "https://chatgpt.com/c/manual-fast-response";
+  const response = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: "run_manual_fast_response",
+    round: 3,
+    request_id: "msg_fast_response",
+    action: "inspect",
+    job_ids: ["job_evidence"],
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: response,
+        assistantMessageCount: 3,
+        userMessageCount: 3,
+        lastUserText: "Pasted text(36).txt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.recoverTurn!({
+    runId: "run_manual_fast_response",
+    round: 3,
+    requestId: "msg_fast_response",
+    prompt: "inspect evidence window",
+    manualSendConfirmed: true,
+    baselineAssistantMessageCount: 3,
+  });
+
+  assert.equal(turn.text, response);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
 test("allows a legacy operator-confirmed attachment recovery without a stored baseline", async () => {
   const conversationUrl = "https://chatgpt.com/c/manual-legacy-attachment-recovery";
   const fixture = fakeBrowser({

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.1 - 2026-07-17
+
+### Fixed
+
+- Treat a manually confirmed retry request as authoritative for its newly
+  observed user message. The abandoned-message late-arrival guard still freezes
+  unconfirmed retries, but no longer misclassifies the operator-confirmed retry
+  itself as the abandoned request appearing late.
+- Accept an already-completed manually confirmed Pro response when its exact
+  protocol, run, round, and request envelope matches even if the recorded
+  assistant-message baseline already includes that fast response. Non-exact
+  responses remain behind the assistant-count freshness gate.
+
+### Verification
+
+- Verified 481/481 tests, TypeScript typecheck, plugin validation, and diff
+  whitespace checks.
+- Verified the real built-in Browser recovery path on the original CueLine run:
+  round 3 request `msg_f40d51990236834c1add1c5b6e7c5580` and round 4 request
+  `msg_d859cbe692ae7c70b5b9dc402ca6de49` were each accepted exactly once,
+  with no duplicate resend, job, or event.
+
 ## 0.2.0 - 2026-07-16
 
 ### Added
