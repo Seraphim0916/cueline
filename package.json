@@ -66,7 +66,10 @@
     "test:unit": "npm run build && node --test dist/test/unit/*.test.js",
     "test:integration": "npm run build && node --test dist/test/integration/*.test.js",
     "smoke:fake": "npm run build && node --test dist/test/smoke/fake-smoke.test.js",
-    "validate:plugin": "node scripts/validate-plugin.mjs"
+    "validate:plugin": "node scripts/validate-plugin.mjs",
+    "artifact:build": "node scripts/artifact-integrity.mjs build",
+    "artifact:verify": "node scripts/artifact-integrity.mjs verify",
+    "test:artifact": "node --test test/release/artifact-integrity.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
