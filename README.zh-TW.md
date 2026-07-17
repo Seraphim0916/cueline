@@ -303,7 +303,7 @@ npm pack --dry-run
 
 ## 開發
 
-TypeScript、ESM，只用 Node 內建模組。`npm run build` 會編譯到 `dist/`；測試以 `node --test` 跑編譯後的產物。CI 涵蓋 Ubuntu 與 macOS 上的 Node 22 與 24。
+TypeScript、ESM，只用 Node 內建模組。`npm run build` 會編譯到 `dist/`；測試以 `node --test` 跑編譯後的產物。CI 涵蓋 Ubuntu 與 macOS 上的 Node 22、24、26。
 
 CueLine 是獨立專案，與 OpenAI 或任何其他公司皆無隸屬關係，亦未獲其背書或贊助。見 [provenance](docs/provenance.md) 與 [third-party notices](THIRD_PARTY_NOTICES.md)。
 
