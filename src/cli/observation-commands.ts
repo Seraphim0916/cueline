@@ -48,7 +48,17 @@ async function runAuditSecretsCommand(
 ): Promise<number> {
   const report = await auditCueLineRunSecrets(runId, { environment });
   if (json) {
-    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...report }, null, 2));
+    io.stdout(
+      JSON.stringify(
+        {
+          schema: "cueline-run-audit-secrets/1",
+          version: CUELINE_VERSION,
+          ...report,
+        },
+        null,
+        2,
+      ),
+    );
   } else {
     io.stdout(`run\t${report.runId}`);
     io.stdout(`version\t${CUELINE_VERSION}`);

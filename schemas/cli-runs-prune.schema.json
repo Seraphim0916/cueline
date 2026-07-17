@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-runs-prune.schema.json",
+  "title": "cueline runs prune --json output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "version",
+    "home",
+    "apply",
+    "olderThanMs",
+    "cutoff",
+    "states",
+    "decisions",
+    "prunedRuns",
+    "eligibleRuns",
+    "keptRuns",
+    "removedJobRecords",
+    "errors"
+  ],
+  "properties": {
+    "schema": { "const": "cueline-runs-prune/1" },
+    "version": { "type": "string", "minLength": 1 },
+    "home": { "type": "string", "minLength": 1 },
+    "apply": { "type": "boolean" },
+    "olderThanMs": { "type": "number", "minimum": 0 },
+    "cutoff": { "type": "string", "minLength": 1 },
+    "states": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "enum": ["complete", "blocked", "cancelled"] }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "decision"],
+        "properties": {
+          "runId": { "type": "string", "minLength": 1 },
+          "decision": { "enum": ["pruned", "eligible", "kept"] },
+          "reason": {
+            "enum": [
+              "unreadable",
+              "non_terminal",
+              "state_excluded",
+              "runtime_active",
+              "active_jobs",
+              "too_recent",
+              "delete_failed"
+            ]
+          },
+          "status": { "type": "string", "minLength": 1 },
+          "lastEventAt": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "prunedRuns": { "type": "integer", "minimum": 0 },
+    "eligibleRuns": { "type": "integer", "minimum": 0 },
+    "keptRuns": { "type": "integer", "minimum": 0 },
+    "removedJobRecords": { "type": "integer", "minimum": 0 },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "message"],
+        "properties": {
+          "runId": { "type": "string", "minLength": 1 },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

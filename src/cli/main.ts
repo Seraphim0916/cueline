@@ -471,7 +471,13 @@ async function runsPruneCommand(
 ): Promise<number> {
   const result = await pruneCueLineRuns({ ...options, environment });
   if (json) {
-    io.stdout(JSON.stringify({ version: CUELINE_VERSION, ...result }, null, 2));
+    io.stdout(
+      JSON.stringify(
+        { schema: "cueline-runs-prune/1", version: CUELINE_VERSION, ...result },
+        null,
+        2,
+      ),
+    );
   } else {
     io.stdout(
       `prune\tmode=${result.apply ? "apply" : "dry-run"}\tcutoff=${result.cutoff}\tstates=${result.states.join(",")}`,

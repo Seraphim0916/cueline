@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 
 import { main } from "../../src/cli/main.js";
+import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
+import { RunStore } from "../../src/state/store.js";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 
@@ -70,6 +72,49 @@ test("routing contract rejects runner argv and wrong schema versions", async () 
   lanes[0] = { ...lanes[0], argv: ["secret", "argument"] };
   assert.equal(validate({ ...value, lanes }), false);
   assert.equal(validate({ ...value, schema: "cueline-routing/2" }), false);
+});
+
+test("prune, audit-secrets, and export conform to published schemas", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-cli-contract-run-"));
+  const runId = "run_contract";
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+    now: () => new Date("2026-06-01T00:00:00.000Z"),
+  });
+  await store.append("run_created", {
+    request: "api_key=CONTRACTFAKECRED1234567890",
+    executor: "caller",
+  });
+  await store.append("run_completed", { final_delivery_text: "done" });
+  const environment = {
+    ...process.env,
+    CUELINE_HOME: home,
+    HOME: home,
+    CUELINE_CONFIG: path.join(root, "config/routing.default.json"),
+  };
+
+  const pruneValidate = await validator("cli-runs-prune.schema.json");
+  const prune = await output(["runs", "prune", "--json"], environment);
+  assert.equal(pruneValidate(prune), true, JSON.stringify(pruneValidate.errors));
+  assert.equal(pruneValidate({ ...prune, token: "must-not-appear" }), false);
+  assert.equal(pruneValidate({ ...prune, schema: "cueline-runs-prune/2" }), false);
+
+  const auditValidate = await validator("cli-run-audit-secrets.schema.json");
+  const audit = await output(
+    ["run", "audit-secrets", runId, "--json"],
+    environment,
+  );
+  assert.equal(auditValidate(audit), true, JSON.stringify(auditValidate.errors));
+  assert.equal(audit.clean, false, "the planted credential must be found");
+  assert.equal(auditValidate({ ...audit, token: "must-not-appear" }), false);
+
+  const exportValidate = await validator("cli-run-export.schema.json");
+  const bundle = await output(["run", "export", runId, "--json"], environment);
+  assert.equal(exportValidate(bundle), true, JSON.stringify(exportValidate.errors));
+  assert.equal(exportValidate({ ...bundle, token: "must-not-appear" }), false);
 });
 
 test("degraded outputs from an invalid routing config still conform", async () => {

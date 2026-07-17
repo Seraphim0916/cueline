@@ -18,6 +18,7 @@ import { loadCueLineRunTimeline, type CueLineRunTimeline } from "./run-timeline.
 export const RUN_BUNDLE_PROTOCOL = "cueline-run-bundle/0.1";
 
 export interface CueLineRunSupportBundle {
+  schema: "cueline-run-export/1";
   protocol: typeof RUN_BUNDLE_PROTOCOL;
   version: string;
   generatedAt: string;
@@ -74,6 +75,7 @@ export async function buildCueLineRunSupportBundle(
   ]);
   const generatedAt = (options.now === undefined ? new Date() : options.now()).toISOString();
   return {
+    schema: "cueline-run-export/1",
     protocol: RUN_BUNDLE_PROTOCOL,
     version: CUELINE_VERSION,
     generatedAt,

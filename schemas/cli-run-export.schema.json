@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-run-export.schema.json",
+  "title": "cueline run export --json output (support bundle)",
+  "description": "Strict at the top level. The four section objects reuse existing sanitized surfaces (run status view, verification report, doctor diagnosis, audit timeline) and keep their own compatibility rules, so they are typed as objects here rather than duplicated.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "protocol",
+    "version",
+    "generatedAt",
+    "runId",
+    "status",
+    "verification",
+    "diagnosis",
+    "timeline"
+  ],
+  "properties": {
+    "schema": { "const": "cueline-run-export/1" },
+    "protocol": { "const": "cueline-run-bundle/0.1" },
+    "version": { "type": "string", "minLength": 1 },
+    "generatedAt": { "type": "string", "minLength": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "status": { "type": "object" },
+    "verification": { "type": "object" },
+    "diagnosis": { "type": "object" },
+    "timeline": { "type": "object" }
+  }
+}
