@@ -21,6 +21,7 @@ import {
 } from "./controller-command-execution.js";
 import {
   capControllerEvidence,
+  capReplayedControllerEvidence,
   DEFAULT_MAX_JOB_EVIDENCE_CHARS,
 } from "./controller-evidence.js";
 import {
@@ -204,7 +205,7 @@ async function settleCancelledJobs(
               status: "ambiguous",
               error: "Cancellation was requested, but the supervisor could not confirm termination.",
             }
-          : statusPayload(status),
+          : statusPayload(status, store.state.maxJobEvidenceChars),
       );
     } catch (error) {
       const failure = asCueLineError(error, "JOB_CANCELLATION_UNVERIFIED");
@@ -502,15 +503,28 @@ async function controllerEvidenceJobs(
     observation: (typeof observations)[number],
     output = observation.output,
     error = observation.error,
+    replayingRunEvent = false,
   ): (typeof observations)[number] => {
     const cappedOutput =
       output === undefined
         ? undefined
-        : capControllerEvidence(output, store.state.maxJobEvidenceChars);
+        : replayingRunEvent
+          ? capReplayedControllerEvidence(
+              output,
+              observation.output_total_chars,
+              store.state.maxJobEvidenceChars,
+            )
+          : capControllerEvidence(output, store.state.maxJobEvidenceChars);
     const cappedError =
       error === undefined
         ? undefined
-        : capControllerEvidence(error, store.state.maxJobEvidenceChars);
+        : replayingRunEvent
+          ? capReplayedControllerEvidence(
+              error,
+              observation.error_total_chars,
+              store.state.maxJobEvidenceChars,
+            )
+          : capControllerEvidence(error, store.state.maxJobEvidenceChars);
     return {
       ...observation,
       ...(cappedOutput === undefined
@@ -544,12 +558,22 @@ async function controllerEvidenceJobs(
           (persisted.runId !== undefined && persisted.runId !== store.runId) ||
           (persisted.jobKey !== undefined && persisted.jobKey !== job?.jobKey)
         ) {
-          return capObservation(observation);
+          return capObservation(
+            observation,
+            observation.output,
+            observation.error,
+            true,
+          );
         }
         const output = controllerResultOutput(persisted);
         return capObservation(observation, output, persisted.error);
       } catch {
-        return capObservation(observation);
+        return capObservation(
+          observation,
+          observation.output,
+          observation.error,
+          true,
+        );
       }
     }),
   );

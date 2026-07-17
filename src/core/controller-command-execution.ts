@@ -16,7 +16,10 @@ import { asCueLineError, CueLineError } from "./errors.js";
 import { jobId } from "./ids.js";
 import { jobObservations, type CueLineRunState, type StoredJob } from "./state-machine.js";
 
-export function statusPayload(status: JobStatus): Record<string, unknown> {
+export function statusPayload(
+  status: JobStatus,
+  maxJobEvidenceChars: number,
+): Record<string, unknown> {
   return {
     job_id: status.jobId,
     status: status.status,
@@ -28,7 +31,7 @@ export function statusPayload(status: JobStatus): Record<string, unknown> {
     ...(status.lastProgressAt === undefined
       ? {}
       : { last_progress_at: status.lastProgressAt }),
-    ...boundedControllerEventEvidence(status),
+    ...boundedControllerEventEvidence(status, maxJobEvidenceChars),
   };
 }
 
@@ -135,7 +138,10 @@ async function updateRunningJobs(
       job === undefined
         ? status
         : await persistControllerTerminalStatus(store, job, status);
-    await store.append("job_status", statusPayload(durableStatus));
+    await store.append(
+      "job_status",
+      statusPayload(durableStatus, store.state.maxJobEvidenceChars),
+    );
   }
 }
 
@@ -249,6 +255,7 @@ async function startDispatchedJob(
               : status;
           return statusPayload(
             await persistControllerTerminalStatus(store, job, completed),
+            store.state.maxJobEvidenceChars,
           );
         },
         (error: unknown) => {
@@ -299,7 +306,7 @@ async function executeProcessDispatch(
     backgroundAdvice: job.spec.mode === "advise" && job.spec.background === true,
     waitingForTerminal: true,
     completion: options.jobSupervisor.waitForCompletion(job.jobId).then(
-      statusPayload,
+      (status) => statusPayload(status, store.state.maxJobEvidenceChars),
       (error: unknown) => {
         const failure = asCueLineError(error, "JOB_WAIT_FAILED");
         return {
@@ -384,14 +391,17 @@ async function executeProcessDispatch(
       settled.entry.waitingForTerminal = true;
       settled.entry.completion = options.jobSupervisor
         .waitForCompletion(settled.entry.jobId)
-        .then(statusPayload, (error: unknown) => {
-          const failure = asCueLineError(error, "JOB_WAIT_FAILED");
-          return {
-            job_id: settled.entry.jobId,
-            status: "failed",
-            error: truncate(failure.message),
-          };
-        });
+        .then(
+          (status) => statusPayload(status, store.state.maxJobEvidenceChars),
+          (error: unknown) => {
+            const failure = asCueLineError(error, "JOB_WAIT_FAILED");
+            return {
+              job_id: settled.entry.jobId,
+              status: "failed",
+              error: truncate(failure.message),
+            };
+          },
+        );
       continue;
     }
     if (activeIndex >= 0) active.splice(activeIndex, 1);
@@ -482,7 +492,10 @@ async function executeCommand(
       try {
         const status = await options.jobSupervisor.inspect(job.jobId);
         const durableStatus = await persistControllerTerminalStatus(store, job, status);
-        await store.append("job_status", statusPayload(durableStatus));
+        await store.append(
+          "job_status",
+          statusPayload(durableStatus, store.state.maxJobEvidenceChars),
+        );
       } catch (error) {
         const failure = asCueLineError(error, "JOB_INSPECT_FAILED");
         await store.append("notice", {

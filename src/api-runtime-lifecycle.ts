@@ -397,7 +397,14 @@ export async function reconcileCueLineRuntime(
         continue;
       }
       if (persisted !== undefined && isPersistedTerminalStatus(persisted)) {
-        await store.append("job_status", persistedTerminalPayload(job, persisted));
+        await store.append(
+          "job_status",
+          persistedTerminalPayload(
+            job,
+            persisted,
+            store.state.maxJobEvidenceChars,
+          ),
+        );
         affectedJobs += 1;
         continue;
       }
@@ -468,11 +475,12 @@ function assertPersistedJobIdentity(
 function persistedTerminalPayload(
   job: StoredJob,
   persisted: JobStatus,
+  maxJobEvidenceChars: number,
 ): Record<string, unknown> {
   return {
     job_id: job.jobId,
     status: persisted.status,
-    ...boundedControllerEventEvidence(persisted),
+    ...boundedControllerEventEvidence(persisted, maxJobEvidenceChars),
   };
 }
 
@@ -485,7 +493,10 @@ async function appendPersistedTerminalIfPresent(
   const persisted = await statusStore.read(job.jobId);
   if (persisted === undefined || !isPersistedTerminalStatus(persisted)) return undefined;
   assertPersistedJobIdentity(persisted, runId, job);
-  await store.append("job_status", persistedTerminalPayload(job, persisted));
+  await store.append(
+    "job_status",
+    persistedTerminalPayload(job, persisted, store.state.maxJobEvidenceChars),
+  );
   return persisted;
 }
 

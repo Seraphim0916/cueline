@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Apply each run's persisted `maxJobEvidenceChars` to terminal evidence written
+  by process execution, caller result submission, and runtime reconciliation,
+  keeping event-log and served evidence on the same durable cap.
+- Preserve a validated canonical evidence-cap marker when replay falls back to
+  run events, so the served bytes and `content_hash` remain stable without
+  nesting markers. Legacy `...[truncated N chars]` events remain replayable and
+  may be deterministically re-capped.
+- Base controller capacity warnings on servable capped-representation lengths.
+  Report true source totals beyond durable per-job caps in a separate notice,
+  since those discarded characters cannot be retrieved by evidence cursors.
+
+### Verification
+
+- Verified TypeScript typecheck, build, 490/490 unit/integration/smoke tests,
+  and diff whitespace checks.
+- Verified the built public API with a real process runner: a 7,000-character
+  result wrote one 4,000-cap event marker with the true total and completed in
+  two controller turns.
+
 ## 0.2.1 - 2026-07-17
 
 ### Fixed

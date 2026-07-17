@@ -22,6 +22,35 @@ export function capControllerEvidence(
   };
 }
 
+export function capReplayedControllerEvidence(
+  value: string,
+  declaredTotalChars: number | undefined,
+  maximum: number,
+): CappedControllerEvidence {
+  // Only event-backed evidence uses this path. Preserve a marker only when it
+  // exactly matches CueLine's durable format, declared true total, and run cap.
+  const marker = /\n\.\.\.\[job evidence capped: (\d+) chars omitted; total_chars=(\d+); cap=(\d+)\]$/.exec(
+    value,
+  );
+  if (marker !== null) {
+    const omittedChars = Number(marker[1]);
+    const totalChars = Number(marker[2]);
+    const markerCap = Number(marker[3]);
+    if (
+      marker.index === maximum &&
+      markerCap === maximum &&
+      Number.isSafeInteger(declaredTotalChars) &&
+      declaredTotalChars === totalChars &&
+      Number.isSafeInteger(omittedChars) &&
+      omittedChars === totalChars - maximum &&
+      omittedChars > 0
+    ) {
+      return { value, totalChars, truncatedChars: omittedChars };
+    }
+  }
+  return capControllerEvidence(value, maximum);
+}
+
 export function controllerEvidenceCapacityNotice(
   totalUnservedChars: number,
   round: number,

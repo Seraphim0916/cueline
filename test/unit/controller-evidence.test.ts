@@ -83,7 +83,7 @@ test("capacity warning uses the incident arithmetic at round seven of twelve", (
   assert.equal(controllerEvidenceCapacityNotice(72_000, 7, 12), undefined);
 });
 
-test("controller observation emits the capacity warning from true per-job totals", () => {
+test("controller observation capacity counts only servable capped representations", () => {
   const state = initialRunState("run_capacity_notice", "Decide without a paging treadmill");
   const jobs: JobObservation[] = [75_762, 70_738].map((total, index) => {
     const capped = capControllerEvidence(String(index + 1).repeat(total), 12_000);
@@ -98,10 +98,21 @@ test("controller observation emits the capacity warning from true per-job totals
   });
 
   const observation = observationFor(state, 7, "msg_capacity_notice", jobs);
-
+  assert.equal(
+    observation.notices.some((notice) => notice.includes("evidence capacity warning")),
+    false,
+  );
   assert.ok(
-    observation.notices.includes(
-      "[controller evidence capacity warning: evidence total 146500 chars exceeds remaining round capacity 72000 chars; decide from summaries or dispatch a summarization task instead of paging]",
+    observation.notices.some((notice) =>
+      notice.includes("capacity warning counts only servable capped representation chars"),
+    ),
+  );
+
+  const finalRound = observationFor(state, 12, "msg_capacity_notice_final", jobs);
+  const servableChars = jobs.reduce((total, job) => total + (job.output?.length ?? 0), 0);
+  assert.ok(
+    finalRound.notices.includes(
+      `[controller evidence capacity warning: evidence total ${servableChars} chars exceeds remaining round capacity 12000 chars; decide from summaries or dispatch a summarization task instead of paging]`,
     ),
   );
 });

@@ -62,8 +62,16 @@ async function createJobRun(
   home: string,
   runId: string,
   executor: "caller" | "process",
-  options: { failed?: boolean; persistedStatus?: "pending" | "running" } = {},
-): Promise<{ jobId: string; spec: ControllerJobSpec; store: RunStore<ReturnType<typeof initialRunState>> }> {
+  options: {
+    failed?: boolean;
+    persistedStatus?: "pending" | "running";
+    maxJobEvidenceChars?: number;
+  } = {},
+): Promise<{
+  jobId: string;
+  spec: ControllerJobSpec;
+  store: RunStore<ReturnType<typeof initialRunState>>;
+}> {
   const spec: ControllerJobSpec = {
     job_key: "lifecycle_job",
     lane: "default",
@@ -74,13 +82,24 @@ async function createJobRun(
   const store = await RunStore.create({
     home,
     runId,
-    initialState: initialRunState(runId, "", executor, 12, executor === "process"),
+    initialState: initialRunState(
+      runId,
+      "",
+      executor,
+      12,
+      executor === "process",
+      false,
+      options.maxJobEvidenceChars,
+    ),
     reducer: reduceRunState,
   });
   await store.append("run_created", {
     request: "Exercise lifecycle recovery",
     executor,
     ...(executor === "process" ? { allow_process_execution: true } : {}),
+    ...(options.maxJobEvidenceChars === undefined
+      ? {}
+      : { max_job_evidence_chars: options.maxJobEvidenceChars }),
   });
   await store.append("job_registered", {
     job: {
@@ -377,7 +396,9 @@ test("process takeover's advertised runtime reconciliation is executable before 
 test("runtime reconciliation bounds terminal evidence copied from full job status", async () => {
   const home = await temporaryHome();
   const runId = "run_reconcile_bounded_terminal_evidence";
-  const fixture = await createJobRun(home, runId, "process");
+  const fixture = await createJobRun(home, runId, "process", {
+    maxJobEvidenceChars: 4_000,
+  });
   const stdout = `RECOVERED_STDOUT\n${"S".repeat(30_000)}`;
   const stderr = `RECOVERED_TRACE_SENTINEL\n${"T".repeat(150_000)}`;
   const error = `RECOVERED_ERROR\n${"E".repeat(40_000)}`;
@@ -408,12 +429,12 @@ test("runtime reconciliation bounds terminal evidence copied from full job statu
   assert.equal(typeof payload.error, "string");
   assert.match(payload.output as string, /RECOVERED_STDOUT/);
   assert.doesNotMatch(payload.output as string, /RECOVERED_TRACE_SENTINEL/);
-  assert.match(payload.output as string, /\[job evidence capped: \d+ chars omitted;/);
-  assert.match(payload.error as string, /\[job evidence capped: \d+ chars omitted;/);
+  assert.match(payload.output as string, /\[job evidence capped: \d+ chars omitted;.*cap=4000\]$/);
+  assert.match(payload.error as string, /\[job evidence capped: \d+ chars omitted;.*cap=4000\]$/);
   assert.equal(payload.output_total_chars, stdout.length);
   assert.equal(payload.error_total_chars, error.length);
-  assert.ok((payload.output as string).length < 20_000);
-  assert.ok((payload.error as string).length < 20_000);
+  assert.ok((payload.output as string).length < 4_200);
+  assert.ok((payload.error as string).length < 4_200);
 });
 
 test("runtime reconciliation refuses malformed job status without inventing a terminal state", async () => {

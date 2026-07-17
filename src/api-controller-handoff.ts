@@ -659,7 +659,10 @@ export async function submitCueLineCallerJobResult(
     await store.append("job_status", {
       job_id: jobId,
       status: terminal.status,
-      ...boundedControllerEventEvidence(terminal),
+      ...boundedControllerEventEvidence(
+        terminal,
+        store.state.maxJobEvidenceChars,
+      ),
     });
     await store.snapshot();
     return { runId, jobId, outcome: "submitted" };

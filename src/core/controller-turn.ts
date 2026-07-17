@@ -118,6 +118,9 @@ export function controllerEvidenceContentHash(
 
 export function boundedControllerEventEvidence(
   status: JobStatus,
+  // Run event writers pass the persisted cap. The default is reserved for
+  // compatibility callers that do not have a loaded run state.
+  maxJobEvidenceChars = DEFAULT_MAX_JOB_EVIDENCE_CHARS,
 ): {
   output?: string;
   output_total_chars?: number;
@@ -128,11 +131,11 @@ export function boundedControllerEventEvidence(
   const cappedOutput =
     output === undefined
       ? undefined
-      : capControllerEvidence(output, DEFAULT_MAX_JOB_EVIDENCE_CHARS);
+      : capControllerEvidence(output, maxJobEvidenceChars);
   const cappedError =
     status.error === undefined
       ? undefined
-      : capControllerEvidence(status.error, DEFAULT_MAX_JOB_EVIDENCE_CHARS);
+      : capControllerEvidence(status.error, maxJobEvidenceChars);
   return {
     ...(cappedOutput === undefined
       ? {}
@@ -249,6 +252,7 @@ export function observationFor(
       : null;
   const evidenceNotices: string[] = [];
   let totalUnservedEvidenceChars = 0;
+  let cappedEvidenceJobCount = 0;
   const boundedJobs = new Map<string, (typeof sourceJobs)[number]>();
   const allocationOrder = [...sourceJobs].sort((left, right) => {
     const leftInspected = inspectedJobIds.has(left.job_id) ? 0 : 1;
@@ -286,15 +290,17 @@ export function observationFor(
       firstValue === undefined ? 0 : Math.min(requestedOffset, firstValue.length);
     const declaredTotalChars =
       firstField === "output" ? job.output_total_chars : job.error_total_chars;
-    const sourceTotalChars =
+    if (
       typeof declaredTotalChars === "number" &&
       Number.isSafeInteger(declaredTotalChars) &&
-      declaredTotalChars >= (firstValue?.length ?? 0)
-        ? declaredTotalChars
-        : (firstValue?.length ?? 0);
+      declaredTotalChars > state.maxJobEvidenceChars
+    ) {
+      cappedEvidenceJobCount += 1;
+    }
     totalUnservedEvidenceChars += Math.max(
       0,
-      sourceTotalChars - (isInspected && !hashMismatch ? requestedEvidenceOffset : 0),
+      (firstValue?.length ?? 0) -
+        (isInspected && !hashMismatch ? requestedEvidenceOffset : 0),
     );
     if (firstValue !== undefined && requestedOffset > firstValue.length) {
       evidenceNotices.push(
@@ -360,6 +366,11 @@ export function observationFor(
   if (remaining.omittedChars > 0) {
     notices.push(
       `[controller evidence truncated or omitted: ${remaining.omittedChars} chars exceeded the global ${MAX_CONTROLLER_EVIDENCE_CHARS}-char budget]`,
+    );
+  }
+  if (cappedEvidenceJobCount > 0) {
+    notices.push(
+      `[controller evidence durable cap: true totals exceed the run cap for ${cappedEvidenceJobCount} job(s); capacity warning counts only servable capped representation chars]`,
     );
   }
   const capacityNotice = controllerEvidenceCapacityNotice(

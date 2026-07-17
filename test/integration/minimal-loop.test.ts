@@ -5398,11 +5398,13 @@ test("controller caps each persisted runner output before building the prompt", 
         assert.doesNotMatch(job.output ?? "", /DISCARDED_TAIL_/);
         assert.ok((job.output?.length ?? 0) < 4_200);
       }
+      assert.equal(
+        observation.notices.some((notice) => notice.includes("evidence capacity warning")),
+        false,
+      );
       assert.ok(
         observation.notices.some((notice) =>
-          notice.includes(
-            "evidence total 146500 chars exceeds remaining round capacity 132000 chars",
-          ),
+          notice.includes("capacity warning counts only servable capped representation chars"),
         ),
       );
       assert.match(
@@ -5424,6 +5426,144 @@ test("controller caps each persisted runner output before building the prompt", 
   });
 
   assert.equal(result.finalDeliveryText, "PER_JOB_CAP_OK");
+});
+
+test("run-scoped event cap survives a missing JobStatusStore without changing evidence identity", async () => {
+  const runId = "run_scoped_event_cap_fallback";
+  const stateHome = await home();
+  const spec = {
+    job_key: "event_cap",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Return evidence that must keep one durable cap marker",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const source = `EVENT_CAP_HEAD\n${"C".repeat(30_000)}\nEVENT_CAP_TAIL`;
+  let firstOutput: string | undefined;
+  let firstHash: string | undefined;
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({ action: "dispatch", jobs: [spec] })),
+    reply((input) => {
+      const job = observationFromPrompt(input.prompt).jobs[0]!;
+      firstOutput = job.output;
+      firstHash = job.evidence_window?.content_hash;
+      assert.equal(job.output_total_chars, source.length);
+      assert.equal((job.output?.match(/\[job evidence capped:/g) ?? []).length, 1);
+      unlinkSync(new JobStatusStore(stateHome).pathFor(id));
+      return { action: "wait", job_ids: [id] };
+    }),
+    reply((input) => {
+      const job = observationFromPrompt(input.prompt).jobs[0]!;
+      assert.equal(job.output, firstOutput);
+      assert.equal(job.evidence_window?.content_hash, firstHash);
+      assert.equal((job.output?.match(/\[job evidence capped:/g) ?? []).length, 1);
+      return { action: "complete", final_delivery_text: "EVENT_CAP_FALLBACK_OK" };
+    }),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Keep event evidence stable without the private status file",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([terminalStatus(id, source)]),
+    resolveRunnerSpec: resolver,
+    maxJobEvidenceChars: 4_000,
+  });
+
+  assert.equal(result.finalDeliveryText, "EVENT_CAP_FALLBACK_OK");
+  const terminalEvent = (await readEvents(runPaths(stateHome, runId).events)).findLast(
+    (entry) =>
+      entry.type === "job_status" &&
+      typeof entry.payload === "object" &&
+      entry.payload !== null &&
+      !Array.isArray(entry.payload) &&
+      (entry.payload as Record<string, unknown>).status === "succeeded",
+  );
+  const payload = terminalEvent?.payload as Record<string, unknown>;
+  assert.equal(payload.output_total_chars, source.length);
+  assert.ok((payload.output as string).startsWith(source.slice(0, 4_000)));
+  assert.match(
+    payload.output as string,
+    new RegExp(
+      `\\[job evidence capped: ${source.length - 4_000} chars omitted; total_chars=${source.length}; cap=4000\\]$`,
+    ),
+  );
+  assert.equal(((payload.output as string).match(/\[job evidence capped:/g) ?? []).length, 1);
+});
+
+test("legacy truncation markers replay with one stable evidence hash", async () => {
+  const runId = "run_legacy_truncation_marker_replay";
+  const stateHome = await home();
+  const spec = {
+    job_key: "legacy_event",
+    lane: "default",
+    mode: "advise" as const,
+    task: "Replay pre-0.2.1 bounded evidence",
+  };
+  const id = jobId(runId, spec.job_key, spec);
+  const legacyOutput = `${"L".repeat(12_000)}\n...[truncated 4000 chars]`;
+  const store = await RunStore.create({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, "", "caller"),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: "Replay one legacy event without changing its round-local identity",
+    executor: "caller",
+  });
+  await store.append("job_registered", {
+    job: {
+      jobId: id,
+      jobKey: spec.job_key,
+      required: true,
+      spec,
+      status: "pending",
+      output: null,
+      error: null,
+    },
+  });
+  await store.append("job_status", {
+    job_id: id,
+    status: "succeeded",
+    output: legacyOutput,
+  });
+  await store.snapshot();
+
+  let firstHash: string | undefined;
+  let nextOffset: number | undefined;
+  const browser = new FakeBrowserAdapter([
+    reply((input) => {
+      const job = observationFromPrompt(input.prompt).jobs[0]!;
+      firstHash = job.evidence_window?.content_hash;
+      nextOffset = job.evidence_window?.next_offset ?? undefined;
+      assert.equal(typeof nextOffset, "number");
+      return {
+        action: "inspect",
+        job_ids: [id],
+        evidence_offset: nextOffset,
+        evidence_hash: firstHash,
+      };
+    }),
+    reply((input) => {
+      const job = observationFromPrompt(input.prompt).jobs[0]!;
+      assert.equal(job.evidence_window?.offset, nextOffset);
+      assert.equal(job.evidence_window?.content_hash, firstHash);
+      return { action: "complete", final_delivery_text: "LEGACY_EVENT_REPLAY_OK" };
+    }),
+  ]);
+
+  const result = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+    executor: "caller",
+  });
+
+  assert.equal(result.finalDeliveryText, "LEGACY_EVENT_REPLAY_OK");
 });
 
 test("controller prompt bounds accumulated notices and keeps the newest evidence", async () => {

@@ -48,7 +48,7 @@ function reply(
   });
 }
 
-async function fixture(runId: string) {
+async function fixture(runId: string, maxJobEvidenceChars?: number) {
   const home = await mkdtemp(path.join(tmpdir(), "cueline-claim-"));
   const workdir = path.join(home, "workspace");
   await mkdir(workdir);
@@ -56,6 +56,7 @@ async function fixture(runId: string) {
     request: "Have the current Codex perform one explicit local edit",
     runId,
     home,
+    ...(maxJobEvidenceChars === undefined ? {} : { maxJobEvidenceChars }),
     browser: new FakeBrowserAdapter([
       reply(() => ({
         action: "dispatch",
@@ -662,7 +663,7 @@ test("caller result default timestamps are validated before durable submission i
 
 test("successful caller output stays complete in job status but bounded in run events", async () => {
   const runId = "run_caller_success_event_output_bound";
-  const { home, job } = await fixture(runId);
+  const { home, job } = await fixture(runId, 4_000);
   const claim = await claimCueLineCallerJob(runId, job.jobId, {
     home,
     callerId: "codex-large-success-owner",
@@ -692,10 +693,10 @@ test("successful caller output stays complete in job status but bounded in run e
   const payload = terminalEvent?.payload as Record<string, unknown>;
   assert.equal(typeof payload.output, "string");
   assert.match(payload.output as string, /CALLER_STDOUT_SUMMARY/);
-  assert.match(payload.output as string, /\[job evidence capped: \d+ chars omitted;/);
+  assert.match(payload.output as string, /\[job evidence capped: \d+ chars omitted;.*cap=4000\]$/);
   assert.equal(payload.output_total_chars, stdout.length);
   assert.doesNotMatch(payload.output as string, /CALLER_STDERR_TRACE_SENTINEL/);
-  assert.ok((payload.output as string).length < 20_000);
+  assert.ok((payload.output as string).length < 4_200);
 });
 
 test("failed caller output and error stay complete in job status but bounded in run events", async () => {
