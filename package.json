@@ -66,7 +66,9 @@
     "test:unit": "npm run build && node --test dist/test/unit/*.test.js",
     "test:integration": "npm run build && node --test dist/test/integration/*.test.js",
     "smoke:fake": "npm run build && node --test dist/test/smoke/fake-smoke.test.js",
-    "validate:plugin": "node scripts/validate-plugin.mjs"
+    "validate:plugin": "node scripts/validate-plugin.mjs",
+    "release:check": "node scripts/release-check.mjs",
+    "test:release-check": "node --test test/release/release-check.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
