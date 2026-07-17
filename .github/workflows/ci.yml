@@ -27,6 +27,8 @@ jobs:
 
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run validate:docs
+      - run: npm run test:docs
       - run: npm test
       - run: npm run smoke:fake
       - run: bash test/shell/install.test.sh
