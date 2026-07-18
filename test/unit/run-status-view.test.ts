@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { safeCueLineRunStatus } from "../../src/cli/run-status-view.js";
+import { safeCueLineRunStatus } from "../../src/core/run-status-view.js";
 import type { CueLineRunStatusSummary } from "../../src/core/run-status.js";
 
 test("the CLI run status view is an explicit metadata allowlist", () => {

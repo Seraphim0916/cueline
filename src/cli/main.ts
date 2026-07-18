@@ -31,7 +31,7 @@ import { serveCueLineMcp } from "../mcp/server.js";
 import { handleHealthCommand } from "./health-commands.js";
 import type { CliIo } from "./io.js";
 import { handleObservationCommand } from "./observation-commands.js";
-import { safeCueLineRunStatus } from "./run-status-view.js";
+import { safeCueLineRunStatus } from "../core/run-status-view.js";
 import { installSkill, uninstallSkill } from "./skill-links.js";
 
 const processIo: CliIo = {

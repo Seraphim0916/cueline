@@ -12,7 +12,7 @@ import {
   type CueLineRuntimeOptions,
 } from "../api.js";
 import type { BrowserAdapter } from "../browser/browser-adapter.js";
-import { safeCueLineRunStatus } from "../cli/run-status-view.js";
+import { safeCueLineRunStatus } from "../core/run-status-view.js";
 import { CueLineError } from "../core/errors.js";
 import { MAX_TIMER_DELAY_MS } from "../core/timing.js";
 import type { RoutingConfig } from "../router/types.js";
