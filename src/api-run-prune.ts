@@ -23,7 +23,35 @@ export type CueLineRunPruneKeptReason =
   | "runtime_active"
   | "active_jobs"
   | "too_recent"
+  | "unparseable_timestamp"
   | "delete_failed";
+
+export type CueLineRunPruneRecency =
+  | "eligible"
+  | "too_recent"
+  | "unparseable_timestamp";
+
+/**
+ * A run is prune-eligible only when its last event is strictly older than the
+ * retention cutoff. An unparseable `lastEventAt` is reported as its own reason
+ * instead of being folded into `too_recent`: the durable event log only
+ * guarantees the timestamp is a string, not a valid date, so a corrupt run
+ * would otherwise be silently mislabeled "recent" and kept forever with no
+ * distinguishable signal for an operator or diagnostic to act on.
+ */
+export function classifyRunPruneRecency(
+  lastEventAt: string,
+  cutoffMs: number,
+): CueLineRunPruneRecency {
+  const lastEventMs = Date.parse(lastEventAt);
+  if (!Number.isFinite(lastEventMs)) {
+    return "unparseable_timestamp";
+  }
+  if (lastEventMs >= cutoffMs) {
+    return "too_recent";
+  }
+  return "eligible";
+}
 
 export interface CueLineRunPruneDecision {
   runId: string;
@@ -210,9 +238,9 @@ export async function pruneCueLineRuns(
       keptRuns += 1;
       continue;
     }
-    const lastEventMs = Date.parse(run.lastEventAt);
-    if (!Number.isFinite(lastEventMs) || lastEventMs >= cutoffMs) {
-      decisions.push({ ...base, decision: "kept", reason: "too_recent" });
+    const recency = classifyRunPruneRecency(run.lastEventAt, cutoffMs);
+    if (recency !== "eligible") {
+      decisions.push({ ...base, decision: "kept", reason: recency });
       keptRuns += 1;
       continue;
     }
