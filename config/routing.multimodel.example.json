@@ -1,0 +1,54 @@
+{
+  "$schema": "./routing.schema.json",
+  "version": 1,
+  "lanes": {
+    "default": {
+      "enabled": true,
+      "candidates": [
+        {
+          "id": "codex-default",
+          "argv": [
+            "codex",
+            "exec",
+            "--ignore-user-config",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--color",
+            "never",
+            "-C",
+            "{workdir}",
+            "-s",
+            "{sandbox}",
+            "-"
+          ],
+          "task_input": "stdin"
+        }
+      ]
+    },
+    "taste-final": {
+      "enabled": true,
+      "candidates": [
+        {
+          "id": "claude-opus-4-8-advise",
+          "argv": [
+            "claude",
+            "--disable-slash-commands",
+            "--model",
+            "claude-opus-4-8",
+            "--output-format",
+            "text",
+            "--effort",
+            "high",
+            "--tools",
+            "Read",
+            "Glob",
+            "Grep",
+            "-p",
+            "{task}"
+          ],
+          "task_input": "argv"
+        }
+      ]
+    }
+  }
+}
