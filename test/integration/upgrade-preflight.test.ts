@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, lstat, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -100,6 +100,36 @@ test("upgrade preflight blocks a durable non-terminal run without changing it", 
   );
   assert.equal(after.size, before.size);
   assert.equal(after.mtimeMs, before.mtimeMs);
+});
+
+test("upgrade preflight warns about pre-0.1.7 legacy job evidence without blocking", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-upgrade-legacy-"));
+  await chmod(home, 0o700);
+  const environment = await environmentFor(home);
+  const jobsDir = path.join(home, "jobs");
+  await mkdir(jobsDir, { recursive: true });
+  // Pre-0.1.7 evidence: a result object without the `cancelled` field.
+  await writeFile(
+    path.join(jobsDir, "job_legacy.json"),
+    JSON.stringify({ result: { status: "succeeded" } }),
+  );
+  // Current evidence carries `cancelled` and must not be counted as legacy.
+  await writeFile(
+    path.join(jobsDir, "job_current.json"),
+    JSON.stringify({ result: { status: "succeeded", cancelled: false } }),
+  );
+  const report = await collectUpgradePreflight({ targetVersion: "1.0.0", environment });
+
+  assert.equal(report.status, "ready");
+  assert.equal(report.checks.runs.legacyJobEvidence, 1);
+  assert.equal(
+    report.findings.some((finding) => finding.code === "LEGACY_JOB_EVIDENCE_PRESENT"),
+    true,
+  );
+  assert.equal(
+    report.findings.some((finding) => finding.severity === "blocker"),
+    false,
+  );
 });
 
 test("upgrade preflight CLI emits structured JSON and rejects malformed arguments", async () => {

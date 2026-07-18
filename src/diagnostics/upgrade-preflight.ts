@@ -1,6 +1,8 @@
-import { lstat } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
+import path from "node:path";
 
 import { listCueLineRuns, routingConfigPath } from "../api.js";
+import { isLegacyJobStatusSource } from "../jobs/status.js";
 import { loadRoutingConfig } from "../router/config-loader.js";
 import { defaultCueLineHome } from "../state/paths.js";
 import { CUELINE_VERSION } from "../version.js";
@@ -27,7 +29,12 @@ export interface UpgradePreflightReport {
       kind: "missing" | "directory" | "symlink" | "other";
       private: boolean | null;
     };
-    runs: { total: number; nonTerminal: number; unreadable: number };
+    runs: {
+      total: number;
+      nonTerminal: number;
+      unreadable: number;
+      legacyJobEvidence: number;
+    };
   };
   findings: UpgradePreflightFinding[];
 }
@@ -67,6 +74,35 @@ function isNotFound(error: unknown): boolean {
     "code" in error &&
     (error as { code?: unknown }).code === "ENOENT"
   );
+}
+
+/**
+ * Counts persisted job records that only parse via the pre-0.1.7 `cancelled`
+ * backfill. A missing jobs directory means none; individually unreadable files
+ * are skipped here because the run-level readability check already blocks them.
+ */
+async function countLegacyJobEvidence(home: string): Promise<number> {
+  const jobsDirectory = path.join(home, "jobs");
+  let entries;
+  try {
+    entries = await readdir(jobsDirectory, { withFileTypes: true });
+  } catch (error) {
+    if (isNotFound(error)) return 0;
+    throw error;
+  }
+  let legacy = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!entry.name.endsWith(".json") && !entry.name.endsWith(".terminal")) continue;
+    let source: string;
+    try {
+      source = await readFile(path.join(jobsDirectory, entry.name), "utf8");
+    } catch {
+      continue;
+    }
+    if (isLegacyJobStatusSource(source)) legacy += 1;
+  }
+  return legacy;
 }
 
 export async function collectUpgradePreflight(
@@ -175,6 +211,7 @@ export async function collectUpgradePreflight(
   let totalRuns = 0;
   let nonTerminalRuns = 0;
   let unreadableRuns = 0;
+  let legacyJobEvidence = 0;
   if (stateKind === "missing" || (stateKind === "directory" && statePrivate === true)) {
     try {
       const runs = await listCueLineRuns({ home, environment });
@@ -187,6 +224,16 @@ export async function collectUpgradePreflight(
           run.status !== "blocked" &&
           run.status !== "cancelled",
       ).length;
+      legacyJobEvidence = await countLegacyJobEvidence(home);
+      if (legacyJobEvidence > 0) {
+        findings.push({
+          code: "LEGACY_JOB_EVIDENCE_PRESENT",
+          severity: "warning",
+          surface: "runs",
+          message:
+            "Some persisted job evidence predates 0.1.7 and survives only through backward-compatible reads; export or finish those runs before a future strict upgrade drops the compatibility shim.",
+        });
+      }
       if (unreadableRuns > 0) {
         findings.push({
           code: "RUN_EVIDENCE_UNREADABLE",
@@ -224,7 +271,12 @@ export async function collectUpgradePreflight(
       node: { version: nodeVersion, requirement: ">=22", ok: nodeOk },
       config: { path: configPath, valid: configValid },
       stateHome: { path: home, kind: stateKind, private: statePrivate },
-      runs: { total: totalRuns, nonTerminal: nonTerminalRuns, unreadable: unreadableRuns },
+      runs: {
+        total: totalRuns,
+        nonTerminal: nonTerminalRuns,
+        unreadable: unreadableRuns,
+        legacyJobEvidence,
+      },
     },
     findings,
   };
