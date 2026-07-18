@@ -85,6 +85,23 @@ cueline doctor
 
 `cueline install` creates one symlink, the bundled skill at `$CODEX_HOME/skills/cueline` (`~/.codex/skills/cueline` by default). It refuses to replace a path it does not own, and running it twice is a no-op. `cueline uninstall` removes that link and nothing else; a foreign path in its place is preserved, not deleted.
 
+### MCP server
+
+Configure an MCP client to launch CueLine over newline-delimited stdio:
+
+```json
+{
+  "mcpServers": {
+    "cueline": {
+      "command": "cueline",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+The zero-runtime-dependency server implements MCP `2025-11-25` and exposes start, continue, sanitized status/doctor/list, and fenced caller claim/start tools. It never returns raw transcripts. Process execution remains off unless that exact tool call sets both `executor: "process"` and `allowProcessExecution: true`; the first caller tool call binds that stdio session to one stable explicit `callerId`, followed by the exact claim ID and fencing token. Browser-advancing calls require the server host to expose CueLine's built-in Browser binding; a plain subprocess without it returns `IAB_BROWSER_MISSING`, while durable start/status/doctor/list and caller fencing remain available. Only JSON-safe API options cross the protocol; Browser, environment, clock, and abort bindings remain host-injected.
+
 ### Install from source
 
 ```bash

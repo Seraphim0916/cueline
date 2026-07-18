@@ -27,6 +27,7 @@ import { defaultCueLineHome } from "../state/paths.js";
 import { readRuntimeLease } from "../state/runtime-lease.js";
 import { readAuthoritativeRunEvents } from "../state/store.js";
 import { CUELINE_VERSION } from "../version.js";
+import { serveCueLineMcp } from "../mcp/server.js";
 import { handleHealthCommand } from "./health-commands.js";
 import type { CliIo } from "./io.js";
 import { handleObservationCommand } from "./observation-commands.js";
@@ -39,7 +40,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|self-test|upgrade preflight|routing|routing explain|jobs|runs|runs prune|protocol lint|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run audit-secrets|run export|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|self-test|upgrade preflight|routing|routing explain|jobs|runs|runs prune|protocol lint|mcp serve|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run audit-secrets|run export|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -60,6 +61,7 @@ function help(): string {
     "  protocol lint  validate a Pro control envelope offline and explain corrections",
     "  runs           list safe summaries of every persisted run",
     "  runs prune     sweep old terminal runs; dry-run unless --apply is given",
+    "  mcp serve      serve bounded CueLine API tools over newline-delimited stdio",
     "  run status     metadata-only summary for safe cross-session handoff",
     "  run status-at  reconstruct sanitized run state at one event sequence",
     "  run diff       compare two sanitized run summaries field by field",
@@ -94,6 +96,7 @@ function help(): string {
     "  cueline protocol lint <file> --run-id <id> --round <n> --request-id <id> [--json]",
     "  cueline runs [--json]",
     "  cueline runs prune [--older-than-days <0..3650>] [--state <complete|blocked|cancelled>]... [--apply] [--json]",
+    "  cueline mcp serve",
     "  cueline run status <run-id> [--json]",
     "  cueline run status-at <run-id> --sequence <positive-integer> [--json]",
     "  cueline run diff <left-run-id> <right-run-id> [--json]",
@@ -141,14 +144,34 @@ function help(): string {
     "  Deletion: runs prune with --apply permanently removes eligible terminal runs;",
     "  without --apply it only reports what would be removed.",
     "",
-    "No CLI command drives the browser. A live run is driven through the imported API",
-    "inside Codex, where the built-in Browser lives.",
+    "Direct CLI observation and setup commands never drive the browser. `mcp serve`",
+    "exposes start/continue API tools; continuation still requires the same injected",
+    "built-in Browser runtime as the imported API.",
   ].join("\n");
 }
 
 function errorMessage(error: unknown): string {
   if (error instanceof CueLineError) return `${error.code}: ${error.message}`;
   return error instanceof Error ? error.message : String(error);
+}
+
+async function mcpServeCommand(environment: NodeJS.ProcessEnv): Promise<number> {
+  const shutdown = new AbortController();
+  const stop = () => shutdown.abort();
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  try {
+    await serveCueLineMcp({
+      input: process.stdin,
+      output: process.stdout,
+      environment,
+      signal: shutdown.signal,
+    });
+    return 0;
+  } finally {
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
+  }
 }
 
 type ObservedJobStatus = JobStatus["status"] | "orphaned" | "unverified" | "conflict";
@@ -532,6 +555,9 @@ export async function main(
     if (args[0] === "api" && args[1] === "path" && args.length === 2) {
       io.stdout(fileURLToPath(new URL("../api.js", import.meta.url)));
       return 0;
+    }
+    if (args[0] === "mcp" && args[1] === "serve" && args.length === 2) {
+      return await mcpServeCommand(environment);
     }
     if (args[0] === "install" && args.length === 1) {
       io.stdout(await installSkill(environment));
