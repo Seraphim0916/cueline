@@ -22,12 +22,11 @@
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 的包裝層。
 
-## 最新版本：0.4.0
+## 最新版本：0.4.1
 
-- 新增 `cueline mcp serve`:Model Context Protocol(MCP)stdio 伺服器,把 CueLine 的持久 run 介面以七個工具對外(`cueline_start_run`、`cueline_continue_run`、`cueline_run_status`、`cueline_run_doctor`、`cueline_claim_caller_job`、`cueline_start_caller_job`、`cueline_list_runs`),任何 MCP 宿主都能直接驅動 run,不必再包 CLI。JSON-RPC 2.0 傳輸為手刻——CueLine 仍維持零執行期 npm 依賴——工具回傳與 API 相同的有界證據,process 執行仍要求同一次呼叫明確帶 `allowProcessExecution: true`。
-- 內含 0.3.2 的修復:以水合後的全新觀察證據復原卡死的 `submitted` 控制器回合,恰一次帶 `retryOfRequestId` 的重試。以 MCP 握手/拒收整合測試、真實 stdio 冒煙測試,加上 552/552 測試驗證。
+- 修復重開機後無法接收已完成附件型 ChatGPT Pro 回覆的問題。即使全新頁面水合後掛載的歷史 assistant 節點少於持久 baseline，CueLine 也能用精確的 run／round／request envelope 接受回覆；exact URL、雙 Pro 證據、user count、水合與 idle 安全閘門仍維持 fail-closed。真實 round 35 已零重送、零重複 job 復原；559/559 測試通過。
 
-完整內容請看 [changelog](CHANGELOG.md#040---2026-07-18) 或版本化的 [v0.4.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.0)。
+完整內容請看 [changelog](CHANGELOG.md#041---2026-07-18) 或版本化的 [v0.4.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.1)。
 
 ## 一次執行實際上怎麼跑
 
@@ -68,15 +67,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.4.0
+npm install -g cueline@0.4.1
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.4.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.0) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.4.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.1) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.0/cueline-0.4.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.1/cueline-0.4.1.tgz
 cueline install
 cueline doctor
 ```
@@ -194,7 +193,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.4.0
+CueLine 0.4.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

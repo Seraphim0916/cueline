@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.1 - 2026-07-18
+
+### Fixed
+
+- Recover an already completed ChatGPT Pro attachment response after CueLine or
+  the machine restarts, even when fresh page hydration mounts fewer historical
+  assistant message nodes than the durable pre-submit baseline. An exact
+  `cueline/0.1` run/round/request envelope can now establish response freshness
+  without weakening the exact conversation URL, Pro composer label, Pro
+  response slug, user-message baseline, hydration, or idle-controller checks.
+- Keep recovery read-only and idempotent: the submitted request is accepted
+  without resending it, registering a duplicate job, or requiring manual
+  reconciliation. Mismatched request or round identities, a non-Pro response,
+  an answering controller, and an attachment without a matching assistant
+  envelope remain rejected or pending.
+
+### Verification
+
+- Red/green regression reproduced the rebooted DOM shape (`user 51 -> 52`,
+  assistant baseline `4`, hydrated DOM `3`) and the exact round 35 response.
+- Full suite: 559/559 tests passed; typecheck, Node support, CLI contracts,
+  plugin validation, documentation validation, package dry-run, and `doctor`
+  passed.
+- Live recovery accepted the existing round 35 `inspect` command for
+  `job_1ba71846e6340dd393b5f09693f3b888` with the ChatGPT user-message count
+  unchanged at 52 and no duplicate job. The next round stopped safely at
+  pre-submit with `CONTROLLER_PROMPT_NOT_READY` and `definitely_not_sent`.
+
 ## 0.4.0 - 2026-07-18
 
 ### Added

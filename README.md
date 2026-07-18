@@ -22,12 +22,11 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.4.0
+## Latest release: 0.4.1
 
-- Added `cueline mcp serve`: a Model Context Protocol (MCP) stdio server exposing CueLine's durable-run surface as seven tools (`cueline_start_run`, `cueline_continue_run`, `cueline_run_status`, `cueline_run_doctor`, `cueline_claim_caller_job`, `cueline_start_caller_job`, `cueline_list_runs`), so any MCP host can drive runs without shelling out to the CLI. The JSON-RPC 2.0 transport is hand-rolled — CueLine still has zero runtime npm dependencies — results return the same bounded evidence as the API, and process execution still requires explicit `allowProcessExecution: true` in the same call.
-- Includes the 0.3.2 fix that recovers wedged `submitted` controller turns from fresh hydrated evidence with exactly one `retryOfRequestId` retry. Verified with MCP handshake/refusal integration tests, a live stdio smoke, and 552/552 tests.
+- Fixed reboot recovery for an already completed attachment-backed ChatGPT Pro response. CueLine now accepts an exact run/round/request envelope even when fresh page hydration mounts fewer historical assistant nodes than the durable baseline, while keeping exact URL, dual Pro evidence, user-count, hydration, and idle checks fail-closed. The real round 35 response was recovered with zero resend and no duplicate job; 559/559 tests passed.
 
-Read the complete [changelog](CHANGELOG.md#040---2026-07-18) or the versioned [v0.4.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.0).
+Read the complete [changelog](CHANGELOG.md#041---2026-07-18) or the versioned [v0.4.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.1).
 
 ## How a run actually goes
 
@@ -70,15 +69,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.4.0
+npm install -g cueline@0.4.1
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.4.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.0), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.4.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.1), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.0/cueline-0.4.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.1/cueline-0.4.1.tgz
 cueline install
 cueline doctor
 ```
@@ -211,7 +210,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.4.0
+CueLine 0.4.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
