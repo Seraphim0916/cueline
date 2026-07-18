@@ -2070,6 +2070,80 @@ test("refuses a pre-existing attachment even if the current fill would add anoth
   assert.equal(fixture.sendSubmissions(), 0);
 });
 
+test("reuses CueLine's own leftover attachment on an operator-confirmed not-sent retry without re-filling", async () => {
+  const conversationUrl = "https://chatgpt.com/c/reuse-not-sent-attachment";
+  const abandonedRequestId = "msg_abandoned";
+  const requestId = "msg_retry";
+  const prompt = `Controller envelope requestId=${requestId} :: ${"x".repeat(44_679)}`;
+  const abandonedPrompt = prompt.split(requestId).join(abandonedRequestId);
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    composerStates: [
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: true,
+      },
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: true,
+      },
+    ],
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "",
+        assistantMessageCount: 0,
+        userMessageCount: 1,
+        lastUserText: "controller-observation.txt",
+        lastMessageRole: "assistant",
+      },
+      {
+        isAnswering: true,
+        assistantText: "working",
+        assistantMessageCount: 0,
+        userMessageCount: 2,
+      },
+      {
+        isAnswering: false,
+        assistantText: "reused attachment response",
+        assistantMessageCount: 1,
+        userMessageCount: 2,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_reuse_not_sent_attachment",
+    round: 2,
+    requestId,
+    prompt,
+    attachmentPromptExpected: true,
+    notSentRecovery: {
+      abandonedRequestId,
+      promptHash: commandHash(abandonedPrompt),
+      conversationUrl,
+      baselineUserMessageCount: 1,
+    },
+  } as BrowserTurnInput);
+
+  assert.equal(turn.text, "reused attachment response");
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
 test("does not classify an empty composer as unsent while an attachment is still settling", async () => {
   const fixture = fakeBrowser({
     composerStates: [

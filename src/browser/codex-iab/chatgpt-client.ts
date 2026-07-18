@@ -722,7 +722,24 @@ class CodexIabAdapter implements BrowserAdapter {
       input.prompt,
       SEND_BUTTON_NAMES,
     );
-    if (composerBaseline.attachmentCount > 0) {
+    // A leftover attachment is provably CueLine's own converted prompt only on
+    // an operator-confirmed not-sent retry whose abandoned attempt had reached
+    // attachment_ready for this exact prompt. The retry rewrites the requestId
+    // back to the abandoned one (controller-turn recovery), so undoing that
+    // swap must reproduce the confirmed promptHash; the pre-submit guard above
+    // already proved the same conversation and unchanged user-message count.
+    // Reuse that single attachment instead of refusing; any other pre-existing
+    // attachment stays refused so a user's own attachment is never mixed or cleared.
+    const reusesConfirmedAttachmentPrompt =
+      input.notSentRecovery !== undefined &&
+      input.attachmentPromptExpected === true &&
+      composerBaseline.attachmentCount === 1 &&
+      commandHash(
+        input.prompt
+          .split(input.requestId)
+          .join(input.notSentRecovery.abandonedRequestId),
+      ) === input.notSentRecovery.promptHash;
+    if (composerBaseline.attachmentCount > 0 && !reusesConfirmedAttachmentPrompt) {
       throw new CueLineError(
         "CONTROLLER_PROMPT_NOT_READY",
         "The ChatGPT composer already contains an attachment. Refusing to mix it with the current controller prompt.",
@@ -734,12 +751,14 @@ class CodexIabAdapter implements BrowserAdapter {
         },
       );
     }
-    await composer.fill(input.prompt, {});
+    if (!reusesConfirmedAttachmentPrompt) {
+      await composer.fill(input.prompt, {});
+    }
     throwIfCancelled(input.signal);
     context.composerPromptState = await this.#waitForComposerReady(
       tab,
       input.prompt,
-      composerBaseline.attachmentCount,
+      reusesConfirmedAttachmentPrompt ? 0 : composerBaseline.attachmentCount,
       input.signal,
     );
     const sendTarget = await this.#resolveSendTarget(tab);
