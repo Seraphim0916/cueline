@@ -6,6 +6,7 @@ export interface BrowserTurnInput {
   repairAttempt?: number;
   manualSendConfirmed?: boolean;
   attachmentPromptExpected?: boolean;
+  baselineUserMessageCount?: number;
   baselineAssistantMessageCount?: number;
   notSentRecovery?: {
     abandonedRequestId: string;
@@ -22,6 +23,21 @@ export interface ControllerTurn {
   title?: string;
   model?: ControllerModelEvidence;
 }
+
+export interface BrowserSubmittedTurnEvidence {
+  conversationUrl: string;
+  selectedModelLabel: string | null;
+  hydrated: boolean;
+  baselineUserMessageCount: number;
+  observedUserMessageCount: number | null;
+  requestMessageFound: boolean | null;
+  isAnswering: boolean | null;
+}
+
+export type BrowserSubmittedTurnObservation =
+  | { status: "response"; turn: ControllerTurn }
+  | { status: "pending"; evidence?: BrowserSubmittedTurnEvidence }
+  | { status: "definitely_not_sent"; evidence: BrowserSubmittedTurnEvidence };
 
 export interface ControllerModelEvidence {
   provider: "chatgpt";
@@ -92,6 +108,10 @@ export interface BrowserAdapter {
   submitTurn?(input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<void>;
   /** Observe the exact submitted turn once; undefined means Pro is not finished yet. */
   observeTurn?(input: BrowserTurnInput): Promise<ControllerTurn | undefined>;
+  /** Observe a normally submitted turn without sending, including durable not-sent evidence. */
+  observeSubmittedTurn?(
+    input: BrowserTurnInput,
+  ): Promise<BrowserSubmittedTurnObservation>;
   sendTurn(input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<ControllerTurn>;
   recoverTurn?(input: BrowserTurnInput): Promise<ControllerTurn>;
   /** Archive one exact completed controller conversation. Implementations must never retry the archive click. */

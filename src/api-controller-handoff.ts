@@ -7,6 +7,7 @@ import type {
   CueLineRuntimeOptions,
   ManualControllerSubmissionConfirmation,
 } from "./api-contracts.js";
+import type { BrowserSubmittedTurnEvidence } from "./browser/browser-adapter.js";
 import { validateCallerWorkResultClaim } from "./api-caller-work.js";
 import { boundedControllerEventEvidence } from "./core/controller-turn.js";
 import {
@@ -24,6 +25,10 @@ import {
   RuntimeLease,
 } from "./state/runtime-lease.js";
 import { readAuthoritativeRunEvents } from "./state/store.js";
+import {
+  isDefinitelyNotSentObservation,
+  isSubmittedTurnRecoveryCandidate,
+} from "./core/submitted-turn-recovery.js";
 
 export async function confirmManualControllerSubmission(
   runId: string,
@@ -157,7 +162,10 @@ export async function confirmManualControllerSubmission(
 
 export async function confirmControllerTurnNotSent(
   runId: string,
-  options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> & {
+  options: Pick<
+    CueLineRuntimeOptions,
+    "home" | "environment" | "now" | "browser"
+  > & {
     requestId: string;
     conversationUrl?: string;
   },
@@ -217,14 +225,23 @@ export async function confirmControllerTurnNotSent(
         "Operator-confirmed not-sent recovery requires exactly one pending controller turn.",
       );
     }
-    if (
+    const exactAmbiguousFailure =
       turn.submissionState !== "possibly_sent" ||
       state.lastFailure?.code !== "CONTROLLER_SUBMISSION_AMBIGUOUS" ||
       state.lastFailure.requestId !== turn.requestId
-    ) {
+        ? false
+        : true;
+    const suppliedConversationUrl = options.conversationUrl;
+    const knownConversationUrl = state.conversationUrl ?? turn.conversationUrl;
+    const candidateConversationUrl = knownConversationUrl ?? suppliedConversationUrl;
+    const evidenceGatedSubmittedTurn =
+      options.browser !== undefined &&
+      candidateConversationUrl !== undefined &&
+      isSubmittedTurnRecoveryCandidate(turn, candidateConversationUrl);
+    if (!exactAmbiguousFailure && !evidenceGatedSubmittedTurn) {
       throw new CueLineError(
         "CONTROLLER_NOT_SENT_STATE_INVALID",
-        "Operator-confirmed not-sent recovery is available only for the exact ambiguous submission failure.",
+        "Not-sent recovery requires either the exact ambiguous submission failure or a fresh evidence-gated submitted turn.",
       );
     }
     if (turn.retryOfRequestId !== undefined && turn.retryOfRequestId !== null) {
@@ -239,8 +256,6 @@ export async function confirmControllerTurnNotSent(
         "The turn is already operator-confirmed as sent; it cannot also be confirmed not sent.",
       );
     }
-    const suppliedConversationUrl = options.conversationUrl;
-    const knownConversationUrl = state.conversationUrl ?? turn.conversationUrl;
     if (knownConversationUrl === null && suppliedConversationUrl === undefined) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_URL_REQUIRED",
@@ -310,6 +325,43 @@ export async function confirmControllerTurnNotSent(
         );
       }
     }
+    let submittedEvidence: BrowserSubmittedTurnEvidence | undefined;
+    if (evidenceGatedSubmittedTurn) {
+      const browser = options.browser!;
+      if (browser.observeSubmittedTurn === undefined) {
+        throw new CueLineError(
+          "CONTROLLER_NOT_SENT_EVIDENCE_REQUIRED",
+          "The normally submitted turn requires a fresh read-only Browser observation before it can be confirmed not sent.",
+        );
+      }
+      const observation = await browser.observeSubmittedTurn({
+        runId,
+        round: turn.round,
+        requestId: turn.requestId,
+        prompt: turn.prompt,
+        baselineUserMessageCount: turn.baselineUserMessageCount!,
+        ...(turn.baselineAssistantMessageCount === null
+          ? {}
+          : { baselineAssistantMessageCount: turn.baselineAssistantMessageCount }),
+        ...(turn.composerPromptState === "attachment_ready"
+          ? { attachmentPromptExpected: true }
+          : {}),
+      });
+      if (
+        observation.status !== "definitely_not_sent" ||
+        !isDefinitelyNotSentObservation(
+          turn,
+          conversationUrl,
+          observation.evidence,
+        )
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_NOT_SENT_EVIDENCE_INSUFFICIENT",
+          "The fresh conversation observation did not prove baseline-equal, request-absent, Pro-idle not-sent evidence.",
+        );
+      }
+      submittedEvidence = observation.evidence;
+    }
     const derivedBaselineUserMessageCount =
       turn.baselineUserMessageCount ??
       events.filter((event) => {
@@ -330,7 +382,18 @@ export async function confirmControllerTurnNotSent(
         conversation_url: conversationUrl,
         selected_model_label: turn.selectedModelLabel,
         baseline_user_message_count: derivedBaselineUserMessageCount,
-        operator_confirmation: true,
+        ...(submittedEvidence === undefined
+          ? { operator_confirmation: true }
+          : {
+              observed_user_message_count:
+                submittedEvidence.observedUserMessageCount,
+              request_message_found: false,
+              is_answering: false,
+              page_hydrated: true,
+              submission_state: "definitely_not_sent",
+              confirmation_source: "fresh_read_only_observation",
+              operator_confirmation: true,
+            }),
       });
     }
     if (
@@ -347,7 +410,18 @@ export async function confirmControllerTurnNotSent(
         conversation_url: conversationUrl,
         selected_model_label: turn.selectedModelLabel,
         baseline_user_message_count: derivedBaselineUserMessageCount,
-        operator_confirmation: true,
+        ...(submittedEvidence === undefined
+          ? { operator_confirmation: true }
+          : {
+              observed_user_message_count:
+                submittedEvidence.observedUserMessageCount,
+              request_message_found: false,
+              is_answering: false,
+              page_hydrated: true,
+              submission_state: "definitely_not_sent",
+              confirmation_source: "fresh_read_only_observation",
+              operator_confirmation: true,
+            }),
       });
     }
     await store.snapshot();

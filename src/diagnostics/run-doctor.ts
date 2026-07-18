@@ -163,6 +163,13 @@ const PHASE_DIAGNOSES: Record<CueLineRunPhase, PhaseDiagnosis> = {
   },
 };
 
+const SUBMITTED_TURN_RECOVERY_DIAGNOSIS: PhaseDiagnosis = {
+  code: "SUBMITTED_TURN_RECOVERY_REQUIRED",
+  severity: "warning",
+  summary: "A normally submitted turn lost its original observer and has durable send baselines.",
+  action: "Call continueCueLineRun once for a fresh read-only observation; CueLine retries only on definitely-not-sent evidence.",
+};
+
 function jobFinding(
   code: string,
   severity: CueLineDiagnosticSeverity,
@@ -182,7 +189,10 @@ function jobFinding(
 export function diagnoseCueLineRunStatus(
   status: CueLineRunStatusSummary,
 ): CueLineRunDiagnosis {
-  const phase = PHASE_DIAGNOSES[status.phase];
+  const phase =
+    status.safeNextAction === "recover_submitted_turn"
+      ? SUBMITTED_TURN_RECOVERY_DIAGNOSIS
+      : PHASE_DIAGNOSES[status.phase];
   const findings: CueLineRunDiagnosticFinding[] = [
     {
       code: phase.code,

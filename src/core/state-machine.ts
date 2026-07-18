@@ -85,6 +85,7 @@ export interface ControllerNotSentRecoveryState {
   status: "confirmed" | "retry_pending" | "conflict";
   retryRequestId: string | null;
   conflictCode: string | null;
+  confirmationSource?: "operator" | "fresh_observation";
 }
 
 export interface RunFailureEvidence {
@@ -536,6 +537,10 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
               status: "confirmed",
               retryRequestId: null,
               conflictCode: null,
+              confirmationSource:
+                payload.confirmation_source === "fresh_read_only_observation"
+                  ? "fresh_observation"
+                  : "operator",
             }
           : payload.reason === "operator_confirmed_not_sent" &&
         abandoned !== undefined &&
@@ -582,6 +587,10 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
         status: "confirmed",
         retryRequestId: null,
         conflictCode: null,
+        confirmationSource:
+          payload.confirmation_source === "fresh_read_only_observation"
+            ? "fresh_observation"
+            : "operator",
       },
     };
   }
