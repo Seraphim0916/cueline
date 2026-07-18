@@ -62,6 +62,7 @@
               "runtime_active",
               "active_jobs",
               "too_recent",
+              "unparseable_timestamp",
               "delete_failed"
             ]
           },
