@@ -1737,6 +1737,168 @@ test("submitted-turn observation refuses an unhydrated zero-count page", async (
   assert.equal(observation.evidence?.observedUserMessageCount, 0);
 });
 
+test("submitted attachment recovery accepts an exact idle Pro envelope after assistant DOM count regresses", async () => {
+  const conversationUrl = "https://chatgpt.com/c/rebooted-attachment-recovery";
+  const runId = "run_rebooted_attachment_recovery";
+  const requestId = "msg_rebooted_attachment_recovery";
+  const response = `<CueLineControl> ${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 35,
+    request_id: requestId,
+    action: "inspect",
+    job_ids: ["job_existing"],
+  })} </CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: response,
+        userMessageCount: 52,
+        assistantMessageCount: 3,
+        assistantModelSlug: "gpt-5-6-pro",
+        lastUserText: "Pasted text(96).txt\nDocument",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 35,
+    requestId,
+    prompt: "full prompt is represented by the attachment card after restart",
+    attachmentPromptExpected: true,
+    baselineUserMessageCount: 51,
+    baselineAssistantMessageCount: 4,
+  });
+
+  assert.equal(observation.status, "response");
+  assert.equal(observation.status === "response" ? observation.turn.text : null, response);
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+for (const scenario of [
+  { name: "assistant is still answering", isAnswering: true },
+  { name: "request identity differs", requestId: "msg_other" },
+  { name: "round identity differs", round: 34 },
+  { name: "assistant response has no matching envelope", omitEnvelope: true },
+] as const) {
+  test(`submitted attachment recovery stays pending when ${scenario.name}`, async () => {
+    const conversationUrl = `https://chatgpt.com/c/rebooted-attachment-negative-${scenario.name.replaceAll(" ", "-")}`;
+    const runId = "run_rebooted_attachment_negative";
+    const requestId = "msg_rebooted_attachment_negative";
+    const response = scenario.omitEnvelope
+      ? "unrelated completed assistant response"
+      : `<CueLineControl>${JSON.stringify({
+          protocol: "cueline/0.1",
+          run_id: runId,
+          round: scenario.round ?? 35,
+          request_id: scenario.requestId ?? requestId,
+          action: "inspect",
+          job_ids: ["job_existing"],
+        })}</CueLineControl>`;
+    const fixture = fakeBrowser({
+      initialUrl: conversationUrl,
+      initialModel: "Pro",
+      hydratedComposer: true,
+      states: [
+        {
+          isAnswering: scenario.isAnswering ?? false,
+          assistantText: response,
+          userMessageCount: 52,
+          assistantMessageCount: 3,
+          assistantModelSlug: "gpt-5-6-pro",
+          lastUserText: "Pasted text(96).txt\nDocument",
+          lastMessageRole: "assistant",
+        },
+      ],
+    });
+    const adapter = createCodexIabAdapter({
+      browser: fixture.browser,
+      conversationUrl,
+      timeoutMs: 20,
+      pollIntervalMs: 1,
+      stableMs: 0,
+    });
+
+    const observation = await adapter.observeSubmittedTurn!({
+      runId,
+      round: 35,
+      requestId,
+      prompt: "full prompt is represented by the attachment card after restart",
+      attachmentPromptExpected: true,
+      baselineUserMessageCount: 51,
+      baselineAssistantMessageCount: 4,
+    });
+
+    assert.equal(observation.status, "pending");
+    assert.equal(fixture.sendSubmissions(), 0);
+  });
+}
+
+test("submitted attachment recovery rejects an exact envelope from a non-Pro response", async () => {
+  const conversationUrl = "https://chatgpt.com/c/rebooted-attachment-non-pro";
+  const runId = "run_rebooted_attachment_non_pro";
+  const requestId = "msg_rebooted_attachment_non_pro";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: `<CueLineControl>${JSON.stringify({
+          protocol: "cueline/0.1",
+          run_id: runId,
+          round: 35,
+          request_id: requestId,
+          action: "inspect",
+          job_ids: ["job_existing"],
+        })}</CueLineControl>`,
+        userMessageCount: 52,
+        assistantMessageCount: 3,
+        assistantModelSlug: "gpt-5-6-thinking",
+        lastUserText: "Pasted text(96).txt\nDocument",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  await assert.rejects(
+    adapter.observeSubmittedTurn!({
+      runId,
+      round: 35,
+      requestId,
+      prompt: "full prompt is represented by the attachment card after restart",
+      attachmentPromptExpected: true,
+      baselineUserMessageCount: 51,
+      baselineAssistantMessageCount: 4,
+    }),
+    (error: unknown) =>
+      error instanceof Error && "code" in error && error.code === "PRO_MODEL_MISMATCH",
+  );
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
 test("returns the conversation URL captured with the completed response DOM", async () => {
   const responseUrl = "https://chatgpt.com/c/response-conversation";
   const fixture = fakeBrowser({

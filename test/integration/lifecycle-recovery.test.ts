@@ -919,6 +919,111 @@ test("a crash after response receipt reconciles that response instead of sending
   assert.equal(events.filter((event) => event.type === "controller_turn_requested").length, 1);
 });
 
+test("reboot recovery accepts one submitted attachment response without resending or duplicating work", async () => {
+  const home = await temporaryHome();
+  const runId = "run_rebooted_submitted_attachment";
+  const requestId = "msg_rebooted_submitted_attachment";
+  const conversationUrl = "https://chatgpt.com/c/rebooted-submitted-attachment";
+  const prompt = "attachment-backed controller prompt";
+  const responseText = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 35,
+    request_id: requestId,
+    action: "complete",
+    final_delivery_text: "REBOOTED_ATTACHMENT_RECOVERED",
+  })}</CueLineControl>`;
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, prompt, "caller", 40),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: prompt,
+    executor: "caller",
+    max_rounds: 40,
+  });
+  await store.append("controller_turn_requested", {
+    round: 35,
+    request_id: requestId,
+    prompt,
+    prompt_hash: commandHash(prompt),
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.append("controller_turn_submitted", {
+    round: 35,
+    request_id: requestId,
+    submission_state: "submitted",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "attachment_ready",
+    baseline_user_message_count: 51,
+    baseline_assistant_message_count: 4,
+  });
+  await store.snapshot();
+  const initialRequestIds = store.state.pendingControllerTurns.map((turn) => turn.requestId);
+  const initialJobCount = Object.keys(store.state.jobs).length;
+  let observeCalls = 0;
+  let submitCalls = 0;
+  const browser: SubmittedObservationBrowser = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async observeSubmittedTurn(input): Promise<SubmittedTurnObservation> {
+      observeCalls += 1;
+      assert.equal(input.requestId, requestId);
+      assert.equal(input.attachmentPromptExpected, true);
+      assert.equal(input.baselineUserMessageCount, 51);
+      assert.equal(input.baselineAssistantMessageCount, 4);
+      return {
+        status: "response",
+        turn: {
+          text: responseText,
+          conversationUrl,
+          model: {
+            provider: "chatgpt",
+            selectedLabel: "Pro",
+            responseModelSlug: "gpt-5-6-pro",
+            source: "composer_and_response",
+          },
+        },
+      };
+    },
+    async submitTurn(): Promise<void> {
+      submitCalls += 1;
+      throw new Error("reboot attachment recovery must not resend");
+    },
+    async observeTurn(): Promise<undefined> {
+      return undefined;
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("reboot attachment recovery must use submitted-turn observation");
+    },
+  };
+
+  const result = await continueCueLineRun({
+    runId,
+    home,
+    browser,
+    conversationUrl,
+    routingConfig,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "REBOOTED_ATTACHMENT_RECOVERED");
+  assert.equal(observeCalls, 1);
+  assert.equal(submitCalls, 0);
+  assert.equal(Object.keys(result.state.jobs).length, initialJobCount);
+  const events = await readEvents(runPaths(home, runId).events);
+  const requestEvents = events.filter((event) => event.type === "controller_turn_requested");
+  assert.deepEqual(
+    requestEvents.map((event) => (event.payload as Record<string, unknown>).request_id),
+    initialRequestIds,
+  );
+  assert.equal(events.filter((event) => event.type === "job_registered").length, 0);
+  assert.equal(events.filter((event) => event.type === "controller_response_received").length, 1);
+  assert.equal(events.filter((event) => event.type === "controller_command_accepted").length, 1);
+});
+
 test("a stale caller observer is fenced and recovers one normally submitted turn without resending", async () => {
   const home = await temporaryHome();
   const runId = "run_stale_caller_observer_recovery";
