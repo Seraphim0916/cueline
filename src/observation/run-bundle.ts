@@ -4,7 +4,7 @@ import type {
 } from "../api-contracts.js";
 import { loadCueLineRunStatus } from "../api-runtime-lifecycle.js";
 import { verifyCueLineRun } from "../api-run-verification.js";
-import { safeCueLineRunStatus } from "../cli/run-status-view.js";
+import { safeCueLineRunStatus } from "../core/run-status-view.js";
 import { CueLineError } from "../core/errors.js";
 import { runtimeEnvironment } from "../core/runtime.js";
 import {

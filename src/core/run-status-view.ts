@@ -1,4 +1,4 @@
-import type { CueLineRunStatusSummary } from "../core/run-status.js";
+import type { CueLineRunStatusSummary } from "./run-status.js";
 
 function present<T>(value: T | undefined): value is T {
   return value !== undefined;
