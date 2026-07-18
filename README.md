@@ -22,11 +22,11 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.4.1
+## Latest release: 0.4.2
 
 - Fixed reboot recovery for an already completed attachment-backed ChatGPT Pro response. CueLine now accepts an exact run/round/request envelope even when fresh page hydration mounts fewer historical assistant nodes than the durable baseline, while keeping exact URL, dual Pro evidence, user-count, hydration, and idle checks fail-closed. The real round 35 response was recovered with zero resend and no duplicate job; 559/559 tests passed.
 
-Read the complete [changelog](CHANGELOG.md#041---2026-07-18) or the versioned [v0.4.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.1).
+Read the complete [changelog](CHANGELOG.md#042---2026-07-18) or the versioned [v0.4.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.2).
 
 ## How a run actually goes
 
@@ -69,15 +69,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.4.1
+npm install -g cueline@0.4.2
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.4.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.1), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.4.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.2), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.1/cueline-0.4.1.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.2/cueline-0.4.2.tgz
 cueline install
 cueline doctor
 ```
@@ -210,7 +210,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.4.1
+CueLine 0.4.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

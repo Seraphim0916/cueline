@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.2 - 2026-07-18
+
+### Fixed
+
+- Reuse CueLine's own leftover attachment when retrying an operator-confirmed
+  not-sent turn. A long controller prompt is auto-converted by ChatGPT into a
+  composer attachment; when the submit click was ambiguous and the operator
+  confirmed the prompt was not sent, that attachment stays in the composer. The
+  pre-existing-attachment guard previously refused it as foreign
+  (`CONTROLLER_PROMPT_NOT_READY`), deadlocking the run at `prompt_not_sent` /
+  `safeNextAction=retry`. The retry now reuses the single leftover attachment
+  only when it is provably CueLine's own — `notSentRecovery` is set,
+  `attachmentPromptExpected` is true, exactly one attachment is present, and
+  undoing the retry request-id swap reproduces the operator-confirmed
+  `promptHash` — skipping the re-fill instead of refusing. Any other
+  pre-existing attachment is still refused, so a user's own attachment is never
+  mixed in or cleared.
+
+### Verification
+
+- Red/green regression: a new unit test reuses the leftover attachment without
+  re-filling and clicks send exactly once; it failed against the old guard and
+  passes after the fix.
+- Full suite green: unit 250/250, integration 304/304, smoke 6/6, `tsc
+  --noEmit` clean.
+
 ## 0.4.1 - 2026-07-18
 
 ### Fixed
