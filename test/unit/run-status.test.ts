@@ -20,20 +20,22 @@ function pendingState(
         round: 1,
         requestId: "msg_status_pending",
         prompt: "controller prompt",
-        promptHash: "prompt-hash",
+        promptHash: "a".repeat(64),
         repairAttempt: 0,
         submissionState,
         conversationUrl: "https://chatgpt.com/c/exact",
         selectedModelLabel: "Pro",
+        baselineUserMessageCount: 1,
         baselineAssistantMessageCount: 1,
         composerPromptState: "inline_ready",
         manualSendConfirmed,
+        submissionCheckpointContract: "write_ahead_v1",
       },
     ],
   };
 }
 
-test("a normally submitted Pro turn directs the caller to observe, not manual reconcile", () => {
+test("a normally submitted Pro turn with a durable baseline exposes submitted-turn recovery", () => {
   const summary = summarizeCueLineRunState(
     pendingState("submitted"),
     2,
@@ -41,7 +43,7 @@ test("a normally submitted Pro turn directs the caller to observe, not manual re
   );
 
   assert.equal(summary.phase, "controller_response_pending");
-  assert.equal(summary.safeNextAction, "observe");
+  assert.equal(summary.safeNextAction, "recover_submitted_turn");
 });
 
 test("ambiguous or manually submitted turns retain the explicit reconciliation action", () => {

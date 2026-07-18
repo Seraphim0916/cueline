@@ -62,6 +62,21 @@ test("diagnoses a pending controller response without suggesting a resend", () =
   assert.match(diagnosis.findings[0]?.action ?? "", /do not resend/i);
 });
 
+test("diagnoses the submitted-turn wedge with one stable recovery action", () => {
+  const diagnosis = diagnoseCueLineRunStatus(
+    status({
+      safeNextAction:
+        "recover_submitted_turn" as unknown as CueLineRunStatusSummary["safeNextAction"],
+    }),
+  );
+
+  assert.equal(diagnosis.outcome, "action_required");
+  assert.equal(diagnosis.nextAction, "recover_submitted_turn");
+  assert.equal(diagnosis.findings[0]?.code, "SUBMITTED_TURN_RECOVERY_REQUIRED");
+  assert.match(diagnosis.findings[0]?.action ?? "", /continueCueLineRun/);
+  assert.match(diagnosis.findings[0]?.action ?? "", /read-only/i);
+});
+
 test("treats stale ownership and ambiguous local work as blockers", () => {
   const diagnosis = diagnoseCueLineRunStatus(
     status({

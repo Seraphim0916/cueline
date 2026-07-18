@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import type { BrowserSubmittedTurnEvidence } from "../browser/browser-adapter.js";
 import { JobStatusStore } from "../jobs/status.js";
 import {
   CancellationWatcher,
@@ -54,6 +55,10 @@ import {
   reduceRunState,
   type CueLineRunState,
 } from "./state-machine.js";
+import {
+  isDefinitelyNotSentObservation,
+  isSubmittedTurnRecoveryCandidate,
+} from "./submitted-turn-recovery.js";
 
 export type {
   ContinueControllerLoopOptions,
@@ -709,8 +714,12 @@ async function reconcilePendingControllerTurn(
       },
     );
   }
+  const observeSubmittedTurn =
+    pending.retryOfRequestId === undefined || pending.retryOfRequestId === null
+      ? options.browser.observeSubmittedTurn
+      : undefined;
   const observeWithoutWaiting =
-    options.browser.observeTurn !== undefined;
+    observeSubmittedTurn !== undefined || options.browser.observeTurn !== undefined;
   if (!observeWithoutWaiting && !options.browser.recoverTurn) {
     throw new CueLineError(
       "CONTROLLER_RECONCILIATION_REQUIRED",
@@ -740,6 +749,10 @@ async function reconcilePendingControllerTurn(
     ...(pending.composerPromptState === "attachment_ready"
       ? { attachmentPromptExpected: true }
       : {}),
+    ...(pending.baselineUserMessageCount === null ||
+    pending.baselineUserMessageCount === undefined
+      ? {}
+      : { baselineUserMessageCount: pending.baselineUserMessageCount }),
     ...(pending.baselineAssistantMessageCount === null
       ? {}
       : { baselineAssistantMessageCount: pending.baselineAssistantMessageCount }),
@@ -759,9 +772,40 @@ async function reconcilePendingControllerTurn(
     ...(pending.repairAttempt === 0 ? {} : { repairAttempt: pending.repairAttempt }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   };
-  const turn = observeWithoutWaiting
-    ? await options.browser.observeTurn!(recoveryInput)
-    : await options.browser.recoverTurn!(recoveryInput);
+  let turn;
+  if (
+    observeSubmittedTurn !== undefined &&
+    expectedConversationUrl !== null &&
+    isSubmittedTurnRecoveryCandidate(pending, expectedConversationUrl)
+  ) {
+    const submittedObservation = await observeSubmittedTurn.call(
+      options.browser,
+      recoveryInput,
+    );
+    if (submittedObservation.status === "pending") return "awaiting_controller";
+    if (submittedObservation.status === "definitely_not_sent") {
+      if (
+        !isDefinitelyNotSentObservation(
+          pending,
+          expectedConversationUrl,
+          submittedObservation.evidence,
+        )
+      ) {
+        return "awaiting_controller";
+      }
+      await recordFreshSubmittedTurnNotSent(
+        store,
+        pending,
+        submittedObservation.evidence,
+      );
+      return "continue";
+    }
+    turn = submittedObservation.turn;
+  } else {
+    turn = options.browser.observeTurn
+      ? await options.browser.observeTurn(recoveryInput)
+      : await options.browser.recoverTurn!(recoveryInput);
+  }
   if (turn === undefined) return "awaiting_controller";
   const command = await requestControllerCommand(
     store,
@@ -805,6 +849,53 @@ async function reconcilePendingControllerTurn(
     acceptedCommandHash,
     options,
   );
+}
+
+async function recordFreshSubmittedTurnNotSent(
+  store: RunStore<CueLineRunState>,
+  pending: CueLineRunState["pendingControllerTurns"][number],
+  evidence: BrowserSubmittedTurnEvidence,
+): Promise<void> {
+  if (store.state.notSentRecovery?.abandonedRequestId !== pending.requestId) {
+    await store.append("controller_turn_not_sent_confirmed", {
+      round: pending.round,
+      request_id: pending.requestId,
+      prompt_hash: pending.promptHash,
+      conversation_url: evidence.conversationUrl,
+      selected_model_label: evidence.selectedModelLabel,
+      baseline_user_message_count: evidence.baselineUserMessageCount,
+      observed_user_message_count: evidence.observedUserMessageCount,
+      request_message_found: false,
+      is_answering: false,
+      page_hydrated: true,
+      submission_state: "definitely_not_sent",
+      confirmation_source: "fresh_read_only_observation",
+      operator_confirmation: false,
+    });
+  }
+  if (
+    (store.state.pendingControllerTurns ?? []).some(
+      (turn) => turn.requestId === pending.requestId,
+    )
+  ) {
+    await store.append("controller_turn_abandoned", {
+      round: pending.round,
+      request_id: pending.requestId,
+      reason: "fresh_observation_definitely_not_sent",
+      round_not_consumed: true,
+      prompt_hash: pending.promptHash,
+      conversation_url: evidence.conversationUrl,
+      selected_model_label: evidence.selectedModelLabel,
+      baseline_user_message_count: evidence.baselineUserMessageCount,
+      observed_user_message_count: evidence.observedUserMessageCount,
+      request_message_found: false,
+      is_answering: false,
+      page_hydrated: true,
+      submission_state: "definitely_not_sent",
+      confirmation_source: "fresh_read_only_observation",
+      operator_confirmation: false,
+    });
+  }
 }
 
 async function createControllerRunStore(

@@ -13,6 +13,7 @@ import {
   isExactChatGptConversationUrl,
   sameChatGptConversationUrl,
 } from "./conversation-url.js";
+import { isSubmittedTurnRecoveryCandidate } from "./submitted-turn-recovery.js";
 
 const JOB_STATUSES = [
   "pending",
@@ -51,6 +52,7 @@ export type CueLineRunPhase =
 
 export type CueLineSafeNextAction =
   | "observe"
+  | "recover_submitted_turn"
   | "retry"
   | "reconcile"
   | "inspect_jobs_then_continue"
@@ -254,6 +256,16 @@ function hasRetryableUnsentTurn(state: CueLineRunState): boolean {
   );
 }
 
+function hasRecoverableSubmittedTurn(state: CueLineRunState): boolean {
+  if (state.pendingControllerTurns.length !== 1) return false;
+  const turn = state.pendingControllerTurns[0]!;
+  const conversationUrl = turn.conversationUrl ?? state.conversationUrl;
+  return (
+    conversationUrl !== null &&
+    isSubmittedTurnRecoveryCandidate(turn, conversationUrl)
+  );
+}
+
 function safeNextActionFor(
   state: CueLineRunState,
   runtime: RuntimeLeaseObservation,
@@ -310,7 +322,11 @@ function safeNextActionFor(
       state.pendingControllerTurns.length === 1 &&
       turn?.submissionState === "submitted" &&
       !turn.manualSendConfirmed;
-    return normallySubmitted ? "observe" : "reconcile";
+    return normallySubmitted
+      ? hasRecoverableSubmittedTurn(state)
+        ? "recover_submitted_turn"
+        : "observe"
+      : "reconcile";
   }
   if (roundLimitReached(state)) return "return_result";
   if (isPristineRun(state) && state.status === "running") return "continue";
@@ -538,6 +554,57 @@ export function summarizeCueLineRunState(
             (state.executor === "caller" && activeJobCount(state) === 0))) ||
           isSafeStaleCallerObservationRecovery(state, runtime, cancellation));
   const safeNextAction = safeNextActionFor(state, runtime, cancellation);
+  const currentRequestIds = new Set(
+    state.pendingControllerTurns.map((turn) => turn.requestId),
+  );
+  const recovery = state.notSentRecovery ?? null;
+  const recoveryRelevant =
+    recovery !== null &&
+    ((state.pendingControllerTurns.length === 0 &&
+      recovery.status === "confirmed" &&
+      recovery.retryRequestId === null) ||
+      state.pendingControllerTurns.some(
+        (turn) =>
+          turn.round === recovery.round &&
+          (turn.requestId === recovery.abandonedRequestId ||
+            turn.requestId === recovery.retryRequestId ||
+            turn.retryOfRequestId === recovery.abandonedRequestId),
+      ) ||
+      (recovery.status === "conflict" &&
+        ((state.lastFailure?.requestId !== null &&
+          state.lastFailure?.requestId !== undefined &&
+          currentRequestIds.has(state.lastFailure.requestId)) ||
+          (state.status === "failed" &&
+            state.pendingControllerTurns.length === 0 &&
+            recovery.round === state.round + 1))));
+  const manualConfirmationRelevant = state.pendingControllerTurns.some(
+    (turn) => turn.manualSendConfirmed,
+  );
+  const failureRelevant =
+    state.lastFailure !== null &&
+    (state.lastFailure.requestId === null ||
+      currentRequestIds.has(state.lastFailure.requestId) ||
+      (recoveryRelevant &&
+        (state.lastFailure.requestId === recovery?.abandonedRequestId ||
+          state.status === "failed")));
+  const reconciliation =
+    recoveryRelevant || manualConfirmationRelevant || failureRelevant
+      ? {
+          requiredReason: failureRelevant ? state.lastFailure?.code ?? null : null,
+          operatorConfirmation:
+            recoveryRelevant && recovery?.confirmationSource !== "fresh_observation"
+              ? ("not_sent_confirmed" as const)
+              : manualConfirmationRelevant
+                ? ("manual_send_confirmed" as const)
+                : null,
+          abandonedRequestId: recoveryRelevant
+            ? recovery?.abandonedRequestId ?? null
+            : null,
+          retryRequestId: recoveryRelevant ? recovery?.retryRequestId ?? null : null,
+          promptHash: recoveryRelevant ? recovery?.promptHash ?? null : null,
+          resendBlockedReason: recoveryRelevant ? recovery?.conflictCode ?? null : null,
+        }
+      : undefined;
   return {
     runId: state.runId,
     status: state.status,
@@ -558,19 +625,7 @@ export function summarizeCueLineRunState(
       lastAcceptedAction: acceptedCommand.action,
       lastAcceptedRequestId: acceptedCommand.requestId,
       lastAcceptedJobKeys: acceptedCommand.jobKeys,
-      reconciliation: {
-        requiredReason: state.lastFailure?.code ?? null,
-        operatorConfirmation:
-          state.notSentRecovery !== undefined && state.notSentRecovery !== null
-            ? "not_sent_confirmed"
-            : state.pendingControllerTurns.some((turn) => turn.manualSendConfirmed)
-              ? "manual_send_confirmed"
-              : null,
-        abandonedRequestId: state.notSentRecovery?.abandonedRequestId ?? null,
-        retryRequestId: state.notSentRecovery?.retryRequestId ?? null,
-        promptHash: state.notSentRecovery?.promptHash ?? null,
-        resendBlockedReason: state.notSentRecovery?.conflictCode ?? null,
-      },
+      ...(reconciliation === undefined ? {} : { reconciliation }),
       archive: {
         enabled: state.controllerConversationArchive?.enabled === true,
         status: state.controllerConversationArchive?.status ?? "disabled",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createCodexIabAdapter } from "../../src/browser/codex-iab/chatgpt-client.js";
-import type { BrowserTurnInput } from "../../src/browser/browser-adapter.js";
+import type { BrowserAdapter, BrowserTurnInput } from "../../src/browser/browser-adapter.js";
 import { CueLineError } from "../../src/core/errors.js";
 import { commandHash } from "../../src/core/ids.js";
 import {
@@ -1636,6 +1636,107 @@ test("observeTurn checks once without resending and later returns the exact comp
   );
 });
 
+test("submitted-turn observation waits past an initial 0/0 page before classifying not sent", async () => {
+  const conversationUrl = "https://chatgpt.com/c/submitted-turn-hydration";
+  const prompt = "Round 34 prompt absent after restart";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "",
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+      },
+      {
+        isAnswering: false,
+        assistantText: "",
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+      },
+      {
+        isAnswering: false,
+        assistantText: "round 33 response",
+        userMessageCount: 50,
+        assistantMessageCount: 49,
+        lastUserText: "round 33 prompt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 50,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  }) as BrowserAdapter & {
+    observeSubmittedTurn(input: BrowserTurnInput): Promise<{
+      status: string;
+      evidence?: { hydrated: boolean; observedUserMessageCount: number | null };
+    }>;
+  };
+
+  assert.equal(typeof adapter.observeSubmittedTurn, "function");
+  const observation = await adapter.observeSubmittedTurn({
+    runId: "run_submitted_turn_hydration",
+    round: 34,
+    requestId: "msg_submitted_turn_hydration",
+    prompt,
+    baselineUserMessageCount: 50,
+    baselineAssistantMessageCount: 49,
+  } as BrowserTurnInput & { baselineUserMessageCount: number });
+
+  assert.equal(observation.status, "definitely_not_sent");
+  assert.equal(observation.evidence?.hydrated, true);
+  assert.equal(observation.evidence?.observedUserMessageCount, 50);
+});
+
+test("submitted-turn observation refuses an unhydrated zero-count page", async () => {
+  const conversationUrl = "https://chatgpt.com/c/submitted-turn-unhydrated";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "",
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  }) as BrowserAdapter & {
+    observeSubmittedTurn(input: BrowserTurnInput): Promise<{
+      status: string;
+      evidence?: { hydrated: boolean; observedUserMessageCount: number | null };
+    }>;
+  };
+
+  assert.equal(typeof adapter.observeSubmittedTurn, "function");
+  const observation = await adapter.observeSubmittedTurn({
+    runId: "run_submitted_turn_unhydrated",
+    round: 34,
+    requestId: "msg_submitted_turn_unhydrated",
+    prompt: "Never classify the first empty read",
+    baselineUserMessageCount: 50,
+    baselineAssistantMessageCount: 49,
+  } as BrowserTurnInput & { baselineUserMessageCount: number });
+
+  assert.equal(observation.status, "pending");
+  assert.equal(observation.evidence?.hydrated, false);
+  assert.equal(observation.evidence?.observedUserMessageCount, 0);
+});
+
 test("returns the conversation URL captured with the completed response DOM", async () => {
   const responseUrl = "https://chatgpt.com/c/response-conversation";
   const fixture = fakeBrowser({
@@ -2890,6 +2991,34 @@ test("tab discovery deduplicates repeated listings of one physical tab", async (
   const tab = await acquireChatGptTab(browser, conversationUrl);
   assert.equal(tab, fixture.tab);
   assert.equal(getCalls, 1);
+});
+
+test("tab discovery reopens the exact conversation when the controlled tab list is empty", async () => {
+  const conversationUrl = "https://chatgpt.com/c/reopen-exact-conversation";
+  const fixture = fakeBrowser({
+    initialUrl: "https://chatgpt.com/",
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  let newCalls = 0;
+  const browser: IabBrowser = {
+    tabs: {
+      async selected() {
+        return undefined;
+      },
+      async list() {
+        return [];
+      },
+      async new() {
+        newCalls += 1;
+        return fixture.tab;
+      },
+    },
+  };
+
+  const tab = await acquireChatGptTab(browser, conversationUrl);
+
+  assert.equal(newCalls, 1);
+  assert.equal(await tab.url(), conversationUrl);
 });
 
 test("tab discovery filters the exact target before deduplicating stale tab listings", async () => {

@@ -6,12 +6,17 @@ import path from "node:path";
 import test from "node:test";
 
 import type {
+  BrowserAdapter,
+  BrowserSubmittedTurnEvidence,
+  BrowserSubmittedTurnObservation,
+  BrowserTurnHooks,
   BrowserTurnInput,
   ControllerTurn,
 } from "../../src/browser/browser-adapter.js";
 import {
   cancelCueLineJob,
   cancelCueLineRun,
+  confirmControllerTurnNotSent,
   continueCueLineRun,
   loadCueLineRunState,
   loadCueLineRunStatus,
@@ -19,7 +24,7 @@ import {
   submitCueLineCallerJobResult,
   takeoverCueLineRuntime,
 } from "../../src/api.js";
-import { jobId } from "../../src/core/ids.js";
+import { commandHash, jobId } from "../../src/core/ids.js";
 import { isSafeStaleCallerObservationRecovery } from "../../src/core/run-status.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
 import { JobStatusStore } from "../../src/jobs/status.js";
@@ -28,11 +33,200 @@ import { readEvents } from "../../src/state/event-log.js";
 import { runPaths } from "../../src/state/paths.js";
 import { RunStore } from "../../src/state/store.js";
 import { FakeBrowserAdapter } from "../fakes/fake-browser.js";
+import { submittedTurnWedgeFixture } from "../fixtures/submitted-turn-wedge.js";
 
 const DEAD_PID = 2_147_483_647;
 
+type SubmittedTurnObservation = BrowserSubmittedTurnObservation;
+
+interface SubmittedObservationBrowser extends BrowserAdapter {
+  observeSubmittedTurn(input: BrowserTurnInput): Promise<SubmittedTurnObservation>;
+}
+
 async function temporaryHome(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "cueline-lifecycle-"));
+}
+
+async function createSubmittedTurnWedge(
+  home: string,
+  runId: string = submittedTurnWedgeFixture.fixtureRunId,
+): Promise<{ requestId: string }> {
+  const fixture = submittedTurnWedgeFixture;
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, fixture.prompt, "caller", 40),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: fixture.prompt,
+    executor: "caller",
+    max_rounds: 40,
+  });
+  await store.append("controller_turn_requested", {
+    round: fixture.staleReconciliation.round,
+    request_id: fixture.staleReconciliation.abandonedRequestId,
+    prompt: "stale round 11 prompt",
+    prompt_hash: commandHash("stale round 11 prompt"),
+  });
+  await store.append("controller_turn_not_sent_confirmed", {
+    round: fixture.staleReconciliation.round,
+    request_id: fixture.staleReconciliation.abandonedRequestId,
+    prompt_hash: commandHash("stale round 11 prompt"),
+    conversation_url: fixture.conversationUrl,
+    selected_model_label: "Pro",
+    baseline_user_message_count: 10,
+    operator_confirmation: true,
+  });
+  await store.append("controller_turn_abandoned", {
+    round: fixture.staleReconciliation.round,
+    request_id: fixture.staleReconciliation.abandonedRequestId,
+    reason: "operator_confirmed_not_sent",
+    round_not_consumed: true,
+    prompt_hash: commandHash("stale round 11 prompt"),
+    conversation_url: fixture.conversationUrl,
+    selected_model_label: "Pro",
+    baseline_user_message_count: 10,
+    operator_confirmation: true,
+  });
+  await store.append("controller_turn_requested", {
+    round: fixture.staleReconciliation.round,
+    request_id: fixture.staleReconciliation.retryRequestId,
+    prompt: "stale round 11 retry prompt",
+    prompt_hash: commandHash("stale round 11 retry prompt"),
+    retry_of_request_id: fixture.staleReconciliation.abandonedRequestId,
+  });
+  await store.append("controller_command_accepted", {
+    command_hash: "stale-round-11-command-hash",
+    command: {
+      protocol: "cueline/0.1",
+      run_id: runId,
+      round: fixture.staleReconciliation.round,
+      request_id: fixture.staleReconciliation.retryRequestId,
+      action: "wait",
+    },
+  });
+  await store.append("controller_command_execution_completed", {
+    command_hash: "stale-round-11-command-hash",
+  });
+  await store.append("controller_turn_requested", {
+    round: fixture.priorVisibleRound,
+    request_id: "msg_fixture_prior_visible_round",
+    prompt: "round 33 prompt",
+    prompt_hash: commandHash("round 33 prompt"),
+  });
+  await store.append("controller_turn_abandoned", {
+    round: fixture.priorVisibleRound,
+    request_id: "msg_fixture_prior_visible_round",
+    reason: "fixture_prior_round_already_complete",
+  });
+  await store.snapshot();
+  let requestId = "";
+  const setupBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async submitTurn(input, hooks): Promise<void> {
+      requestId = input.requestId;
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitting",
+        composerPromptState: "inline_ready",
+        conversationUrl: fixture.conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineUserMessageCount: fixture.baselineUserMessageCount,
+        baselineAssistantMessageCount: 49,
+        clickAttemptState: "attempting",
+      });
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitted",
+        composerPromptState: "inline_ready",
+        conversationUrl: fixture.conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineUserMessageCount: fixture.baselineUserMessageCount,
+        baselineAssistantMessageCount: 49,
+        clickAttemptState: "accepted",
+      });
+    },
+    async observeTurn(): Promise<undefined> {
+      return undefined;
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("field wedge setup must pause after submitted checkpoint");
+    },
+  };
+  const seeded = await continueCueLineRun({
+    runId,
+    home,
+    browser: setupBrowser,
+    conversationUrl: fixture.conversationUrl,
+    routingConfig,
+  });
+  assert.equal(seeded.status, "awaiting_controller");
+  assert.notEqual(requestId, "");
+  return { requestId };
+}
+
+function submittedObservationBrowser(
+  observation: SubmittedTurnObservation,
+  options: { allowRetrySubmit?: boolean } = {},
+): SubmittedObservationBrowser & { submitCalls: number } {
+  let submitCalls = 0;
+  return {
+    submissionCheckpointContract: "write_ahead_v1",
+    get submitCalls() {
+      return submitCalls;
+    },
+    async observeSubmittedTurn(): Promise<SubmittedTurnObservation> {
+      return observation;
+    },
+    async observeTurn(): Promise<undefined> {
+      return undefined;
+    },
+    async submitTurn(input, hooks?: BrowserTurnHooks): Promise<void> {
+      if (options.allowRetrySubmit !== true) {
+        throw new Error("submitted wedge recovery must not create a retry");
+      }
+      submitCalls += 1;
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitting",
+        composerPromptState: "inline_ready",
+        conversationUrl: submittedTurnWedgeFixture.conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineUserMessageCount: submittedTurnWedgeFixture.baselineUserMessageCount,
+        baselineAssistantMessageCount: 49,
+        clickAttemptState: "attempting",
+      });
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitted",
+        composerPromptState: "inline_ready",
+        conversationUrl: submittedTurnWedgeFixture.conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineUserMessageCount: submittedTurnWedgeFixture.baselineUserMessageCount,
+        baselineAssistantMessageCount: 49,
+        clickAttemptState: "accepted",
+      });
+      assert.notEqual(input.requestId, "");
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("caller recovery must use submitTurn exactly once");
+    },
+  };
+}
+
+function definitelyNotSentObservation(
+  overrides: Partial<BrowserSubmittedTurnEvidence> = {},
+): SubmittedTurnObservation {
+  return {
+    status: "definitely_not_sent",
+    evidence: {
+      conversationUrl: submittedTurnWedgeFixture.conversationUrl,
+      selectedModelLabel: "Pro",
+      hydrated: true,
+      baselineUserMessageCount: submittedTurnWedgeFixture.baselineUserMessageCount,
+      observedUserMessageCount: submittedTurnWedgeFixture.baselineUserMessageCount,
+      requestMessageFound: false,
+      isAnswering: false,
+      ...overrides,
+    },
+  };
 }
 
 function completeReply(
@@ -813,6 +1007,190 @@ test("a stale caller observer is fenced and recovers one normally submitted turn
     events.filter((event) => event.type === "runtime_stale_caller_observer_recovered").length,
     1,
   );
+});
+
+test("field submitted wedge is reclassified from fresh evidence and creates exactly one retry", async () => {
+  const home = await temporaryHome();
+  const runId = `${submittedTurnWedgeFixture.fixtureRunId}_recovery`;
+  const { requestId } = await createSubmittedTurnWedge(home, runId);
+  const browser = submittedObservationBrowser(definitelyNotSentObservation(), {
+    allowRetrySubmit: true,
+  });
+
+  const result = await continueCueLineRun({
+    runId,
+    home,
+    browser,
+    conversationUrl: submittedTurnWedgeFixture.conversationUrl,
+    routingConfig,
+  });
+
+  assert.equal(result.status, "awaiting_controller");
+  assert.equal(browser.submitCalls, 1);
+  const firstEvents = await readEvents(runPaths(home, runId).events);
+  const retryRequests = firstEvents.filter(
+    (event) =>
+      event.type === "controller_turn_requested" &&
+      (event.payload as Record<string, unknown>).retry_of_request_id ===
+        requestId,
+  );
+  assert.equal(retryRequests.length, 1);
+  assert.equal(
+    firstEvents.filter(
+      (event) =>
+          event.type === "controller_turn_not_sent_confirmed" &&
+        (event.payload as Record<string, unknown>).request_id ===
+          requestId &&
+        (event.payload as Record<string, unknown>).submission_state ===
+          "definitely_not_sent",
+    ).length,
+    1,
+  );
+  const firstState = await loadCueLineRunState(runId, { home });
+  assert.equal(firstState.pendingControllerTurns.length, 1);
+  assert.equal(
+    firstState.pendingControllerTurns[0]?.retryOfRequestId,
+    requestId,
+  );
+  assert.notEqual(
+    firstState.pendingControllerTurns[0]?.requestId,
+    requestId,
+  );
+
+  let submittedRecoveryCalls = 0;
+  const duplicateBrowser: SubmittedObservationBrowser = {
+    async observeSubmittedTurn(): Promise<SubmittedTurnObservation> {
+      submittedRecoveryCalls += 1;
+      throw new Error("the authorized retry cannot be reclassified for another retry");
+    },
+    async observeTurn(): Promise<undefined> {
+      return undefined;
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("duplicate continuation must not send a second pending turn");
+    },
+  };
+  const repeated = await continueCueLineRun({
+    runId,
+    home,
+    browser: duplicateBrowser,
+    conversationUrl: submittedTurnWedgeFixture.conversationUrl,
+    routingConfig,
+  });
+  assert.equal(repeated.status, "awaiting_controller");
+  assert.equal(submittedRecoveryCalls, 0);
+  const repeatedEvents = await readEvents(runPaths(home, runId).events);
+  assert.equal(
+    repeatedEvents.filter(
+      (event) =>
+        event.type === "controller_turn_requested" &&
+        (event.payload as Record<string, unknown>).retry_of_request_id ===
+          requestId,
+    ).length,
+    1,
+  );
+  assert.equal((await loadCueLineRunState(runId, { home })).pendingControllerTurns.length, 1);
+});
+
+test("submitted not-sent recovery refuses incomplete or conflicting page evidence", async () => {
+  const cases: Array<{ name: string; observation: SubmittedTurnObservation }> = [
+    {
+      name: "count-increased",
+      observation: definitelyNotSentObservation({ observedUserMessageCount: 51 }),
+    },
+    {
+      name: "count-unknown",
+      observation: definitelyNotSentObservation({ observedUserMessageCount: null }),
+    },
+    {
+      name: "unhydrated-zero-count",
+      observation: definitelyNotSentObservation({
+        hydrated: false,
+        observedUserMessageCount: 0,
+      }),
+    },
+    {
+      name: "pro-answering",
+      observation: definitelyNotSentObservation({ isAnswering: true }),
+    },
+    {
+      name: "request-message-found",
+      observation: definitelyNotSentObservation({ requestMessageFound: true }),
+    },
+  ];
+
+  for (const fixture of cases) {
+    const home = await temporaryHome();
+    const runId = `${submittedTurnWedgeFixture.fixtureRunId}_${fixture.name}`;
+    const { requestId } = await createSubmittedTurnWedge(home, runId);
+    const browser = submittedObservationBrowser(fixture.observation);
+
+    const result = await continueCueLineRun({
+      runId,
+      home,
+      browser,
+      conversationUrl: submittedTurnWedgeFixture.conversationUrl,
+      routingConfig,
+    });
+
+    assert.equal(result.status, "awaiting_controller", fixture.name);
+    assert.equal(browser.submitCalls, 0, fixture.name);
+    const state = await loadCueLineRunState(runId, { home });
+    assert.equal(state.pendingControllerTurns.length, 1, fixture.name);
+    assert.equal(
+      state.pendingControllerTurns[0]?.requestId,
+      requestId,
+      fixture.name,
+    );
+    const events = await readEvents(runPaths(home, runId).events);
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === "controller_turn_requested" &&
+          (event.payload as Record<string, unknown>).retry_of_request_id ===
+            requestId,
+      ),
+      false,
+      fixture.name,
+    );
+  }
+});
+
+test("confirmControllerTurnNotSent accepts the evidence-gated submitted wedge shape", async () => {
+  const home = await temporaryHome();
+  const runId = `${submittedTurnWedgeFixture.fixtureRunId}_confirmation`;
+  const { requestId } = await createSubmittedTurnWedge(home, runId);
+  const browser = submittedObservationBrowser(definitelyNotSentObservation());
+
+  const confirmation = await confirmControllerTurnNotSent(runId, {
+    home,
+    requestId,
+    conversationUrl: submittedTurnWedgeFixture.conversationUrl,
+    browser,
+  } as Parameters<typeof confirmControllerTurnNotSent>[1] & {
+    browser: SubmittedObservationBrowser;
+  });
+
+  assert.equal(confirmation.outcome, "confirmed");
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.pendingControllerTurns.length, 0);
+  assert.equal(
+    state.notSentRecovery?.abandonedRequestId,
+    requestId,
+  );
+  assert.equal(state.notSentRecovery?.retryRequestId, null);
+});
+
+test("status hides stale reconciliation metadata from an unrelated current round", async () => {
+  const home = await temporaryHome();
+  const runId = `${submittedTurnWedgeFixture.fixtureRunId}_status`;
+  await createSubmittedTurnWedge(home, runId);
+
+  const status = await loadCueLineRunStatus(runId, { home });
+
+  assert.equal(status.round, submittedTurnWedgeFixture.round);
+  assert.equal(status.controller.pendingTurns, 1);
+  assert.equal(status.controller.reconciliation, undefined);
 });
 
 test("stale caller observation recovery refuses every ambiguous or side-effectful variant", () => {

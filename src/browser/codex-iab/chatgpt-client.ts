@@ -3,6 +3,8 @@ import type {
   BrowserConversationArchiveEvidence,
   BrowserConversationArchiveHooks,
   BrowserConversationArchiveInput,
+  BrowserSubmittedTurnEvidence,
+  BrowserSubmittedTurnObservation,
   BrowserTurnHooks,
   BrowserTurnInput,
   ComposerPromptState,
@@ -57,6 +59,7 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1_000;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STABLE_MS = 1_500;
 const COMPOSER_HYDRATION_TIMEOUT_MS = 5_000;
+const SUBMITTED_RECOVERY_HYDRATION_TIMEOUT_MS = 10_000;
 const CONTENTEDITABLE_COMPOSER_SELECTOR = '#prompt-textarea[contenteditable="true"]';
 const MODEL_PICKER_SELECTOR = "button.__composer-pill";
 const REQUIRED_MODEL_LABEL = "Pro";
@@ -967,6 +970,133 @@ class CodexIabAdapter implements BrowserAdapter {
       await this.#submitTurnOnce(input, retryContext, hooks, true).catch((retryError) => {
         throw this.#browserFailure(retryError, retryContext, input);
       });
+    }
+  }
+
+  async #observeSubmittedDelivery(
+    tab: IabTab,
+    input: BrowserTurnInput,
+    selectedModelLabel: string,
+  ): Promise<BrowserSubmittedTurnObservation> {
+    const baselineUserMessageCount = input.baselineUserMessageCount;
+    if (
+      !Number.isSafeInteger(baselineUserMessageCount) ||
+      (baselineUserMessageCount ?? -1) < 0
+    ) {
+      return { status: "pending" };
+    }
+    const baseline = baselineUserMessageCount!;
+    const deadline =
+      Date.now() +
+      Math.min(this.#options.timeoutMs, SUBMITTED_RECOVERY_HYDRATION_TIMEOUT_MS);
+    let stableSignature = "";
+    let stableSince = 0;
+    let lastEvidence: BrowserSubmittedTurnEvidence | undefined;
+
+    for (;;) {
+      throwIfCancelled(input.signal);
+      const state = await readPageChatState(tab);
+      if (!sameChatGptConversationUrl(state.pageUrl, this.#conversationUrl!)) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+          "Submitted-turn evidence was read from a different ChatGPT conversation DOM.",
+        );
+      }
+      const observedUserMessageCount =
+        Number.isSafeInteger(state.userMessageCount) &&
+        (state.userMessageCount ?? -1) >= 0
+          ? state.userMessageCount!
+          : null;
+      const baselineLoaded =
+        observedUserMessageCount !== null &&
+        observedUserMessageCount >= baseline;
+      const requestMessageFound = baselineLoaded
+        ? state.lastUserText !== null &&
+          (normalizedMessageText(state.lastUserText) ===
+            normalizedMessageText(input.prompt) ||
+            state.lastUserText.includes(input.requestId))
+        : null;
+      const now = Date.now();
+      const hydrated =
+        baselineLoaded && (baseline > 0 || now >= deadline);
+      const evidence: BrowserSubmittedTurnEvidence = {
+        conversationUrl: state.pageUrl,
+        selectedModelLabel,
+        hydrated,
+        baselineUserMessageCount: baseline,
+        observedUserMessageCount,
+        requestMessageFound,
+        isAnswering: baselineLoaded ? state.isAnswering : null,
+      };
+      lastEvidence = evidence;
+
+      const notSentCandidate =
+        observedUserMessageCount === baseline &&
+        requestMessageFound === false &&
+        state.isAnswering === false;
+      if (notSentCandidate) {
+        const signature = `${observedUserMessageCount}:${state.assistantMessageCount}:${state.lastMessageRole}:${state.lastUserText ?? ""}`;
+        if (signature !== stableSignature) {
+          stableSignature = signature;
+          stableSince = now;
+        }
+        if (hydrated && now - stableSince >= this.#options.stableMs) {
+          return { status: "definitely_not_sent", evidence };
+        }
+      } else {
+        stableSignature = "";
+        stableSince = 0;
+      }
+
+      if (
+        baselineLoaded &&
+        observedUserMessageCount !== null &&
+        observedUserMessageCount > baseline
+      ) {
+        const turn = await this.#readExistingTurn(input, false);
+        return turn === undefined
+          ? { status: "pending", evidence }
+          : { status: "response", turn };
+      }
+      if (baselineLoaded && (requestMessageFound === true || state.isAnswering)) {
+        return { status: "pending", evidence };
+      }
+      if (now >= deadline) {
+        return lastEvidence === undefined
+          ? { status: "pending" }
+          : { status: "pending", evidence: lastEvidence };
+      }
+      await delay(
+        Math.min(this.#options.pollIntervalMs, Math.max(1, deadline - now)),
+        input.signal,
+      );
+    }
+  }
+
+  async observeSubmittedTurn(
+    input: BrowserTurnInput,
+  ): Promise<BrowserSubmittedTurnObservation> {
+    try {
+      if (this.#conversationUrl === undefined) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_URL_REQUIRED",
+          "CueLine needs the exact persisted ChatGPT conversation URL for submitted-turn recovery.",
+        );
+      }
+      const tab = await this.#getTab();
+      const selectedModelLabel = await readComposerModelLabelWhenReady(
+        tab,
+        input.signal,
+      );
+      if (!isProLabel(selectedModelLabel)) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
+          "The existing conversation does not currently expose a Pro composer label; refusing submitted-turn recovery.",
+        );
+      }
+      return await this.#observeSubmittedDelivery(tab, input, selectedModelLabel);
+    } catch (error) {
+      throw this.#reconciliationFailure(error, input);
     }
   }
 
