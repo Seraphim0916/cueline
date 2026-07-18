@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Accept cancelled `ambiguous` job-result evidence produced when a running
+  `work` job is interrupted, keeping persisted run and job listings readable
+  without weakening cancellation checks for other terminal statuses.
+- Backfill `cancelled: false` when reading pre-0.1.7 job-result evidence that
+  predates the field, so legacy runs stay readable; writes still require the
+  full strict shape.
+
 ## 0.3.0 - 2026-07-17
 
 ### Added

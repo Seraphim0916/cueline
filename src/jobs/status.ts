@@ -71,7 +71,8 @@ function validJobResult(value: unknown, expectedStatus: JobStatusKind): value is
     typeof result.timedOut === "boolean" &&
     result.timedOut === (expectedStatus === "timed_out") &&
     typeof result.cancelled === "boolean" &&
-    result.cancelled === (expectedStatus === "cancelled") &&
+    (expectedStatus === "ambiguous" ||
+      result.cancelled === (expectedStatus === "cancelled")) &&
     typeof result.ambiguousSideEffects === "boolean" &&
     result.retryable === false &&
     validTimestamp(result.startedAt) &&
@@ -131,6 +132,17 @@ export function parseJobStatus(source: string, expectedJobId?: string): JobStatu
       `persisted job status${expectedJobId === undefined ? "" : ` for '${expectedJobId}'`} is not valid JSON`,
       expectedJobId === undefined ? undefined : { details: { jobId: expectedJobId } },
     );
+  }
+  // Evidence persisted before 0.1.7 predates the `cancelled` field. Reads
+  // backfill the only value those writers could have meant; writes stay strict.
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    typeof (parsed as { result?: unknown }).result === "object" &&
+    (parsed as { result?: unknown }).result !== null &&
+    (parsed as { result: Record<string, unknown> }).result.cancelled === undefined
+  ) {
+    (parsed as { result: Record<string, unknown> }).result.cancelled = false;
   }
   assertJobStatus(parsed, expectedJobId);
   return parsed;
