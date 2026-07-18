@@ -132,6 +132,36 @@ test("upgrade preflight warns about pre-0.1.7 legacy job evidence without blocki
   );
 });
 
+test("upgrade preflight counts legacy job evidence across .terminal files while ignoring non-job entries", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-upgrade-legacy-edge-"));
+  await chmod(home, 0o700);
+  const environment = await environmentFor(home);
+  const jobsDir = path.join(home, "jobs");
+  await mkdir(jobsDir, { recursive: true });
+  // Two legacy records: a live status and a terminal anchor, both missing `cancelled`.
+  await writeFile(
+    path.join(jobsDir, "job_a.json"),
+    JSON.stringify({ result: { status: "succeeded" } }),
+  );
+  await writeFile(
+    path.join(jobsDir, "job_b.terminal"),
+    JSON.stringify({ result: { status: "failed" } }),
+  );
+  // Noise that must neither be counted nor crash the scan.
+  await writeFile(path.join(jobsDir, "job_c.json"), "{ not valid json");
+  await writeFile(path.join(jobsDir, "notes.txt"), "not a job record");
+  await mkdir(path.join(jobsDir, "nested"), { recursive: true });
+
+  const report = await collectUpgradePreflight({ targetVersion: "1.0.0", environment });
+
+  assert.equal(report.status, "ready");
+  assert.equal(report.checks.runs.legacyJobEvidence, 2);
+  assert.equal(
+    report.findings.filter((finding) => finding.code === "LEGACY_JOB_EVIDENCE_PRESENT").length,
+    1,
+  );
+});
+
 test("upgrade preflight CLI emits structured JSON and rejects malformed arguments", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "cueline-upgrade-cli-"));
   const home = path.join(root, "missing");
