@@ -22,12 +22,12 @@
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 的包裝層。
 
-## 最新版本：0.3.1
+## 最新版本：0.3.2
 
-- 修正持久 job 狀態驗證器誤拒兩種 runner 實際會寫出的形狀：被取消的 `work` job 以 `ambiguous` 搭配 `cancelled: true` 記錄，以及 0.1.7 之前、尚無 `cancelled` 欄位的舊證據。兩者任一都會讓所屬 run 永久無法讀取，並使整個 jobs 清單直接失敗。現在讀取端接受這兩種形狀；寫入端仍維持完整嚴格契約。
-- 以紅綠迴歸測試、535/535 測試、全部發佈閘門，加上三個原本無法讀取的實際 run 成功復原驗證，並經獨立對抗式審查交叉確認。
+- 修正重開機後控制器回合被持久記錄為 `submitted`、但對話實際從未收到，導致 run 永遠等待一個不會出現的回覆的卡死。當一次完成水合的全新觀察顯示使用者訊息數與送出前基準相同、該回合訊息不存在、且控制器閒置時，CueLine 現在會安全改判為確定未送達，並建立恰好一次帶 `retryOfRequestId` 的重試——絕不重複送出、絕不產生兩個等待中的回合、也絕不在未水合的頁面上做判定。`run doctor` 會以 `SUBMITTED_TURN_RECOVERY_REQUIRED` 呈現這個形狀並給出安全下一步，而非無限觀察迴圈。
+- 以重現實際卡死 run 的紅綠 fixture、五個 fail-closed 負向案例、證明不會產生第二個等待回合的重入案例,加上 543/543 測試驗證。
 
-完整內容請看 [changelog](CHANGELOG.md#031---2026-07-18) 或版本化的 [v0.3.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1)。
+完整內容請看 [changelog](CHANGELOG.md#032---2026-07-18) 或版本化的 [v0.3.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.2)。
 
 ## 一次執行實際上怎麼跑
 
@@ -68,15 +68,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.3.1
+npm install -g cueline@0.3.2
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.3.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.3.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.2) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.1/cueline-0.3.1.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.2/cueline-0.3.2.tgz
 cueline install
 cueline doctor
 ```
@@ -194,7 +194,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.3.1
+CueLine 0.3.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

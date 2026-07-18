@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.2 - 2026-07-18
+
+### Fixed
+
+- Recover wedged `submitted` controller turns after a restart. When durable
+  state records a submission as `submitted` but a fresh hydrated observation
+  of the exact conversation shows the user-message count unchanged from the
+  pre-send baseline, the round's user message absent, and the controller not
+  answering, CueLine now reclassifies the submission as definitely not sent,
+  abandons the old request, and creates exactly one retry recording
+  `retryOfRequestId` — never a duplicate send, never two pending turns.
+- Never classify from an unhydrated conversation read: reopening a
+  conversation briefly reports zero messages before hydration completes, and
+  recovery now waits past that window and keeps refusing while observation
+  is ambiguous (count increased, count unknown, controller answering).
+- Scope stale reconciliation data to its own round in `run status` output so
+  an old round's not-sent recovery can no longer masquerade as the current
+  round's reconciliation.
+- Surface the wedge in `run doctor` as the stable finding
+  `SUBMITTED_TURN_RECOVERY_REQUIRED` with `safeNextAction`
+  `recover_submitted_turn` instead of an indefinite observe loop.
+
+### Verification
+
+- Red/green regression fixture reproducing the live wedged run (submitted
+  state, unchanged baseline of 50 user messages, absent round message, idle
+  controller), five fail-closed negative cases, a reentry case proving no
+  second pending turn, TypeScript typecheck, and 543/543 tests.
+
 ## 0.3.1 - 2026-07-18
 
 ### Fixed

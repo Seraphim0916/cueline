@@ -22,12 +22,12 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.3.1
+## Latest release: 0.3.2
 
-- Fixed the durable job-status validator rejecting two shapes real runners persist: a cancelled `work` job recorded as `ambiguous` with `cancelled: true`, and pre-0.1.7 evidence that predates the `cancelled` field. Either one permanently marked the owning run unreadable and made the whole jobs listing throw. Reads accept both shapes now; writes keep the full strict contract.
-- Verified with a red/green regression oracle, 535/535 tests, all release gates, and live recovery of three previously unreadable on-disk runs, cross-checked by an independent adversarial review.
+- Fixed a wedge where a restart left a controller turn durably recorded as `submitted` although the conversation never received it, so the run waited forever on a reply that could not come. When a fresh hydrated observation shows the user-message count unchanged from the pre-send baseline, the round's message absent, and the controller idle, CueLine now reclassifies the turn as definitely not sent and creates exactly one retry with `retryOfRequestId` — never a duplicate send, never two pending turns, and never a classification from an unhydrated page. `run doctor` surfaces the shape as `SUBMITTED_TURN_RECOVERY_REQUIRED` with a safe next action instead of an indefinite observe loop.
+- Verified with a red/green fixture reproducing the live wedged run, five fail-closed negative cases, a reentry case proving no second pending turn, and 543/543 tests.
 
-Read the complete [changelog](CHANGELOG.md#031---2026-07-18) or the versioned [v0.3.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1).
+Read the complete [changelog](CHANGELOG.md#032---2026-07-18) or the versioned [v0.3.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.2).
 
 ## How a run actually goes
 
@@ -70,15 +70,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.3.1
+npm install -g cueline@0.3.2
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.3.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.3.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.2), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.1/cueline-0.3.1.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.2/cueline-0.3.2.tgz
 cueline install
 cueline doctor
 ```
@@ -194,7 +194,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.3.1
+CueLine 0.3.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

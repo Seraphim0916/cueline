@@ -22,12 +22,12 @@
 
 CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane을 감싼 래퍼가 아닙니다.
 
-## 최신 릴리스: 0.3.1
+## 최신 릴리스: 0.3.2
 
-- 영속 job 상태 검증기가 runner가 실제로 기록하는 두 가지 형태를 잘못 거부하던 문제를 수정했습니다: 취소된 `work` job이 `ambiguous`와 `cancelled: true`로 기록되는 형태, 그리고 `cancelled` 필드 도입 이전(0.1.7 미만)의 레거시 증거입니다. 둘 중 하나만 있어도 해당 run이 영구적으로 읽을 수 없게 되고 전체 jobs 목록이 실패했습니다. 읽기 경로는 두 형태를 모두 수용하며, 쓰기 경로는 완전한 엄격 계약을 유지합니다.
-- 레드/그린 회귀 오라클, 535/535 테스트, 모든 릴리스 게이트, 그리고 읽을 수 없던 실제 run 3개의 복구로 검증했으며 독립적인 적대적 리뷰로 교차 확인했습니다.
+- 재시작 후 컨트롤러 턴이 `submitted`로 영속 기록되었지만 대화에는 실제로 전달되지 않아, run이 오지 않을 응답을 영원히 기다리는 교착을 수정했습니다. 하이드레이션이 완료된 새 관측에서 사용자 메시지 수가 전송 전 기준선과 같고, 해당 턴의 메시지가 존재하지 않으며, 컨트롤러가 유휴 상태임이 확인되면, CueLine은 이제 그 턴을 미전송으로 안전하게 재분류하고 `retryOfRequestId`를 기록한 재시도를 정확히 한 번만 생성합니다 — 중복 전송하지 않고, 대기 턴이 두 개가 되지 않으며, 하이드레이션되지 않은 페이지에서 판정하지 않습니다. `run doctor`는 이 형태를 `SUBMITTED_TURN_RECOVERY_REQUIRED`로 표시하고 무한 관측 루프 대신 안전한 다음 단계를 제시합니다.
+- 실제 교착 run을 재현하는 레드/그린 픽스처, 다섯 가지 fail-closed 부정 케이스, 두 번째 대기 턴이 생기지 않음을 증명하는 재진입 케이스, 543/543 테스트로 검증했습니다.
 
-전체 내용은 [changelog](CHANGELOG.md#031---2026-07-18) 또는 버전이 지정된 [v0.3.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1)에서 확인할 수 있습니다.
+전체 내용은 [changelog](CHANGELOG.md#032---2026-07-18) 또는 버전이 지정된 [v0.3.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.2)에서 확인할 수 있습니다.
 
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
@@ -68,15 +68,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.3.1
+npm install -g cueline@0.3.2
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.3.1 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.3.2 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.2)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.1/cueline-0.3.1.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.2/cueline-0.3.2.tgz
 cueline install
 cueline doctor
 ```
@@ -183,7 +183,7 @@ CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에
 
 ```console
 $ cueline doctor
-CueLine 0.3.1
+CueLine 0.3.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
