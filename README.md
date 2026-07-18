@@ -22,15 +22,12 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.3.0
+## Latest release: 0.3.1
 
-- Added operator tooling: `runs prune` retention sweep over terminal runs (dry-run by default, deletion serialized with the runtime lease lock), `run audit-secrets` masked scan of durable events for secret-shaped strings, and `run export` one-file sanitized support bundles.
-- Added release engineering: `self-test` offline controller-loop check, `upgrade preflight` read-only migration report, `release:check` gate, reproducible pack artifacts with SHA-256 verification, a documentation version guard, and an evidence-backed Node support contract in CI.
-- Published versioned strict JSON contracts for every read-only `--json` surface; contract tests reject added fields, nested injection, empty sections, and contradictory shapes.
-- Hardened fail-closed behavior: an adversarial protocol fuzz corpus, a missing-run sweep across all run-scoped commands, and ENOENT-only prune removal accounting.
-- Verified 532/532 tests plus all release gates on the unified candidate, cross-reviewed adversarially by two independent lines.
+- Fixed the durable job-status validator rejecting two shapes real runners persist: a cancelled `work` job recorded as `ambiguous` with `cancelled: true`, and pre-0.1.7 evidence that predates the `cancelled` field. Either one permanently marked the owning run unreadable and made the whole jobs listing throw. Reads accept both shapes now; writes keep the full strict contract.
+- Verified with a red/green regression oracle, 535/535 tests, all release gates, and live recovery of three previously unreadable on-disk runs, cross-checked by an independent adversarial review.
 
-Read the complete [changelog](CHANGELOG.md#030---2026-07-17) or the versioned [v0.3.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0).
+Read the complete [changelog](CHANGELOG.md#031---2026-07-18) or the versioned [v0.3.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1).
 
 ## How a run actually goes
 
@@ -73,15 +70,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.3.0
+npm install -g cueline@0.3.1
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.3.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.3.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.0/cueline-0.3.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.1/cueline-0.3.1.tgz
 cueline install
 cueline doctor
 ```
@@ -197,7 +194,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.3.0
+CueLine 0.3.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

@@ -22,15 +22,12 @@
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 的包装层。
 
-## 最新版本：0.3.0
+## 最新版本：0.3.1
 
-- 新增运维工具：`runs prune` 清理已结束的 run（默认 dry-run，删除与 runtime lease 锁串行化）、`run audit-secrets` 以掩码方式扫描持久事件中的密钥形字符串、`run export` 一键导出脱敏支持包。
-- 新增发布工程：`self-test` 离线控制环检查、`upgrade preflight` 只读升级体检、`release:check` 发布闸门、可复现打包产物与 SHA-256 校验、文档版本守卫、以及 CI 上以证据背书的 Node 支持契约。
-- 为每个只读 `--json` 输出发布带版本的严格 JSON 契约；契约测试拒绝多余字段、嵌套注入、空区段与矛盾形状。
-- 强化 fail-closed 行为：对抗式协议 fuzz 语料、全 run 命令的缺失 run 扫描、prune 仅认 ENOENT 的删除记账。
-- 统一候选完成 532/532 测试与全部发布闸门，并由两条独立线互相对抗式复验。
+- 修复持久 job 状态验证器误拒两种 runner 实际会写出的形状：被取消的 `work` job 以 `ambiguous` 搭配 `cancelled: true` 记录，以及 0.1.7 之前、尚无 `cancelled` 字段的旧证据。两者任一都会让所属 run 永久无法读取，并使整个 jobs 列表直接失败。现在读取端接受这两种形状；写入端仍维持完整严格契约。
+- 以红绿回归测试、535/535 测试、全部发布闸门，加上三个原本无法读取的实际 run 成功恢复验证，并经独立对抗式审查交叉确认。
 
-完整内容请查看 [changelog](CHANGELOG.md#030---2026-07-17) 或版本化的 [v0.3.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0)。
+完整内容请查看 [changelog](CHANGELOG.md#031---2026-07-18) 或版本化的 [v0.3.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1)。
 
 ## 一次运行实际是怎么走的
 
@@ -71,15 +68,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.3.0
+npm install -g cueline@0.3.1
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.3.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.3.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.0/cueline-0.3.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.1/cueline-0.3.1.tgz
 cueline install
 cueline doctor
 ```
@@ -188,7 +185,7 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.3.0
+CueLine 0.3.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

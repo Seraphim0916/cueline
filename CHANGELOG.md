@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## 0.3.1 - 2026-07-18
 
 ### Fixed
 
@@ -10,6 +10,13 @@
 - Backfill `cancelled: false` when reading pre-0.1.7 job-result evidence that
   predates the field, so legacy runs stay readable; writes still require the
   full strict shape.
+
+### Verification
+
+- Verified with a red/green regression oracle (new tests fail on the 0.3.0
+  validator), TypeScript typecheck, build, 535/535 tests, all release gates,
+  and live recovery of three previously unreadable on-disk runs, cross-checked
+  by an independent adversarial review line.
 
 ## 0.3.0 - 2026-07-17
 

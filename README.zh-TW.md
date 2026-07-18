@@ -22,15 +22,12 @@
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 的包裝層。
 
-## 最新版本：0.3.0
+## 最新版本：0.3.1
 
-- 新增操作面工具：`runs prune` 清掃已結束的 run（預設 dry-run，刪除與 runtime lease 鎖序列化）、`run audit-secrets` 以遮罩方式掃描持久事件中的密鑰形字串、`run export` 一鍵匯出去敏支援包。
-- 新增發佈工程：`self-test` 離線控制迴圈檢查、`upgrade preflight` 唯讀升級體檢、`release:check` 發佈閘門、可重現打包產物與 SHA-256 驗證、文件版本守衛、以及 CI 上以證據背書的 Node 支援契約。
-- 為每個唯讀 `--json` 面發佈帶版本的嚴格 JSON 契約；契約測試會拒絕多餘欄位、巢狀注入、空區段與矛盾形狀。
-- 強化 fail-closed 行為：對抗式協定 fuzz 火力網、全 run-scoped 指令的缺失 run 掃描、prune 只認 ENOENT 的刪除記帳。
-- 統一候選完成 532/532 測試與全部發佈閘門，並由兩條獨立線互相對抗式複驗。
+- 修正持久 job 狀態驗證器誤拒兩種 runner 實際會寫出的形狀：被取消的 `work` job 以 `ambiguous` 搭配 `cancelled: true` 記錄，以及 0.1.7 之前、尚無 `cancelled` 欄位的舊證據。兩者任一都會讓所屬 run 永久無法讀取，並使整個 jobs 清單直接失敗。現在讀取端接受這兩種形狀；寫入端仍維持完整嚴格契約。
+- 以紅綠迴歸測試、535/535 測試、全部發佈閘門，加上三個原本無法讀取的實際 run 成功復原驗證，並經獨立對抗式審查交叉確認。
 
-完整內容請看 [changelog](CHANGELOG.md#030---2026-07-17) 或版本化的 [v0.3.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0)。
+完整內容請看 [changelog](CHANGELOG.md#031---2026-07-18) 或版本化的 [v0.3.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1)。
 
 ## 一次執行實際上怎麼跑
 
@@ -71,15 +68,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.3.0
+npm install -g cueline@0.3.1
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.3.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.0) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.3.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.1) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.0/cueline-0.3.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.1/cueline-0.3.1.tgz
 cueline install
 cueline doctor
 ```
@@ -197,7 +194,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.3.0
+CueLine 0.3.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
