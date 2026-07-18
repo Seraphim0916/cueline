@@ -6,6 +6,8 @@ CueLine ships one enabled lane, `default`, with one candidate, `codex-default`. 
 
 Process execution is not the default. `startCueLineRun` and `runCueLine` default to `executor: "caller"`, which spawns no worker process at all. A controller dispatch is persisted and handed back to the current Codex for execution. Multi-model process routing is therefore an opt-in user configuration, not a CueLine code change.
 
+A ready-to-adopt starter ships at `config/routing.multimodel.example.json`: it keeps the bundled Codex `work` route on `default` and adds an advise-only `claude-opus-4-8-advise` lane that calls the `claude` CLI directly, so anyone with both `codex` and `claude` on `PATH` can enable a second provider by pointing `CUELINE_CONFIG` at it — no wrapper script required. The four-lane configuration later in this document extends that pattern with Gemini and Grok through wrapper scripts.
+
 ## What the controller can see
 
 For a process run, CueLine builds a routing instruction before every controller turn. ChatGPT Pro sees only:
