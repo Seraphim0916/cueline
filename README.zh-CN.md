@@ -22,12 +22,12 @@
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 的包装层。
 
-## 最新版本：0.3.2
+## 最新版本：0.4.0
 
-- 修复重启后控制器回合被持久记录为 `submitted`、但对话实际从未收到，导致 run 永远等待一个不会出现的回复的卡死。当一次完成水合的全新观察显示用户消息数与发送前基准相同、该回合消息不存在、且控制器空闲时，CueLine 现在会安全改判为确定未送达，并创建恰好一次带 `retryOfRequestId` 的重试——绝不重复发送、绝不产生两个待处理回合、也绝不在未水合的页面上做判定。`run doctor` 会以 `SUBMITTED_TURN_RECOVERY_REQUIRED` 呈现这个形状并给出安全下一步，而非无限观察循环。
-- 以复现实际卡死 run 的红绿 fixture、五个 fail-closed 负向案例、证明不会产生第二个待处理回合的重入案例，加上 543/543 测试验证。
+- 新增 `cueline mcp serve`：Model Context Protocol（MCP）stdio 服务器，把 CueLine 的持久 run 接口以七个工具对外（`cueline_start_run`、`cueline_continue_run`、`cueline_run_status`、`cueline_run_doctor`、`cueline_claim_caller_job`、`cueline_start_caller_job`、`cueline_list_runs`），任何 MCP 宿主都能直接驱动 run，不必再包一层 CLI。JSON-RPC 2.0 传输为手写实现——CueLine 仍保持零运行时 npm 依赖——工具返回与 API 相同的有界证据，process 执行仍要求同一次调用显式带 `allowProcessExecution: true`。
+- 包含 0.3.2 的修复：以水合后的全新观察证据恢复卡死的 `submitted` 控制器回合，恰好一次带 `retryOfRequestId` 的重试。以 MCP 握手/拒收集成测试、真实 stdio 冒烟测试，加上 552/552 测试验证。
 
-完整内容请查看 [changelog](CHANGELOG.md#032---2026-07-18) 或版本化的 [v0.3.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.2)。
+完整内容请查看 [changelog](CHANGELOG.md#040---2026-07-18) 或版本化的 [v0.4.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.0)。
 
 ## 一次运行实际是怎么走的
 
@@ -68,15 +68,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.3.2
+npm install -g cueline@0.4.0
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.3.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.2) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.4.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.0) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.2/cueline-0.3.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.0/cueline-0.4.0.tgz
 cueline install
 cueline doctor
 ```
@@ -185,7 +185,7 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.3.2
+CueLine 0.4.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

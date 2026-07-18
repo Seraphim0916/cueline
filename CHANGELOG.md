@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0 - 2026-07-18
+
+### Added
+
+- `cueline mcp serve`: a Model Context Protocol (MCP) stdio server exposing
+  CueLine's durable-run surface as seven tools — `cueline_start_run`,
+  `cueline_continue_run`, `cueline_run_status`, `cueline_run_doctor`,
+  `cueline_claim_caller_job`, `cueline_start_caller_job`, and
+  `cueline_list_runs` — so MCP clients (Claude Code, Codex, Gemini CLI, and
+  any other MCP host) can drive runs without shelling out to the CLI. The
+  JSON-RPC 2.0 transport is hand-rolled; CueLine keeps zero runtime npm
+  dependencies. Tool results return the same bounded evidence as the
+  programmatic API, never raw transcripts. Process execution still requires
+  explicit `allowProcessExecution: true` in the same call — the MCP layer
+  never defaults it on — and caller work keeps the existing stable
+  `callerId`, claim-ID, and fencing-token contract.
+
+### Verification
+
+- MCP integration tests covering the initialize handshake, tools listing,
+  per-tool happy paths, malformed JSON-RPC rejection, the
+  `allowProcessExecution` refusal case, and graceful shutdown; a live stdio
+  smoke of `cueline mcp serve`; TypeScript typecheck; and 552/552 tests.
+
 ## 0.3.2 - 2026-07-18
 
 ### Fixed

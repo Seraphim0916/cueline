@@ -22,12 +22,12 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.3.2
+## Latest release: 0.4.0
 
-- Fixed a wedge where a restart left a controller turn durably recorded as `submitted` although the conversation never received it, so the run waited forever on a reply that could not come. When a fresh hydrated observation shows the user-message count unchanged from the pre-send baseline, the round's message absent, and the controller idle, CueLine now reclassifies the turn as definitely not sent and creates exactly one retry with `retryOfRequestId` — never a duplicate send, never two pending turns, and never a classification from an unhydrated page. `run doctor` surfaces the shape as `SUBMITTED_TURN_RECOVERY_REQUIRED` with a safe next action instead of an indefinite observe loop.
-- Verified with a red/green fixture reproducing the live wedged run, five fail-closed negative cases, a reentry case proving no second pending turn, and 543/543 tests.
+- Added `cueline mcp serve`: a Model Context Protocol (MCP) stdio server exposing CueLine's durable-run surface as seven tools (`cueline_start_run`, `cueline_continue_run`, `cueline_run_status`, `cueline_run_doctor`, `cueline_claim_caller_job`, `cueline_start_caller_job`, `cueline_list_runs`), so any MCP host can drive runs without shelling out to the CLI. The JSON-RPC 2.0 transport is hand-rolled — CueLine still has zero runtime npm dependencies — results return the same bounded evidence as the API, and process execution still requires explicit `allowProcessExecution: true` in the same call.
+- Includes the 0.3.2 fix that recovers wedged `submitted` controller turns from fresh hydrated evidence with exactly one `retryOfRequestId` retry. Verified with MCP handshake/refusal integration tests, a live stdio smoke, and 552/552 tests.
 
-Read the complete [changelog](CHANGELOG.md#032---2026-07-18) or the versioned [v0.3.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.2).
+Read the complete [changelog](CHANGELOG.md#040---2026-07-18) or the versioned [v0.4.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.0).
 
 ## How a run actually goes
 
@@ -70,15 +70,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.3.2
+npm install -g cueline@0.4.0
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.3.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.3.2), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.4.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.0), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.3.2/cueline-0.3.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.0/cueline-0.4.0.tgz
 cueline install
 cueline doctor
 ```
@@ -211,7 +211,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.3.2
+CueLine 0.4.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
