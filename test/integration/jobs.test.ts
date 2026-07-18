@@ -155,6 +155,101 @@ test("job status parser rejects identity, chronology, and result contradictions"
   }
 });
 
+test("job status parser accepts cancelled ambiguous work result evidence", () => {
+  const startedAt = "2026-07-15T00:00:00.000Z";
+  const finishedAt = "2026-07-15T00:00:01.000Z";
+  const persisted = {
+    jobId: "cancelled-work-job",
+    execution: "foreground",
+    status: "ambiguous",
+    startedAt,
+    finishedAt,
+    result: {
+      status: "ambiguous",
+      exitCode: null,
+      stdout: "",
+      stderr: "",
+      output: "",
+      emptyOutput: true,
+      timedOut: false,
+      cancelled: true,
+      ambiguousSideEffects: true,
+      retryable: false,
+      startedAt,
+      finishedAt,
+    },
+  };
+
+  assert.deepEqual(parseJobStatus(JSON.stringify(persisted), persisted.jobId), persisted);
+});
+
+test("job status parser backfills pre-0.1.7 result evidence missing the cancelled field", () => {
+  const startedAt = "2026-07-14T00:00:00.000Z";
+  const finishedAt = "2026-07-14T00:03:00.000Z";
+  const legacy = {
+    jobId: "legacy-timed-out-job",
+    execution: "foreground",
+    status: "timed_out",
+    startedAt,
+    finishedAt,
+    result: {
+      status: "timed_out",
+      exitCode: null,
+      stdout: "partial",
+      stderr: "",
+      output: "partial",
+      emptyOutput: false,
+      timedOut: true,
+      ambiguousSideEffects: false,
+      retryable: false,
+      startedAt,
+      finishedAt,
+    },
+  };
+
+  const parsed = parseJobStatus(JSON.stringify(legacy), legacy.jobId);
+  assert.equal(parsed.result?.cancelled, false);
+});
+
+test("job status parser rejects contradictory cancelled result evidence", () => {
+  const timestamp = "2026-07-15T00:00:00.000Z";
+  const contradictions = [
+    { status: "succeeded", timedOut: false, cancelled: true },
+    { status: "failed", timedOut: false, cancelled: true },
+    { status: "timed_out", timedOut: true, cancelled: true },
+    { status: "cancelled", timedOut: false, cancelled: false },
+  ];
+
+  for (const contradiction of contradictions) {
+    const persisted = {
+      jobId: "contradictory-cancelled-job",
+      execution: "foreground",
+      status: contradiction.status,
+      startedAt: timestamp,
+      finishedAt: timestamp,
+      result: {
+        status: contradiction.status,
+        exitCode: contradiction.status === "succeeded" ? 0 : null,
+        stdout: "",
+        stderr: "",
+        output: "",
+        emptyOutput: true,
+        timedOut: contradiction.timedOut,
+        cancelled: contradiction.cancelled,
+        ambiguousSideEffects: contradiction.status !== "succeeded",
+        retryable: false,
+        startedAt: timestamp,
+        finishedAt: timestamp,
+      },
+    };
+
+    assert.throws(
+      () => parseJobStatus(JSON.stringify(persisted), persisted.jobId),
+      hasCode("JOB_STATUS_INVALID"),
+    );
+  }
+});
+
 test("job status store rejects invalid writes before creating a status file", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "cueline-invalid-status-write-"));
   const store = new JobStatusStore(directory);
