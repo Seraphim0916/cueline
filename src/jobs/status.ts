@@ -122,6 +122,33 @@ function assertJobStatus(value: unknown, expectedJobId?: string): asserts value 
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(status.jobId as string)) invalid();
 }
 
+/**
+ * True when a parsed job-status record carries a result object that predates
+ * the `cancelled` field (evidence persisted before 0.1.7). This is the single
+ * definition of "legacy job evidence": readers backfill it, and upgrade
+ * preflight warns on it so an operator knows compat-shimmed evidence exists.
+ */
+export function jobStatusRecordIsLegacy(parsed: unknown): boolean {
+  return (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    typeof (parsed as { result?: unknown }).result === "object" &&
+    (parsed as { result?: unknown }).result !== null &&
+    (parsed as { result: Record<string, unknown> }).result.cancelled === undefined
+  );
+}
+
+/** True when raw persisted JSON is pre-0.1.7 legacy job evidence. */
+export function isLegacyJobStatusSource(source: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch {
+    return false;
+  }
+  return jobStatusRecordIsLegacy(parsed);
+}
+
 export function parseJobStatus(source: string, expectedJobId?: string): JobStatus {
   let parsed: unknown;
   try {
@@ -135,13 +162,7 @@ export function parseJobStatus(source: string, expectedJobId?: string): JobStatu
   }
   // Evidence persisted before 0.1.7 predates the `cancelled` field. Reads
   // backfill the only value those writers could have meant; writes stay strict.
-  if (
-    typeof parsed === "object" &&
-    parsed !== null &&
-    typeof (parsed as { result?: unknown }).result === "object" &&
-    (parsed as { result?: unknown }).result !== null &&
-    (parsed as { result: Record<string, unknown> }).result.cancelled === undefined
-  ) {
+  if (jobStatusRecordIsLegacy(parsed)) {
     (parsed as { result: Record<string, unknown> }).result.cancelled = false;
   }
   assertJobStatus(parsed, expectedJobId);
