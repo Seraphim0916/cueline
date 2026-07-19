@@ -998,14 +998,15 @@ class CodexIabAdapter implements BrowserAdapter {
     input: BrowserTurnInput,
     selectedModelLabel: string,
   ): Promise<BrowserSubmittedTurnObservation> {
+    const legacyPreSubmissionRecovery = input.legacyPreSubmissionRecovery === true;
     const baselineUserMessageCount = input.baselineUserMessageCount;
     if (
-      !Number.isSafeInteger(baselineUserMessageCount) ||
-      (baselineUserMessageCount ?? -1) < 0
+      !legacyPreSubmissionRecovery &&
+      (!Number.isSafeInteger(baselineUserMessageCount) ||
+        (baselineUserMessageCount ?? -1) < 0)
     ) {
       return { status: "pending" };
     }
-    const baseline = baselineUserMessageCount!;
     const deadline =
       Date.now() +
       Math.min(this.#options.timeoutMs, SUBMITTED_RECOVERY_HYDRATION_TIMEOUT_MS);
@@ -1027,7 +1028,11 @@ class CodexIabAdapter implements BrowserAdapter {
         (state.userMessageCount ?? -1) >= 0
           ? state.userMessageCount!
           : null;
+      const baseline = Number.isSafeInteger(baselineUserMessageCount)
+        ? baselineUserMessageCount!
+        : observedUserMessageCount;
       const baselineLoaded =
+        baseline !== null &&
         observedUserMessageCount !== null &&
         observedUserMessageCount >= baseline;
       const requestMessageFound = baselineLoaded
@@ -1038,12 +1043,12 @@ class CodexIabAdapter implements BrowserAdapter {
         : null;
       const now = Date.now();
       const hydrated =
-        baselineLoaded && (baseline > 0 || now >= deadline);
+        baselineLoaded && (baseline! > 0 || now >= deadline);
       const evidence: BrowserSubmittedTurnEvidence = {
         conversationUrl: state.pageUrl,
         selectedModelLabel,
         hydrated,
-        baselineUserMessageCount: baseline,
+        baselineUserMessageCount: baseline ?? 0,
         observedUserMessageCount,
         requestMessageFound,
         isAnswering: baselineLoaded ? state.isAnswering : null,
@@ -1051,6 +1056,7 @@ class CodexIabAdapter implements BrowserAdapter {
       lastEvidence = evidence;
 
       const notSentCandidate =
+        baseline !== null &&
         observedUserMessageCount === baseline &&
         requestMessageFound === false &&
         state.isAnswering === false;

@@ -1737,6 +1737,50 @@ test("submitted-turn observation refuses an unhydrated zero-count page", async (
   assert.equal(observation.evidence?.observedUserMessageCount, 0);
 });
 
+test("legacy pre-submission observation derives an idle baseline without sending", async () => {
+  const conversationUrl = "https://chatgpt.com/c/legacy-pre-submission-observation";
+  const prompt = "Round 68 request envelope that was never submitted";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "round 67 response",
+        userMessageCount: 67,
+        assistantMessageCount: 67,
+        lastUserText: "round 67 request",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId: "run_legacy_pre_submission_observation",
+    round: 68,
+    requestId: "msg_legacy_pre_submission_observation",
+    prompt,
+    legacyPreSubmissionRecovery: true,
+  });
+
+  assert.equal(observation.status, "definitely_not_sent");
+  assert.equal(observation.status === "definitely_not_sent" && observation.evidence.hydrated, true);
+  assert.equal(
+    observation.status === "definitely_not_sent" &&
+      observation.evidence.baselineUserMessageCount,
+    67,
+  );
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
 test("submitted attachment recovery accepts an exact idle Pro envelope after assistant DOM count regresses", async () => {
   const conversationUrl = "https://chatgpt.com/c/rebooted-attachment-recovery";
   const runId = "run_rebooted_attachment_recovery";

@@ -25,6 +25,7 @@ import {
 } from "./api-runtime-lifecycle.js";
 import type { BrowserAdapter } from "./browser/browser-adapter.js";
 import { createCodexIabAdapter } from "./browser/codex-iab/chatgpt-client.js";
+import { assertBrowserAdapterContract } from "./browser/validate-browser-adapter.js";
 import { probeCodexIab } from "./browser/codex-iab/probe.js";
 import {
   continueControllerLoop,
@@ -166,6 +167,7 @@ async function prepareRuntime(
       ...options.browserOptions,
       ...(conversationUrl === undefined ? {} : { conversationUrl }),
     });
+  assertBrowserAdapterContract(browser);
 
   return {
     browser,
@@ -241,6 +243,7 @@ export async function startCueLineRun(
 }
 
 export async function runCueLine(options: StartCueLineRunOptions): Promise<CueLineResult> {
+  if (options.browser !== undefined) assertBrowserAdapterContract(options.browser);
   assertNotNested(options.environment ?? runtimeEnvironment());
   validateControllerRuntimeOptions(options);
   validateDefaultProcessTimeout(options);
@@ -285,6 +288,7 @@ export async function runCueLine(options: StartCueLineRunOptions): Promise<CueLi
 export async function continueCueLineRun(
   options: ContinueCueLineRunOptions,
 ): Promise<CueLineResult> {
+  if (options.browser !== undefined) assertBrowserAdapterContract(options.browser);
   const environment = options.environment ?? runtimeEnvironment();
   const home = options.home ?? defaultCueLineHome(environment);
   if (options.manualSendConfirmed === true && options.reconcileRequestId === undefined) {

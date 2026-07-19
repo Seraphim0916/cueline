@@ -17,14 +17,22 @@
   `promptHash` — skipping the re-fill instead of refusing. Any other
   pre-existing attachment is still refused, so a user's own attachment is never
   mixed in or cleared.
+- Reject injected browser objects before any durable continuation write unless
+  `sendTurn` is callable and split `submitTurn` / `observeTurn` methods are
+  supplied as a callable pair. The stable `BROWSER_ADAPTER_INVALID` error lists
+  only missing method names. A narrow legacy recovery now recognizes the exact
+  pre-submission `browser.sendTurn is not a function` event shape, requires a
+  fresh idle Pro observation of the exact conversation with the request absent,
+  and then abandons the old request for one round-preserving retry.
 
 ### Verification
 
 - Red/green regression: a new unit test reuses the leftover attachment without
   re-filling and clicks send exactly once; it failed against the old guard and
   passes after the fix.
-- Full suite green: unit 250/250, integration 304/304, smoke 6/6, `tsc
-  --noEmit` clean.
+- Full suite green: unit 313/313, integration 329/329, total 648/648;
+  typecheck, CLI contracts, plugin/docs validation, package dry-run, and
+  `cueline doctor --json` passed.
 
 ## 0.4.1 - 2026-07-18
 

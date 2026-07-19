@@ -8,6 +8,8 @@ export interface BrowserTurnInput {
   attachmentPromptExpected?: boolean;
   baselineUserMessageCount?: number;
   baselineAssistantMessageCount?: number;
+  /** Narrow read-only recovery for legacy failures before any submission method call. */
+  legacyPreSubmissionRecovery?: boolean;
   notSentRecovery?: {
     abandonedRequestId: string;
     promptHash: string;

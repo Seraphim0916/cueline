@@ -25,10 +25,106 @@ import {
   RuntimeLease,
 } from "./state/runtime-lease.js";
 import { readAuthoritativeRunEvents } from "./state/store.js";
+import { readCancellationObservation } from "./state/cancellation.js";
 import {
   isDefinitelyNotSentObservation,
   isSubmittedTurnRecoveryCandidate,
 } from "./core/submitted-turn-recovery.js";
+
+type AuthoritativeRunEvent = Awaited<ReturnType<typeof readAuthoritativeRunEvents>>[number];
+
+function eventPayload(event: AuthoritativeRunEvent): Record<string, unknown> {
+  return typeof event.payload === "object" &&
+    event.payload !== null &&
+    !Array.isArray(event.payload)
+    ? (event.payload as Record<string, unknown>)
+    : {};
+}
+
+function isLegacyPreSubmissionAdapterFailure(
+  events: readonly AuthoritativeRunEvent[],
+  turn: {
+    requestId: string;
+    round: number;
+    submissionState: string;
+    selectedModelLabel?: string | null | undefined;
+    baselineUserMessageCount?: number | null | undefined;
+    baselineAssistantMessageCount?: number | null | undefined;
+    baselineLastUserMessageHash?: string | null | undefined;
+    composerPromptState?: string | null | undefined;
+    submissionCheckpointContract?: string | null | undefined;
+  },
+): boolean {
+  if (
+    turn.submissionState !== "possibly_sent" ||
+    turn.selectedModelLabel !== null ||
+    turn.baselineUserMessageCount !== null ||
+    turn.baselineAssistantMessageCount !== null ||
+    turn.baselineLastUserMessageHash !== null ||
+    turn.composerPromptState !== null ||
+    turn.submissionCheckpointContract !== null
+  ) {
+    return false;
+  }
+  const requestedIndexes = events.flatMap((event, index) => {
+    const payload = eventPayload(event);
+    return event.type === "controller_turn_requested" &&
+      payload.request_id === turn.requestId &&
+      payload.round === turn.round
+      ? [index]
+      : [];
+  });
+  if (requestedIndexes.length !== 1) return false;
+  const requestedIndex = requestedIndexes[0]!;
+  const immediateFailure = events[requestedIndex + 1];
+  if (immediateFailure?.type !== "run_failed") return false;
+  const failure = eventPayload(immediateFailure);
+  if (
+    failure.code !== "CUELINE_INTERNAL" ||
+    failure.message !== "browser.sendTurn is not a function" ||
+    failure.request_id !== turn.requestId ||
+    failure.stage !== "controller_turn" ||
+    failure.submission_state !== "requested"
+  ) {
+    return false;
+  }
+  return !events.slice(requestedIndex + 1).some((event) => {
+    const payload = eventPayload(event);
+    if (
+      (event.type === "controller_turn_submission_started" ||
+        event.type === "controller_turn_submitted" ||
+        event.type === "controller_response_received") &&
+      payload.request_id === turn.requestId
+    ) {
+      return true;
+    }
+    if (event.type !== "controller_command_accepted") return false;
+    const command =
+      typeof payload.command === "object" &&
+      payload.command !== null &&
+      !Array.isArray(payload.command)
+        ? (payload.command as Record<string, unknown>)
+        : {};
+    return (
+      command.request_id === turn.requestId ||
+      (typeof command.round === "number" && command.round >= turn.round)
+    );
+  });
+}
+
+function isLegacyDefinitelyNotSentObservation(
+  evidence: BrowserSubmittedTurnEvidence,
+  conversationUrl: string,
+): boolean {
+  return (
+    sameChatGptConversationUrl(evidence.conversationUrl, conversationUrl) &&
+    /^Pro(?:\s|$)/i.test(evidence.selectedModelLabel ?? "") &&
+    evidence.hydrated === true &&
+    evidence.requestMessageFound === false &&
+    evidence.isAnswering === false &&
+    evidence.observedUserMessageCount !== null
+  );
+}
 
 export async function confirmManualControllerSubmission(
   runId: string,
@@ -225,6 +321,14 @@ export async function confirmControllerTurnNotSent(
         "Operator-confirmed not-sent recovery requires exactly one pending controller turn.",
       );
     }
+    const cancellation = await readCancellationObservation(home, runId);
+    if (cancellation.runRequested || cancellation.jobRequests.length > 0) {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_STATE_INVALID",
+        "Not-sent recovery is forbidden while run or job cancellation is pending.",
+      );
+    }
+    const events = await readAuthoritativeRunEvents(home, runId);
     const exactAmbiguousFailure =
       turn.submissionState !== "possibly_sent" ||
       state.lastFailure?.code !== "CONTROLLER_SUBMISSION_AMBIGUOUS" ||
@@ -238,7 +342,15 @@ export async function confirmControllerTurnNotSent(
       options.browser !== undefined &&
       candidateConversationUrl !== undefined &&
       isSubmittedTurnRecoveryCandidate(turn, candidateConversationUrl);
-    if (!exactAmbiguousFailure && !evidenceGatedSubmittedTurn) {
+    const legacyPreSubmissionFailure =
+      options.browser !== undefined &&
+      candidateConversationUrl !== undefined &&
+      isLegacyPreSubmissionAdapterFailure(events, turn);
+    if (
+      !exactAmbiguousFailure &&
+      !evidenceGatedSubmittedTurn &&
+      !legacyPreSubmissionFailure
+    ) {
       throw new CueLineError(
         "CONTROLLER_NOT_SENT_STATE_INVALID",
         "Not-sent recovery requires either the exact ambiguous submission failure or a fresh evidence-gated submitted turn.",
@@ -279,7 +391,10 @@ export async function confirmControllerTurnNotSent(
         "Operator-confirmed not-sent recovery requires an exact ChatGPT conversation URL.",
       );
     }
-    if (turn.selectedModelLabel === null || !/^Pro(?:\s|$)/i.test(turn.selectedModelLabel)) {
+    if (
+      !legacyPreSubmissionFailure &&
+      (turn.selectedModelLabel === null || !/^Pro(?:\s|$)/i.test(turn.selectedModelLabel))
+    ) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
         "The pending turn lacks exact Pro composer model evidence.",
@@ -291,14 +406,8 @@ export async function confirmControllerTurnNotSent(
         "The pending turn lacks a valid prompt hash.",
       );
     }
-    const events = await readAuthoritativeRunEvents(home, runId);
     for (const event of events) {
-      const payload =
-        typeof event.payload === "object" &&
-        event.payload !== null &&
-        !Array.isArray(event.payload)
-          ? (event.payload as Record<string, unknown>)
-          : {};
+      const payload = eventPayload(event);
       if (
         event.type === "controller_response_received" &&
         payload.request_id === options.requestId
@@ -326,7 +435,7 @@ export async function confirmControllerTurnNotSent(
       }
     }
     let submittedEvidence: BrowserSubmittedTurnEvidence | undefined;
-    if (evidenceGatedSubmittedTurn) {
+    if (evidenceGatedSubmittedTurn || legacyPreSubmissionFailure) {
       const browser = options.browser!;
       if (browser.observeSubmittedTurn === undefined) {
         throw new CueLineError(
@@ -339,21 +448,28 @@ export async function confirmControllerTurnNotSent(
         round: turn.round,
         requestId: turn.requestId,
         prompt: turn.prompt,
-        baselineUserMessageCount: turn.baselineUserMessageCount!,
-        ...(turn.baselineAssistantMessageCount === null
-          ? {}
-          : { baselineAssistantMessageCount: turn.baselineAssistantMessageCount }),
+        ...(typeof turn.baselineUserMessageCount === "number"
+          ? { baselineUserMessageCount: turn.baselineUserMessageCount }
+          : {}),
+        ...(typeof turn.baselineAssistantMessageCount === "number"
+          ? { baselineAssistantMessageCount: turn.baselineAssistantMessageCount }
+          : {}),
         ...(turn.composerPromptState === "attachment_ready"
           ? { attachmentPromptExpected: true }
+          : {}),
+        ...(legacyPreSubmissionFailure
+          ? { legacyPreSubmissionRecovery: true }
           : {}),
       });
       if (
         observation.status !== "definitely_not_sent" ||
-        !isDefinitelyNotSentObservation(
-          turn,
-          conversationUrl,
-          observation.evidence,
-        )
+        !(legacyPreSubmissionFailure
+          ? isLegacyDefinitelyNotSentObservation(observation.evidence, conversationUrl)
+          : isDefinitelyNotSentObservation(
+              turn,
+              conversationUrl,
+              observation.evidence,
+            ))
       ) {
         throw new CueLineError(
           "CONTROLLER_NOT_SENT_EVIDENCE_INSUFFICIENT",
@@ -374,14 +490,24 @@ export async function confirmControllerTurnNotSent(
             : {};
         return typeof payload.round === "number" && payload.round < turn.round;
       }).length;
+    const selectedModelLabel =
+      submittedEvidence?.selectedModelLabel ?? turn.selectedModelLabel;
+    if (selectedModelLabel === null) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
+        "Not-sent recovery lacks exact Pro composer model evidence.",
+      );
+    }
+    const recoveryBaselineUserMessageCount =
+      submittedEvidence?.baselineUserMessageCount ?? derivedBaselineUserMessageCount;
     if (existingRecovery === null) {
       await store.append("controller_turn_not_sent_confirmed", {
         round: turn.round,
         request_id: turn.requestId,
         prompt_hash: turn.promptHash,
         conversation_url: conversationUrl,
-        selected_model_label: turn.selectedModelLabel,
-        baseline_user_message_count: derivedBaselineUserMessageCount,
+        selected_model_label: selectedModelLabel,
+        baseline_user_message_count: recoveryBaselineUserMessageCount,
         ...(submittedEvidence === undefined
           ? { operator_confirmation: true }
           : {
@@ -391,8 +517,10 @@ export async function confirmControllerTurnNotSent(
               is_answering: false,
               page_hydrated: true,
               submission_state: "definitely_not_sent",
-              confirmation_source: "fresh_read_only_observation",
-              operator_confirmation: true,
+              confirmation_source: legacyPreSubmissionFailure
+                ? "legacy_pre_submission_adapter_failure"
+                : "fresh_read_only_observation",
+              operator_confirmation: !legacyPreSubmissionFailure,
             }),
       });
     }
@@ -404,12 +532,14 @@ export async function confirmControllerTurnNotSent(
       await store.append("controller_turn_abandoned", {
         round: turn.round,
         request_id: turn.requestId,
-        reason: "operator_confirmed_not_sent",
+        reason: legacyPreSubmissionFailure
+          ? "legacy_pre_submission_adapter_failure"
+          : "operator_confirmed_not_sent",
         round_not_consumed: true,
         prompt_hash: turn.promptHash,
         conversation_url: conversationUrl,
-        selected_model_label: turn.selectedModelLabel,
-        baseline_user_message_count: derivedBaselineUserMessageCount,
+        selected_model_label: selectedModelLabel,
+        baseline_user_message_count: recoveryBaselineUserMessageCount,
         ...(submittedEvidence === undefined
           ? { operator_confirmation: true }
           : {
@@ -419,8 +549,10 @@ export async function confirmControllerTurnNotSent(
               is_answering: false,
               page_hydrated: true,
               submission_state: "definitely_not_sent",
-              confirmation_source: "fresh_read_only_observation",
-              operator_confirmation: true,
+              confirmation_source: legacyPreSubmissionFailure
+                ? "legacy_pre_submission_adapter_failure"
+                : "fresh_read_only_observation",
+              operator_confirmation: !legacyPreSubmissionFailure,
             }),
       });
     }

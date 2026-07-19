@@ -21,6 +21,7 @@ import {
   loadCueLineRunState,
   loadCueLineRunStatus,
   reconcileCueLineRuntime,
+  startCueLineRun,
   submitCueLineCallerJobResult,
   takeoverCueLineRuntime,
 } from "../../src/api.js";
@@ -402,6 +403,387 @@ const routingConfig = {
     },
   },
 };
+
+const legacyAdapterFailureConversationUrl =
+  "https://chatgpt.com/c/legacy-pre-submission-adapter-failure";
+
+async function createLegacyPreSubmissionAdapterFailure(
+  home: string,
+  runId: string,
+  options: { failureMessage?: string } = {},
+): Promise<{ requestId: string; prompt: string }> {
+  let requestId = "";
+  let prompt = "";
+  const userRequest = `legacy request ${runId}`;
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: {
+      ...initialRunState(runId, userRequest, "caller", 200),
+      round: 67,
+    },
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: userRequest,
+    executor: "caller",
+    max_rounds: 200,
+  });
+  await store.append("controller_turn_requested", {
+    round: 67,
+    request_id: "msg_legacy_prior_round",
+    prompt: "prior round prompt",
+    prompt_hash: commandHash("prior round prompt"),
+  });
+  await store.append("controller_command_accepted", {
+    command_hash: "legacy-prior-command",
+    command: {
+      protocol: "cueline/0.1",
+      run_id: runId,
+      round: 67,
+      request_id: "msg_legacy_prior_round",
+      action: "wait",
+    },
+  });
+  await store.append("controller_command_execution_completed", {
+    command_hash: "legacy-prior-command",
+  });
+  await store.append("controller_conversation_bound", {
+    conversation_url: legacyAdapterFailureConversationUrl,
+  });
+  await store.snapshot();
+  const failingBrowser: BrowserAdapter = {
+    async sendTurn(input): Promise<ControllerTurn> {
+      requestId = input.requestId;
+      prompt = input.prompt;
+      throw new TypeError(options.failureMessage ?? "browser.sendTurn is not a function");
+    },
+  };
+  await assert.rejects(
+    continueCueLineRun({ runId, home, browser: failingBrowser, routingConfig }),
+  );
+  assert.notEqual(requestId, "");
+  const failedStore = await RunStore.load({
+    home,
+    runId,
+    initialState: initialRunState(runId, userRequest, "caller", 200),
+    reducer: reduceRunState,
+  });
+  await failedStore.append("run_resumed", {});
+  await failedStore.append("run_failed", {
+    code: "CONTROLLER_RECONCILIATION_MISMATCH",
+    message: "last user mismatch",
+    request_id: requestId,
+    stage: "reconciling",
+    submission_state: "possibly_sent",
+  });
+  await failedStore.snapshot();
+  return { requestId, prompt };
+}
+
+function legacyObservationBrowser(
+  overrides: Partial<BrowserSubmittedTurnEvidence> = {},
+): BrowserAdapter & {
+  confirmationCalls: number;
+  submitCalls: number;
+  submittedRequestIds: string[];
+} {
+  let confirmationCalls = 0;
+  let submitCalls = 0;
+  const submittedRequestIds: string[] = [];
+  return {
+    submissionCheckpointContract: "write_ahead_v1",
+    get confirmationCalls() {
+      return confirmationCalls;
+    },
+    get submitCalls() {
+      return submitCalls;
+    },
+    submittedRequestIds,
+    async observeSubmittedTurn(input) {
+      confirmationCalls += 1;
+      assert.equal(
+        (input as BrowserTurnInput & { legacyPreSubmissionRecovery?: boolean })
+          .legacyPreSubmissionRecovery,
+        true,
+      );
+      return {
+        status: "definitely_not_sent",
+        evidence: {
+          conversationUrl: legacyAdapterFailureConversationUrl,
+          selectedModelLabel: "Pro",
+          hydrated: true,
+          baselineUserMessageCount: 67,
+          observedUserMessageCount: 67,
+          requestMessageFound: false,
+          isAnswering: false,
+          ...overrides,
+        },
+      };
+    },
+    async submitTurn(input, hooks) {
+      submitCalls += 1;
+      submittedRequestIds.push(input.requestId);
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitted",
+        composerPromptState: "inline_ready",
+        conversationUrl: legacyAdapterFailureConversationUrl,
+        selectedModelLabel: "Pro",
+        baselineUserMessageCount: 67,
+        baselineAssistantMessageCount: 67,
+      });
+    },
+    async observeTurn() {
+      return undefined;
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("caller continuation must use split submission");
+    },
+  };
+}
+
+test("continueCueLineRun rejects invalid browser adapters before durable mutation", async () => {
+  const cases: Array<{ name: string; browser: unknown; missingMethods: string[] }> = [
+    {
+      name: "built-in-iab-module",
+      browser: { browserId: "iab", tabs: [], user: {} },
+      missingMethods: ["sendTurn"],
+    },
+    {
+      name: "undefined-send-turn",
+      browser: { sendTurn: undefined },
+      missingMethods: ["sendTurn"],
+    },
+    {
+      name: "non-function-send-turn",
+      browser: { sendTurn: "not-a-function" },
+      missingMethods: ["sendTurn"],
+    },
+    {
+      name: "submit-without-observe",
+      browser: { sendTurn() {}, submitTurn() {} },
+      missingMethods: ["observeTurn"],
+    },
+    {
+      name: "observe-without-submit",
+      browser: { sendTurn() {}, observeTurn() {} },
+      missingMethods: ["submitTurn"],
+    },
+  ];
+
+  for (const fixture of cases) {
+    const home = await temporaryHome();
+    const runId = `run_invalid_browser_${fixture.name}`;
+    await startCueLineRun({ request: "adapter preflight", runId, home });
+    const beforeEvents = await readEvents(runPaths(home, runId).events);
+    const beforeState = await loadCueLineRunState(runId, { home });
+
+    await assert.rejects(
+      continueCueLineRun({
+        runId,
+        home,
+        browser: fixture.browser as BrowserAdapter,
+        routingConfig,
+      }),
+      (error: unknown) => {
+        const actual = error as { code?: string; details?: unknown };
+        assert.equal(actual.code, "BROWSER_ADAPTER_INVALID", fixture.name);
+        assert.deepEqual(
+          actual.details,
+          { missingMethods: fixture.missingMethods },
+          fixture.name,
+        );
+        return true;
+      },
+    );
+
+    const afterEvents = await readEvents(runPaths(home, runId).events);
+    const afterState = await loadCueLineRunState(runId, { home });
+    assert.equal(afterEvents.length, beforeEvents.length, fixture.name);
+    assert.equal(afterState.round, beforeState.round, fixture.name);
+    assert.equal(
+      afterState.pendingControllerTurns.length,
+      beforeState.pendingControllerTurns.length,
+      fixture.name,
+    );
+    assert.deepEqual(afterState.commandHashes, beforeState.commandHashes, fixture.name);
+  }
+});
+
+test("legacy pre-submission adapter failure is abandoned once and retried once", async () => {
+  const home = await temporaryHome();
+  const runId = "run_legacy_pre_submission_adapter_failure";
+  const { requestId } = await createLegacyPreSubmissionAdapterFailure(home, runId);
+  const browser = legacyObservationBrowser();
+
+  const confirmation = await confirmControllerTurnNotSent(runId, {
+    home,
+    requestId,
+    browser,
+  });
+  assert.equal(confirmation.outcome, "confirmed");
+  assert.equal(browser.confirmationCalls, 1);
+
+  const repeatedConfirmation = await confirmControllerTurnNotSent(runId, {
+    home,
+    requestId,
+    browser,
+  });
+  assert.equal(repeatedConfirmation.outcome, "already_confirmed");
+  assert.equal(browser.confirmationCalls, 1);
+
+  const first = await continueCueLineRun({
+    runId,
+    home,
+    browser,
+    routingConfig,
+  });
+  assert.equal(first.status, "awaiting_controller");
+  assert.equal(browser.submitCalls, 1);
+  assert.equal(browser.submittedRequestIds.length, 1);
+  assert.notEqual(browser.submittedRequestIds[0], requestId);
+
+  const second = await continueCueLineRun({
+    runId,
+    home,
+    browser,
+    routingConfig,
+  });
+  assert.equal(second.status, "awaiting_controller");
+  assert.equal(browser.submitCalls, 1);
+
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_turn_not_sent_confirmed" &&
+        (event.payload as Record<string, unknown>).request_id === requestId,
+    ).length,
+    1,
+  );
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_turn_abandoned" &&
+        (event.payload as Record<string, unknown>).request_id === requestId &&
+        (event.payload as Record<string, unknown>).reason ===
+          "legacy_pre_submission_adapter_failure",
+    ).length,
+    1,
+  );
+  const retries = events.filter(
+    (event) =>
+      event.type === "controller_turn_requested" &&
+      (event.payload as Record<string, unknown>).retry_of_request_id === requestId,
+  );
+  assert.equal(retries.length, 1);
+  assert.equal(
+    (retries[0]?.payload as Record<string, unknown>).request_id,
+    browser.submittedRequestIds[0],
+  );
+  assert.equal(events.filter((event) => event.type === "job_registered").length, 0);
+  assert.equal((await loadCueLineRunState(runId, { home })).round, 68);
+});
+
+test("legacy pre-submission recovery rejects missing or conflicting evidence", async () => {
+  const fixtures: Array<{
+    name: string;
+    failureMessage?: string;
+    observation?: Partial<BrowserSubmittedTurnEvidence>;
+    append?: (store: RunStore<ReturnType<typeof initialRunState>>, requestId: string) => Promise<void>;
+  }> = [
+    {
+      name: "generic-internal",
+      failureMessage: "unrelated internal error",
+    },
+    {
+      name: "request-found",
+      observation: { requestMessageFound: true },
+    },
+    {
+      name: "pro-answering",
+      observation: { isAnswering: true },
+    },
+    {
+      name: "conversation-mismatch",
+      observation: { conversationUrl: "https://chatgpt.com/c/different-conversation" },
+    },
+    {
+      name: "submission-checkpoint",
+      append: async (store, requestId) => {
+        await store.append("controller_turn_submission_started", {
+          round: 68,
+          request_id: requestId,
+          submission_state: "submitting",
+          selected_model_label: "Pro",
+          baseline_assistant_message_count: 67,
+          composer_prompt_state: "inline_ready",
+        });
+      },
+    },
+    {
+      name: "response-received",
+      append: async (store, requestId) => {
+        await store.append("controller_response_received", {
+          round: 68,
+          request_id: requestId,
+          text: "unaccepted response",
+        });
+      },
+    },
+    {
+      name: "newer-command-accepted",
+      append: async (store) => {
+        await store.append("controller_command_accepted", {
+          command_hash: "newer-command",
+          command: {
+            protocol: "cueline/0.1",
+            run_id: store.state.runId,
+            round: 68,
+            request_id: "msg_other_same_round",
+            action: "wait",
+          },
+        });
+      },
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    const home = await temporaryHome();
+    const runId = `run_legacy_reject_${fixture.name}`;
+    const { requestId } = await createLegacyPreSubmissionAdapterFailure(home, runId, {
+      ...(fixture.failureMessage === undefined
+        ? {}
+        : { failureMessage: fixture.failureMessage }),
+    });
+    if (fixture.append !== undefined) {
+      const store = await RunStore.load({
+        home,
+        runId,
+        initialState: initialRunState(runId, "", "caller", 200),
+        reducer: reduceRunState,
+      });
+      await fixture.append(store, requestId);
+      await store.snapshot();
+    }
+    const browser = legacyObservationBrowser(fixture.observation);
+
+    await assert.rejects(
+      confirmControllerTurnNotSent(runId, { home, requestId, browser }),
+      (error: unknown) => {
+        assert.match(
+          String((error as { code?: string }).code),
+          /^CONTROLLER_(?:NOT_SENT|RECONCILIATION)_/,
+          fixture.name,
+        );
+        return true;
+      },
+    );
+    const state = await loadCueLineRunState(runId, { home });
+    assert.equal(state.notSentRecovery, null, fixture.name);
+    assert.equal(state.pendingControllerTurns.length, 1, fixture.name);
+  }
+});
 
 test("run cancellation retires a fresh lease whose PID is definitely dead", async () => {
   const home = await temporaryHome();
@@ -1170,6 +1552,9 @@ test("field submitted wedge is reclassified from fresh evidence and creates exac
     },
     async observeTurn(): Promise<undefined> {
       return undefined;
+    },
+    async submitTurn(): Promise<void> {
+      throw new Error("duplicate continuation must not submit a second pending turn");
     },
     async sendTurn(): Promise<ControllerTurn> {
       throw new Error("duplicate continuation must not send a second pending turn");
