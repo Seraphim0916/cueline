@@ -25,6 +25,29 @@
         }
       ]
     },
+    "live-search": {
+      "enabled": true,
+      "candidates": [
+        {
+          "id": "grok-advise-search",
+          "argv": [
+            "grok",
+            "--no-memory",
+            "--no-subagents",
+            "--no-plan",
+            "--no-alt-screen",
+            "--output-format",
+            "plain",
+            "--verbatim",
+            "--permission-mode",
+            "plan",
+            "-p",
+            "{task}"
+          ],
+          "task_input": "argv"
+        }
+      ]
+    },
     "taste-final": {
       "enabled": true,
       "candidates": [
