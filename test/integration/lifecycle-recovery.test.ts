@@ -165,6 +165,56 @@ async function createSubmittedTurnWedge(
   return { requestId };
 }
 
+async function createSubmissionStartedAttachmentWedge(
+  home: string,
+  suffix: string,
+): Promise<{
+  runId: string;
+  requestId: string;
+  conversationUrl: string;
+  prompt: string;
+  baselineUserMessageCount: number;
+}> {
+  const runId = `run_submission_started_${suffix}`;
+  const requestId = `msg_submission_started_${suffix}`;
+  const conversationUrl = `https://chatgpt.com/c/submission-started-${suffix}`;
+  const prompt = `Attachment-backed submission-started recovery ${suffix}`;
+  const baselineUserMessageCount = 101;
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, prompt, "caller", 100),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: prompt,
+    executor: "caller",
+    max_rounds: 100,
+  });
+  await store.append("controller_turn_requested", {
+    round: 85,
+    request_id: requestId,
+    prompt,
+    prompt_hash: commandHash(prompt),
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.append("controller_turn_submission_started", {
+    round: 85,
+    request_id: requestId,
+    submission_state: "submitting",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    prompt_hash: commandHash(prompt),
+    model_evidence_source: "composer",
+    composer_prompt_state: "attachment_ready",
+    baseline_user_message_count: baselineUserMessageCount,
+    baseline_assistant_message_count: 16,
+    click_attempt_state: "attempting",
+  });
+  await store.snapshot();
+  return { runId, requestId, conversationUrl, prompt, baselineUserMessageCount };
+}
+
 function submittedObservationBrowser(
   observation: SubmittedTurnObservation,
   options: { allowRetrySubmit?: boolean } = {},
@@ -225,6 +275,9 @@ function definitelyNotSentObservation(
       observedUserMessageCount: submittedTurnWedgeFixture.baselineUserMessageCount,
       requestMessageFound: false,
       isAnswering: false,
+      composerPromptState: "inline_ready",
+      composerAttachmentCount: 0,
+      composerSendButtonEnabled: true,
       ...overrides,
     },
   };
@@ -1669,6 +1722,143 @@ test("confirmControllerTurnNotSent accepts the evidence-gated submitted wedge sh
     requestId,
   );
   assert.equal(state.notSentRecovery?.retryRequestId, null);
+});
+
+test("explicit reconciliation confirms a submission-started residual attachment without resending", async () => {
+  const home = await temporaryHome();
+  const fixture = await createSubmissionStartedAttachmentWedge(home, "residual");
+  let observeCalls = 0;
+  let submitCalls = 0;
+  const browser: SubmittedObservationBrowser = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async observeSubmittedTurn(input): Promise<SubmittedTurnObservation> {
+      observeCalls += 1;
+      assert.equal(input.runId, fixture.runId);
+      assert.equal(input.round, 85);
+      assert.equal(input.requestId, fixture.requestId);
+      assert.equal(input.prompt, fixture.prompt);
+      assert.equal(input.attachmentPromptExpected, true);
+      assert.equal(input.baselineUserMessageCount, fixture.baselineUserMessageCount);
+      return {
+        status: "definitely_not_sent",
+        evidence: {
+          conversationUrl: fixture.conversationUrl,
+          selectedModelLabel: "Pro",
+          hydrated: true,
+          baselineUserMessageCount: fixture.baselineUserMessageCount,
+          observedUserMessageCount: fixture.baselineUserMessageCount,
+          requestMessageFound: false,
+          isAnswering: false,
+          composerPromptState: "attachment_ready",
+          composerAttachmentCount: 1,
+          composerSendButtonEnabled: true,
+        },
+      };
+    },
+    async submitTurn(): Promise<void> {
+      submitCalls += 1;
+      throw new Error("not-sent reconciliation must not submit");
+    },
+    async observeTurn(): Promise<undefined> {
+      return undefined;
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("not-sent reconciliation must stay read-only");
+    },
+  };
+
+  const confirmation = await confirmControllerTurnNotSent(fixture.runId, {
+    home,
+    requestId: fixture.requestId,
+    conversationUrl: fixture.conversationUrl,
+    browser,
+  } as Parameters<typeof confirmControllerTurnNotSent>[1] & {
+    browser: SubmittedObservationBrowser;
+  });
+
+  assert.equal(confirmation.outcome, "confirmed");
+  assert.equal(observeCalls, 1);
+  assert.equal(submitCalls, 0);
+  const state = await loadCueLineRunState(fixture.runId, { home });
+  assert.equal(state.round, 84);
+  assert.equal(state.pendingControllerTurns.length, 0);
+  assert.equal(state.notSentRecovery?.abandonedRequestId, fixture.requestId);
+  assert.equal(state.notSentRecovery?.retryRequestId, null);
+  const events = await readEvents(runPaths(home, fixture.runId).events);
+  assert.equal(events.filter((event) => event.type === "controller_turn_requested").length, 1);
+  assert.equal(
+    events.filter((event) => event.type === "controller_turn_submission_started").length,
+    1,
+  );
+  assert.equal(events.filter((event) => event.type === "controller_turn_submitted").length, 0);
+  assert.equal(
+    events.filter((event) => event.type === "controller_turn_not_sent_confirmed").length,
+    1,
+  );
+  assert.equal(events.filter((event) => event.type === "controller_turn_abandoned").length, 1);
+});
+
+test("submission-started reconciliation distinguishes a sent message and never marks it not sent", async () => {
+  const home = await temporaryHome();
+  const fixture = await createSubmissionStartedAttachmentWedge(home, "sent");
+  let submitCalls = 0;
+  const browser: SubmittedObservationBrowser = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async observeSubmittedTurn(): Promise<SubmittedTurnObservation> {
+      return {
+        status: "pending",
+        evidence: {
+          conversationUrl: fixture.conversationUrl,
+          selectedModelLabel: "Pro",
+          hydrated: true,
+          baselineUserMessageCount: fixture.baselineUserMessageCount,
+          observedUserMessageCount: fixture.baselineUserMessageCount + 1,
+          requestMessageFound: true,
+          isAnswering: true,
+          composerPromptState: "empty",
+          composerAttachmentCount: 0,
+          composerSendButtonEnabled: false,
+        },
+      };
+    },
+    async submitTurn(): Promise<void> {
+      submitCalls += 1;
+      throw new Error("sent-message reconciliation must never resend");
+    },
+    async observeTurn(): Promise<undefined> {
+      return undefined;
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("sent-message reconciliation must stay read-only");
+    },
+  };
+
+  await assert.rejects(
+    confirmControllerTurnNotSent(fixture.runId, {
+      home,
+      requestId: fixture.requestId,
+      conversationUrl: fixture.conversationUrl,
+      browser,
+    } as Parameters<typeof confirmControllerTurnNotSent>[1] & {
+      browser: SubmittedObservationBrowser;
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "CONTROLLER_NOT_SENT_EVIDENCE_INSUFFICIENT",
+  );
+
+  assert.equal(submitCalls, 0);
+  const state = await loadCueLineRunState(fixture.runId, { home });
+  assert.equal(state.round, 85);
+  assert.equal(state.pendingControllerTurns[0]?.requestId, fixture.requestId);
+  const events = await readEvents(runPaths(home, fixture.runId).events);
+  assert.equal(events.filter((event) => event.type === "controller_turn_requested").length, 1);
+  assert.equal(
+    events.filter((event) => event.type === "controller_turn_not_sent_confirmed").length,
+    0,
+  );
+  assert.equal(events.filter((event) => event.type === "controller_turn_abandoned").length, 0);
 });
 
 test("status hides stale reconciliation metadata from an unrelated current round", async () => {

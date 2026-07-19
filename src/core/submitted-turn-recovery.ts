@@ -5,12 +5,11 @@ import {
 } from "./conversation-url.js";
 import type { PendingControllerTurn } from "./state-machine.js";
 
-export function isSubmittedTurnRecoveryCandidate(
+function hasRecoverableTurnIdentity(
   turn: PendingControllerTurn,
   conversationUrl: string,
 ): boolean {
   return (
-    turn.submissionState === "submitted" &&
     turn.manualSendConfirmed === false &&
     (turn.retryOfRequestId === undefined || turn.retryOfRequestId === null) &&
     turn.submissionCheckpointContract === "write_ahead_v1" &&
@@ -23,13 +22,48 @@ export function isSubmittedTurnRecoveryCandidate(
   );
 }
 
+export function isSubmittedTurnRecoveryCandidate(
+  turn: PendingControllerTurn,
+  conversationUrl: string,
+): boolean {
+  return (
+    turn.submissionState === "submitted" &&
+    hasRecoverableTurnIdentity(turn, conversationUrl)
+  );
+}
+
+export function isSubmissionStartedAttachmentRecoveryCandidate(
+  turn: PendingControllerTurn,
+  conversationUrl: string,
+): boolean {
+  return (
+    turn.submissionState === "submitting" &&
+    turn.composerPromptState === "attachment_ready" &&
+    hasRecoverableTurnIdentity(turn, conversationUrl)
+  );
+}
+
 export function isDefinitelyNotSentObservation(
   turn: PendingControllerTurn,
   expectedConversationUrl: string,
   evidence: BrowserSubmittedTurnEvidence,
 ): boolean {
+  const recoveryCandidate =
+    isSubmittedTurnRecoveryCandidate(turn, expectedConversationUrl) ||
+    isSubmissionStartedAttachmentRecoveryCandidate(turn, expectedConversationUrl);
+  const stagedComposerMatches =
+    turn.composerPromptState === "attachment_ready"
+      ? evidence.composerPromptState === "attachment_ready" &&
+        Number.isSafeInteger(evidence.composerAttachmentCount) &&
+        (evidence.composerAttachmentCount ?? 0) > 0 &&
+        evidence.composerSendButtonEnabled === true
+      : turn.composerPromptState === "inline_ready"
+        ? evidence.composerPromptState === "inline_ready" &&
+          evidence.composerSendButtonEnabled === true
+        : false;
   return (
-    isSubmittedTurnRecoveryCandidate(turn, expectedConversationUrl) &&
+    recoveryCandidate &&
+    stagedComposerMatches &&
     evidence.hydrated === true &&
     evidence.requestMessageFound === false &&
     evidence.isAnswering === false &&

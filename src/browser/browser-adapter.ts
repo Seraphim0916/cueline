@@ -34,6 +34,10 @@ export interface BrowserSubmittedTurnEvidence {
   observedUserMessageCount: number | null;
   requestMessageFound: boolean | null;
   isAnswering: boolean | null;
+  /** Redacted composer evidence used to prove that the exact staged turn remains unsent. */
+  composerPromptState?: ComposerPromptState | "empty";
+  composerAttachmentCount?: number;
+  composerSendButtonEnabled?: boolean;
 }
 
 export type BrowserSubmittedTurnObservation =

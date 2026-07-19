@@ -67,6 +67,7 @@ const MODEL_LABEL_READ_ATTEMPTS = 50;
 const MODEL_LABEL_RETRY_INTERVAL_MS = 100;
 const COMPOSER_READY_TIMEOUT_MS = 30_000;
 const COMPOSER_READY_STABLE_MS = 250;
+const SUBMISSION_ACTION_TIMEOUT_MS = 10_000;
 const CONVERSATION_OPTIONS_SELECTOR = '[data-testid="conversation-options-button"]';
 const ARCHIVE_PROOF_TIMEOUT_MS = 10_000;
 type TurnStage = "pre_submit" | "submitting" | "submitted";
@@ -106,6 +107,47 @@ function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
       }
     };
     signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function withBrowserOperationTimeout<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+  timeoutError: () => CueLineError,
+): Promise<T> {
+  throwIfCancelled(signal);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const settle = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const onAbort = (): void => {
+      settle(() => {
+        try {
+          throwIfCancelled(signal);
+        } catch (error) {
+          reject(error);
+        }
+      });
+    };
+    const timer = setTimeout(() => {
+      settle(() => reject(timeoutError()));
+    }, timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve()
+      .then(operation)
+      .then(
+        (value) => settle(() => resolve(value)),
+        (error: unknown) => settle(() => reject(error)),
+      );
   });
 }
 
@@ -364,16 +406,58 @@ class CodexIabAdapter implements BrowserAdapter {
     context: TurnAttemptContext,
     hooks?: BrowserTurnHooks,
   ): Promise<void> {
-    const previousUrl = (await tab.url()) ?? "";
+    const operationTimeoutMs = Math.min(
+      SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.timeoutMs,
+    );
+    const previousUrl =
+      (await withBrowserOperationTimeout(
+        () => tab.url(),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_SUBMISSION_PRECLICK_TIMEOUT",
+            `ChatGPT's pre-click URL check did not finish within ${operationTimeoutMs} ms; no send click was attempted.`,
+          ),
+      )) ?? "";
+    context.stage = "submitting";
     try {
       if (target.kind === "locator") {
-        await target.locator.click({ timeoutMs: 10_000 });
+        await withBrowserOperationTimeout(
+          () => target.locator.click({ timeoutMs: operationTimeoutMs }),
+          operationTimeoutMs,
+          input.signal,
+          () =>
+            new CueLineError(
+              "CONTROLLER_SUBMISSION_CLICK_TIMEOUT",
+              `ChatGPT's send click did not finish within ${operationTimeoutMs} ms.`,
+            ),
+        );
       } else {
-        await tab.cua!.click({ x: target.x, y: target.y });
+        await withBrowserOperationTimeout(
+          () => tab.cua!.click({ x: target.x, y: target.y }),
+          operationTimeoutMs,
+          input.signal,
+          () =>
+            new CueLineError(
+              "CONTROLLER_SUBMISSION_CLICK_TIMEOUT",
+              `ChatGPT's coordinate send click did not finish within ${operationTimeoutMs} ms.`,
+            ),
+        );
         await tab.playwright.waitForTimeout(100);
       }
     } catch (error) {
-      const observed = await readPageChatState(tab).catch(() => undefined);
+      const observed = await withBrowserOperationTimeout(
+        () => readPageChatState(tab),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_SUBMISSION_POSTCLICK_READ_TIMEOUT",
+            `ChatGPT's post-click state check did not finish within ${operationTimeoutMs} ms.`,
+          ),
+      ).catch(() => undefined);
       await this.#emitCheckpoint(
         input,
         tab,
@@ -381,7 +465,7 @@ class CodexIabAdapter implements BrowserAdapter {
         hooks,
         "possibly_sent",
         "error",
-        undefined,
+        observed?.pageUrl,
         observed ?? null,
         error,
       );
@@ -761,7 +845,20 @@ class CodexIabAdapter implements BrowserAdapter {
       reusesConfirmedAttachmentPrompt ? 0 : composerBaseline.attachmentCount,
       input.signal,
     );
-    const sendTarget = await this.#resolveSendTarget(tab);
+    const operationTimeoutMs = Math.min(
+      SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.timeoutMs,
+    );
+    const sendTarget = await withBrowserOperationTimeout(
+      () => this.#resolveSendTarget(tab),
+      operationTimeoutMs,
+      input.signal,
+      () =>
+        new CueLineError(
+          "CONTROLLER_SUBMISSION_PRECLICK_TIMEOUT",
+          `ChatGPT's send target did not resolve within ${operationTimeoutMs} ms; no send click was attempted.`,
+        ),
+    );
     await this.#emitCheckpoint(
       input,
       tab,
@@ -769,10 +866,9 @@ class CodexIabAdapter implements BrowserAdapter {
       hooks,
       "submitting",
       "attempting",
-      undefined,
+      context.baseline.pageUrl,
       context.baseline,
     );
-    context.stage = "submitting";
     await this.#clickSend(tab, sendTarget, context.baseline, input, context, hooks);
     if (requireRecoverableCheckpoint) {
       this.#conversationUrl = await captureConversationUrlAfterSubmit(
@@ -824,15 +920,12 @@ class CodexIabAdapter implements BrowserAdapter {
     clickError?: unknown,
   ): Promise<void> {
     if (!context.baseline || !context.selectedModelLabel || !context.composerPromptState) return;
-    const currentUrl = capturedConversationUrl ?? (await tab.url().catch(() => "")) ?? "";
+    const currentUrl = capturedConversationUrl ?? context.baseline.pageUrl;
     const checkpointUrl = isConversationUrl(currentUrl) ? currentUrl : this.#conversationUrl;
     if (checkpointUrl !== undefined && isConversationUrl(checkpointUrl)) {
       this.#conversationUrl = checkpointUrl;
     }
-    const domState =
-      observedState === null
-        ? undefined
-        : observedState ?? (await readPageChatState(tab).catch(() => undefined));
+    const domState = observedState === null ? undefined : observedState ?? context.baseline;
     const baselineLastUserMessageHash =
       context.baseline.lastUserText === null
         ? null
@@ -1010,13 +1103,36 @@ class CodexIabAdapter implements BrowserAdapter {
     const deadline =
       Date.now() +
       Math.min(this.#options.timeoutMs, SUBMITTED_RECOVERY_HYDRATION_TIMEOUT_MS);
+    const operationTimeoutMs = Math.min(
+      SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.timeoutMs,
+    );
     let stableSignature = "";
     let stableSince = 0;
     let lastEvidence: BrowserSubmittedTurnEvidence | undefined;
 
     for (;;) {
       throwIfCancelled(input.signal);
-      const state = await readPageChatState(tab);
+      const state = await withBrowserOperationTimeout(
+        () => readPageChatState(tab),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_RECONCILIATION_READ_TIMEOUT",
+            `ChatGPT's submitted-turn state read did not finish within ${operationTimeoutMs} ms.`,
+          ),
+      );
+      const composerState = await withBrowserOperationTimeout(
+        () => readPageComposerState(tab, input.prompt, SEND_BUTTON_NAMES),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_RECONCILIATION_READ_TIMEOUT",
+            `ChatGPT's submitted-turn composer read did not finish within ${operationTimeoutMs} ms.`,
+          ),
+      );
       if (!sameChatGptConversationUrl(state.pageUrl, this.#conversationUrl!)) {
         throw new CueLineError(
           "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
@@ -1052,16 +1168,28 @@ class CodexIabAdapter implements BrowserAdapter {
         observedUserMessageCount,
         requestMessageFound,
         isAnswering: baselineLoaded ? state.isAnswering : null,
+        composerPromptState: composerState.state,
+        composerAttachmentCount: composerState.attachmentCount,
+        composerSendButtonEnabled: composerState.sendButtonEnabled,
       };
       lastEvidence = evidence;
 
+      const stagedPromptRemains = legacyPreSubmissionRecovery
+        ? true
+        : input.attachmentPromptExpected === true
+          ? composerState.state === "attachment_ready" &&
+            composerState.attachmentCount > 0 &&
+            composerState.sendButtonEnabled
+          : composerState.state === "inline_ready" &&
+            composerState.sendButtonEnabled;
       const notSentCandidate =
         baseline !== null &&
         observedUserMessageCount === baseline &&
         requestMessageFound === false &&
-        state.isAnswering === false;
+        state.isAnswering === false &&
+        stagedPromptRemains;
       if (notSentCandidate) {
-        const signature = `${observedUserMessageCount}:${state.assistantMessageCount}:${state.lastMessageRole}:${state.lastUserText ?? ""}`;
+        const signature = `${observedUserMessageCount}:${state.assistantMessageCount}:${state.lastMessageRole}:${state.lastUserText ?? ""}:${composerState.state}:${composerState.attachmentCount}:${composerState.sendButtonEnabled}`;
         if (signature !== stableSignature) {
           stableSignature = signature;
           stableSince = now;

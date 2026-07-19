@@ -1009,6 +1009,97 @@ test("caller mode splits submission from Pro observation across outer calls", as
   assert.equal(sendCalls, 0);
 });
 
+test("a pre-click definitely-not-sent failure releases the caller runtime lease", async () => {
+  const runId = "run_preclick_timeout_cleanup";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/preclick-timeout-cleanup";
+  const browser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async submitTurn(input, hooks): Promise<void> {
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitting",
+        composerPromptState: "attachment_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineUserMessageCount: 101,
+        baselineAssistantMessageCount: 16,
+        clickAttemptState: "attempting",
+      });
+      throw new CueLineError(
+        "CONTROLLER_SUBMISSION_PRECLICK_TIMEOUT",
+        "The bounded pre-click Browser operation timed out before click invocation.",
+        {
+          details: {
+            stage: "pre_submit",
+            submission_state: "definitely_not_sent",
+            request_id: input.requestId,
+          },
+        },
+      );
+    },
+    async observeTurn(): Promise<undefined> {
+      return undefined;
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("caller mode must use submitTurn");
+    },
+  };
+  const routingConfig = {
+    version: 1 as const,
+    lanes: {
+      default: {
+        enabled: true,
+        candidates: [
+          {
+            id: "never-spawned",
+            argv: ["never-spawned"],
+            task_input: "stdin" as const,
+          },
+        ],
+      },
+    },
+  };
+
+  await assert.rejects(
+    runCueLine({
+      request: "Fail before sending the attachment",
+      runId,
+      home: stateHome,
+      browser,
+      routingConfig,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_SUBMISSION_PRECLICK_TIMEOUT" &&
+      typeof error.details === "object" &&
+      error.details !== null &&
+      (error.details as Record<string, unknown>).submission_state ===
+        "definitely_not_sent",
+  );
+
+  const status = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(status.phase, "reconciliation_required");
+  assert.equal(status.runtime.ownership, "missing");
+  assert.equal(status.safeNextAction, "reconcile");
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(events.filter((event) => event.type === "controller_turn_requested").length, 1);
+  assert.equal(
+    events.filter((event) => event.type === "controller_turn_submission_started").length,
+    1,
+  );
+  assert.equal(events.filter((event) => event.type === "controller_turn_submitted").length, 0);
+  const failure = events.find((event) => event.type === "run_failed");
+  const requested = events.find((event) => event.type === "controller_turn_requested");
+  assert.equal(
+    (failure?.payload as Record<string, unknown>).submission_state,
+    "definitely_not_sent",
+  );
+  assert.equal(
+    (failure?.payload as Record<string, unknown>).request_id,
+    (requested?.payload as Record<string, unknown>).request_id,
+  );
+});
+
 test("concurrent starts with the same run id create exactly one run", async () => {
   const runId = "run_concurrent_create";
   const stateHome = await home();

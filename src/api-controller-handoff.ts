@@ -28,6 +28,7 @@ import { readAuthoritativeRunEvents } from "./state/store.js";
 import { readCancellationObservation } from "./state/cancellation.js";
 import {
   isDefinitelyNotSentObservation,
+  isSubmissionStartedAttachmentRecoveryCandidate,
   isSubmittedTurnRecoveryCandidate,
 } from "./core/submitted-turn-recovery.js";
 
@@ -341,7 +342,11 @@ export async function confirmControllerTurnNotSent(
     const evidenceGatedSubmittedTurn =
       options.browser !== undefined &&
       candidateConversationUrl !== undefined &&
-      isSubmittedTurnRecoveryCandidate(turn, candidateConversationUrl);
+      (isSubmittedTurnRecoveryCandidate(turn, candidateConversationUrl) ||
+        isSubmissionStartedAttachmentRecoveryCandidate(
+          turn,
+          candidateConversationUrl,
+        ));
     const legacyPreSubmissionFailure =
       options.browser !== undefined &&
       candidateConversationUrl !== undefined &&
