@@ -359,6 +359,16 @@ export function cueLineRunPhase(
   if (state.status === "cancelled") return "cancelled";
   if (cancellation.runRequested) return "cancellation_pending";
   if (state.status === "failed" && runtime.ownership === "active") return "runtime_active";
+  // A turn stuck in submissionState "submitting" has NO controller_turn_submitted record:
+  // nothing proves a response is coming, so presenting it as controller_response_pending
+  // over-claims. With no active runtime the only safe next action is reconciliation,
+  // which matches run doctor's safeNextAction for this state.
+  if (
+    runtime.ownership !== "active" &&
+    state.pendingControllerTurns.some((turn) => turn.submissionState === "submitting")
+  ) {
+    return "reconciliation_required";
+  }
   if (isSafeStaleCallerObservationRecovery(state, runtime, cancellation)) {
     return "controller_response_pending";
   }

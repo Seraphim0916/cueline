@@ -27,6 +27,7 @@ import {
 import { readAuthoritativeRunEvents } from "./state/store.js";
 import { readCancellationObservation } from "./state/cancellation.js";
 import {
+  hasRecoverableTurnIdentity,
   isDefinitelyNotSentObservation,
   isSubmissionStartedAttachmentRecoveryCandidate,
   isSubmittedTurnRecoveryCandidate,
@@ -351,14 +352,49 @@ export async function confirmControllerTurnNotSent(
       options.browser !== undefined &&
       candidateConversationUrl !== undefined &&
       isLegacyPreSubmissionAdapterFailure(events, turn);
+    // Third legal entry: the submitter runtime died mid-submission and its stale lease was
+    // formally taken over. The permanent record then proves: submission_started exists for
+    // this exact request, controller_turn_submitted does NOT, and the takeover confirmation
+    // was appended AFTER the submission started — so no live writer can still be mid-click.
+    // In that provably-dead state the operator's --not-sent-confirmed is accepted without a
+    // fresh browser observation (the identity gates — exact conversation URL, prompt hash,
+    // Pro model, write-ahead contract, no retry, no manual-send conflict — still apply below).
+    let submissionStartedSequence: number | undefined;
+    let submittedEventForRequest = false;
+    let takeoverConfirmedSequence: number | undefined;
+    for (const event of events) {
+      const payload = eventPayload(event);
+      if (
+        event.type === "controller_turn_submission_started" &&
+        payload.request_id === options.requestId
+      ) {
+        submissionStartedSequence = event.sequence;
+      } else if (
+        event.type === "controller_turn_submitted" &&
+        payload.request_id === options.requestId
+      ) {
+        submittedEventForRequest = true;
+      } else if (event.type === "runtime_stale_owner_takeover_confirmed") {
+        takeoverConfirmedSequence = event.sequence;
+      }
+    }
+    const staleTakenOverSubmissionStart =
+      turn.submissionState === "submitting" &&
+      candidateConversationUrl !== undefined &&
+      hasRecoverableTurnIdentity(turn, candidateConversationUrl) &&
+      submissionStartedSequence !== undefined &&
+      !submittedEventForRequest &&
+      takeoverConfirmedSequence !== undefined &&
+      takeoverConfirmedSequence > submissionStartedSequence;
     if (
       !exactAmbiguousFailure &&
       !evidenceGatedSubmittedTurn &&
-      !legacyPreSubmissionFailure
+      !legacyPreSubmissionFailure &&
+      !staleTakenOverSubmissionStart
     ) {
       throw new CueLineError(
         "CONTROLLER_NOT_SENT_STATE_INVALID",
-        "Not-sent recovery requires either the exact ambiguous submission failure or a fresh evidence-gated submitted turn.",
+        "Not-sent recovery requires the exact ambiguous submission failure, a fresh evidence-gated submitted turn, or a taken-over stale runtime whose submission started but was never recorded as submitted.",
       );
     }
     if (turn.retryOfRequestId !== undefined && turn.retryOfRequestId !== null) {

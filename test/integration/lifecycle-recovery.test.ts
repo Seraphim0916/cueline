@@ -2032,3 +2032,127 @@ test("continuation reconciles ownerless active process jobs even after the run f
   assert.equal(result.state.jobs[fixture.jobId]?.status, "failed");
   assert.equal(result.finalDeliveryText, "FAILED_OWNER_RECONCILED");
 });
+
+async function writeStaleSubmitterLease(
+  home: string,
+  runId: string,
+  heartbeatAt: string,
+): Promise<void> {
+  await writeFile(
+    runPaths(home, runId).runtimeLease,
+    `${JSON.stringify({
+      protocol: "cueline/runtime-lease/0.1",
+      run_id: runId,
+      owner_id: "repl-dead-submitter",
+      pid: String(process.pid),
+      state: "active",
+      claimed_at: heartbeatAt,
+      heartbeat_at: heartbeatAt,
+    })}\n`,
+    "utf8",
+  );
+}
+
+test("a taken-over stale submission-started turn accepts operator not-sent confirmation without a browser", async () => {
+  const home = await temporaryHome();
+  const fixture = await createSubmissionStartedAttachmentWedge(home, "staletakeover");
+  await writeStaleSubmitterLease(home, fixture.runId, "2026-07-15T00:00:00.000Z");
+  const now = () => new Date("2026-07-15T00:01:00.000Z");
+
+  const takeover = await takeoverCueLineRuntime(fixture.runId, { home, now });
+  assert.equal(takeover.outcome, "taken_over");
+
+  const status = await loadCueLineRunStatus(fixture.runId, { home, now });
+  assert.equal(status.phase, "reconciliation_required");
+
+  const confirmation = await confirmControllerTurnNotSent(fixture.runId, {
+    home,
+    requestId: fixture.requestId,
+    conversationUrl: fixture.conversationUrl,
+  });
+  assert.equal(confirmation.outcome, "confirmed");
+
+  const state = await loadCueLineRunState(fixture.runId, { home });
+  assert.equal(state.pendingControllerTurns.length, 0);
+  assert.equal(state.notSentRecovery?.abandonedRequestId, fixture.requestId);
+  assert.equal(state.notSentRecovery?.retryRequestId, null);
+
+  const events = await readEvents(runPaths(home, fixture.runId).events);
+  const confirmed = events.filter(
+    (event) => event.type === "controller_turn_not_sent_confirmed",
+  );
+  assert.equal(confirmed.length, 1);
+  const confirmedPayload = confirmed[0]?.payload as Record<string, unknown>;
+  assert.equal(confirmedPayload.request_id, fixture.requestId);
+  assert.equal(confirmedPayload.operator_confirmation, true);
+  const abandoned = events.filter(
+    (event) => event.type === "controller_turn_abandoned",
+  );
+  assert.equal(abandoned.length, 1);
+  assert.equal(
+    (abandoned[0]?.payload as Record<string, unknown>).round_not_consumed,
+    true,
+  );
+
+  const repeated = await confirmControllerTurnNotSent(fixture.runId, {
+    home,
+    requestId: fixture.requestId,
+    conversationUrl: fixture.conversationUrl,
+  });
+  assert.equal(repeated.outcome, "already_confirmed");
+});
+
+test("a stale submission-started turn without a formal takeover still refuses browserless not-sent confirmation", async () => {
+  const home = await temporaryHome();
+  const fixture = await createSubmissionStartedAttachmentWedge(home, "notakeover");
+
+  await assert.rejects(
+    confirmControllerTurnNotSent(fixture.runId, {
+      home,
+      requestId: fixture.requestId,
+      conversationUrl: fixture.conversationUrl,
+    }),
+    (error: unknown) =>
+      (error as { code?: string }).code === "CONTROLLER_NOT_SENT_STATE_INVALID",
+  );
+});
+
+test("a taken-over turn with a recorded submitted event refuses browserless not-sent confirmation", async () => {
+  const home = await temporaryHome();
+  const fixture = await createSubmissionStartedAttachmentWedge(home, "alreadysubmitted");
+  const store = await RunStore.load({
+    home,
+    runId: fixture.runId,
+    initialState: initialRunState(fixture.runId, fixture.prompt, "caller", 100),
+    reducer: reduceRunState,
+  });
+  await store.append("controller_turn_submitted", {
+    round: 85,
+    request_id: fixture.requestId,
+    submission_state: "submitted",
+    conversation_url: fixture.conversationUrl,
+    selected_model_label: "Pro",
+    prompt_hash: commandHash(fixture.prompt),
+    baseline_user_message_count: fixture.baselineUserMessageCount,
+  });
+  await store.snapshot();
+  await writeStaleSubmitterLease(home, fixture.runId, "2026-07-15T00:00:00.000Z");
+  const now = () => new Date("2026-07-15T00:01:00.000Z");
+  const takeover = await takeoverCueLineRuntime(fixture.runId, { home, now });
+  assert.equal(takeover.outcome, "taken_over");
+
+  await assert.rejects(
+    confirmControllerTurnNotSent(fixture.runId, {
+      home,
+      requestId: fixture.requestId,
+      conversationUrl: fixture.conversationUrl,
+    }),
+    (error: unknown) => {
+      const code = (error as { code?: string }).code;
+      return (
+        code === "CONTROLLER_NOT_SENT_STATE_INVALID" ||
+        code === "CONTROLLER_NOT_SENT_EVIDENCE_REQUIRED"
+      );
+    },
+  );
+});

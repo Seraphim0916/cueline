@@ -5,7 +5,7 @@ import {
 } from "./conversation-url.js";
 import type { PendingControllerTurn } from "./state-machine.js";
 
-function hasRecoverableTurnIdentity(
+export function hasRecoverableTurnIdentity(
   turn: PendingControllerTurn,
   conversationUrl: string,
 ): boolean {
