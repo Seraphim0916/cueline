@@ -36,7 +36,9 @@ const KNOWN_EVENT_TYPES = new Set([
   "controller_submission_succeeded",
   "controller_turn_abandoned",
   "controller_turn_manual_submission_confirmed",
+  "controller_turn_not_sent_confirmed",
   "controller_turn_requested",
+  "controller_turn_retry_conflict",
   "controller_turn_submission_started",
   "controller_turn_submitted",
   "job_cancellation_requested",
@@ -221,6 +223,10 @@ function summary(type: string, attributes: Record<string, string | number | bool
       return "Run created.";
     case "controller_turn_requested":
       return "Controller turn requested.";
+    case "controller_turn_not_sent_confirmed":
+      return "Controller turn confirmed not sent; ready to retry.";
+    case "controller_turn_retry_conflict":
+      return `Controller turn retry conflict detected${attributes.code ? `: ${attributes.code}` : ""}.`;
     case "controller_submission_succeeded":
       return "Controller turn submission recorded.";
     case "controller_response_received":
