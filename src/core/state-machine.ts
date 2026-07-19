@@ -16,6 +16,7 @@ import { jobSpecHash } from "./ids.js";
 export type CueLineRunStatus = "running" | "complete" | "blocked" | "cancelled" | "failed";
 export type CueLineExecutor = "caller" | "process";
 export const DEFAULT_MAX_ROUNDS = 12;
+export const DEFAULT_MAX_REPAIR_ATTEMPTS = 2;
 export type StoredJobStatus = JobObservation["status"];
 const STORED_JOB_STATUSES = new Set<StoredJobStatus>([
   "pending",
@@ -155,6 +156,7 @@ export interface CueLineRunState {
   allowProcessExecution: boolean;
   maxRounds: number;
   maxJobEvidenceChars: number;
+  maxRepairAttempts: number;
   status: CueLineRunStatus;
   round: number;
   conversationUrl: string | null;
@@ -278,6 +280,7 @@ export function initialRunState(
   allowProcessExecution = false,
   archiveControllerConversationOnComplete = false,
   maxJobEvidenceChars = DEFAULT_MAX_JOB_EVIDENCE_CHARS,
+  maxRepairAttempts = DEFAULT_MAX_REPAIR_ATTEMPTS,
 ): CueLineRunState {
   return {
     runId,
@@ -286,6 +289,7 @@ export function initialRunState(
     allowProcessExecution,
     maxRounds,
     maxJobEvidenceChars,
+    maxRepairAttempts,
     status: "running",
     round: 0,
     conversationUrl: null,
@@ -346,6 +350,12 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
         payload.max_job_evidence_chars >= 1
           ? payload.max_job_evidence_chars
           : state.maxJobEvidenceChars ?? DEFAULT_MAX_JOB_EVIDENCE_CHARS,
+      maxRepairAttempts:
+        typeof payload.max_repair_attempts === "number" &&
+        Number.isSafeInteger(payload.max_repair_attempts) &&
+        payload.max_repair_attempts >= 0
+          ? payload.max_repair_attempts
+          : state.maxRepairAttempts ?? DEFAULT_MAX_REPAIR_ATTEMPTS,
       controllerConversationArchive: initialControllerConversationArchive(archiveEnabled),
     };
   }
