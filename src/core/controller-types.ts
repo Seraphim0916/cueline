@@ -55,6 +55,7 @@ export interface CreateControllerRunOptions {
   allowProcessExecution?: boolean;
   maxRounds?: number;
   maxJobEvidenceChars?: number;
+  maxRepairAttempts?: number;
   archiveControllerConversationOnComplete?: boolean;
 }
 

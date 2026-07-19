@@ -48,6 +48,7 @@ import {
   isSafeStaleCallerObservationRecovery,
 } from "./run-status.js";
 import {
+  DEFAULT_MAX_REPAIR_ATTEMPTS,
   DEFAULT_MAX_ROUNDS,
   initialRunState,
   isControllerTurnProvenUnsent,
@@ -346,13 +347,7 @@ export function validateControllerRuntimeOptions(options: ControllerRuntimeLimit
   validatedArchivePolicy(options.archiveControllerConversationOnComplete);
   const maxRounds = validatedMaxRounds(options.maxRounds);
   const maxJobEvidenceChars = validatedMaxJobEvidenceChars(options.maxJobEvidenceChars);
-  const maxRepairAttempts = options.maxRepairAttempts ?? 2;
-  if (!Number.isSafeInteger(maxRepairAttempts) || maxRepairAttempts < 0) {
-    throw new CueLineError(
-      "MAX_REPAIR_ATTEMPTS_INVALID",
-      "maxRepairAttempts must be a non-negative integer.",
-    );
-  }
+  const maxRepairAttempts = validatedMaxRepairAttempts(options.maxRepairAttempts);
   if (options.runTimeoutMs !== undefined) {
     validatedTimerDelay(options.runTimeoutMs, {
       code: "RUN_TIMEOUT_INVALID",
@@ -440,6 +435,17 @@ function validatedMaxJobEvidenceChars(value: number | undefined): number {
   return maximum;
 }
 
+function validatedMaxRepairAttempts(value: number | undefined): number {
+  const maxRepairAttempts = value ?? DEFAULT_MAX_REPAIR_ATTEMPTS;
+  if (!Number.isSafeInteger(maxRepairAttempts) || maxRepairAttempts < 0) {
+    throw new CueLineError(
+      "MAX_REPAIR_ATTEMPTS_INVALID",
+      "maxRepairAttempts must be a non-negative integer.",
+    );
+  }
+  return maxRepairAttempts;
+}
+
 function validatedArchivePolicy(value: boolean | undefined): boolean {
   if (value !== undefined && typeof value !== "boolean") {
     throw new CueLineError(
@@ -479,6 +485,27 @@ function persistedMaxJobEvidenceChars(
           run_id: state.runId,
           max_job_evidence_chars: persisted,
           requested_max_job_evidence_chars: requested,
+        },
+      },
+    );
+  }
+  return persisted;
+}
+
+function persistedMaxRepairAttempts(
+  state: CueLineRunState,
+  requested: number | undefined,
+): number {
+  const persisted = state.maxRepairAttempts ?? DEFAULT_MAX_REPAIR_ATTEMPTS;
+  if (requested !== undefined && requested !== persisted) {
+    throw new CueLineError(
+      "RUN_MAX_REPAIR_ATTEMPTS_MISMATCH",
+      `Run '${state.runId}' has a durable maxRepairAttempts limit of ${persisted}, not ${requested}.`,
+      {
+        details: {
+          run_id: state.runId,
+          max_repair_attempts: persisted,
+          requested_max_repair_attempts: requested,
         },
       },
     );
@@ -812,7 +839,7 @@ async function reconcilePendingControllerTurn(
     options.browser,
     observation,
     { runId: state.runId, round: pending.round, requestId: pending.requestId },
-    options.maxRepairAttempts ?? 2,
+    options.maxRepairAttempts ?? DEFAULT_MAX_REPAIR_ATTEMPTS,
     options.controllerInstructions ?? [],
     {
       turn,
@@ -918,6 +945,7 @@ async function createControllerRunStore(
   }
   const maxRounds = validatedMaxRounds(options.maxRounds);
   const maxJobEvidenceChars = validatedMaxJobEvidenceChars(options.maxJobEvidenceChars);
+  const maxRepairAttempts = validatedMaxRepairAttempts(options.maxRepairAttempts);
   const archiveControllerConversationOnComplete = validatedArchivePolicy(
     options.archiveControllerConversationOnComplete,
   );
@@ -929,6 +957,7 @@ async function createControllerRunStore(
     allowProcessExecution,
     archiveControllerConversationOnComplete,
     maxJobEvidenceChars,
+    maxRepairAttempts,
   );
   const home = options.home ?? defaultCueLineHome();
   const store = await RunStore.createWithInitialEvent({
@@ -945,6 +974,9 @@ async function createControllerRunStore(
     ...(options.maxJobEvidenceChars === undefined
       ? {}
       : { max_job_evidence_chars: maxJobEvidenceChars }),
+    ...(options.maxRepairAttempts === undefined
+      ? {}
+      : { max_repair_attempts: maxRepairAttempts }),
     ...(archiveControllerConversationOnComplete
       ? { archive_controller_conversation_on_complete: true }
       : {}),
@@ -1055,6 +1087,7 @@ export async function continueControllerLoop(
   }
   const maxRounds = persistedMaxRounds(initialState, options.maxRounds);
   persistedMaxJobEvidenceChars(initialState, options.maxJobEvidenceChars);
+  const maxRepairAttempts = persistedMaxRepairAttempts(initialState, options.maxRepairAttempts);
   if (durableRoundLimitReached(initialState, maxRounds)) {
     throw maxRoundsExceeded(maxRounds);
   }
@@ -1142,6 +1175,7 @@ export async function continueControllerLoop(
     cancellation = watchOwnedCancellation(home, options.runId, {
       ...options,
       maxRounds,
+      maxRepairAttempts,
       signal: ownedSignal,
     });
     if (recoverStaleObserver) {
@@ -1182,6 +1216,7 @@ export async function continueControllerLoop(
     if ((store.state.pendingControllerTurns ?? []).length > 0) {
       const outcome = await reconcilePendingControllerTurn(store, {
         ...options,
+        maxRepairAttempts,
         signal: cancellation.options.signal,
       });
       await store.snapshot();

@@ -227,6 +227,9 @@ export async function startCueLineRun(
     ...(options.maxJobEvidenceChars === undefined
       ? {}
       : { maxJobEvidenceChars: options.maxJobEvidenceChars }),
+    ...(options.maxRepairAttempts === undefined
+      ? {}
+      : { maxRepairAttempts: options.maxRepairAttempts }),
     ...(options.archiveControllerConversationOnComplete === undefined
       ? {}
       : {
