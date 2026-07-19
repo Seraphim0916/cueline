@@ -447,6 +447,7 @@ export async function requestControllerCommand(
     conversationUrl: string;
     baselineUserMessageCount: number | null;
     selectedModelLabel: string;
+    composerPromptState?: "inline_ready" | "attachment_ready" | null;
   },
 ): Promise<ControllerCommand | undefined> {
   let lastError: CueLineError | undefined;
@@ -501,6 +502,12 @@ export async function requestControllerCommand(
                 baselineUserMessageCount:
                   notSentRetry.baselineUserMessageCount ?? 0,
               },
+              // The abandoned attempt provably staged this exact prompt as a composer
+              // attachment; without this flag the adapter's reuse gate never activates
+              // and the retry dies on the attachment-mixing guard forever.
+              ...(notSentRetry.composerPromptState === "attachment_ready"
+                ? { attachmentPromptExpected: true }
+                : {}),
             }
           : {}),
         ...(attempt === 0 ? {} : { repairAttempt: attempt }),

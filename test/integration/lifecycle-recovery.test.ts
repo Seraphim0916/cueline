@@ -2100,6 +2100,28 @@ test("a taken-over stale submission-started turn accepts operator not-sent confi
     conversationUrl: fixture.conversationUrl,
   });
   assert.equal(repeated.outcome, "already_confirmed");
+
+  // The recovery state must carry the staged-attachment shape (replayed from the
+  // permanent not_sent_confirmed / abandoned records) so the retry can reuse the
+  // composer attachment instead of dying on the attachment-mixing guard. Both the
+  // confirmed and abandoned reducer branches must preserve it, and it must survive
+  // a fresh load from disk (never a memory-only flag).
+  assert.equal(state.notSentRecovery?.composerPromptState, "attachment_ready");
+  const stagedEvents = await readEvents(runPaths(home, fixture.runId).events);
+  const notSentConfirmed = stagedEvents.find(
+    (event) => event.type === "controller_turn_not_sent_confirmed",
+  );
+  assert.equal(
+    (notSentConfirmed?.payload as Record<string, unknown>).composer_prompt_state,
+    "attachment_ready",
+  );
+  const stagedAbandoned = stagedEvents.find(
+    (event) => event.type === "controller_turn_abandoned",
+  );
+  assert.equal(
+    (stagedAbandoned?.payload as Record<string, unknown>).composer_prompt_state,
+    "attachment_ready",
+  );
 });
 
 test("a stale submission-started turn without a formal takeover still refuses browserless not-sent confirmation", async () => {

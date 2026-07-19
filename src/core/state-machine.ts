@@ -87,6 +87,12 @@ export interface ControllerNotSentRecoveryState {
   retryRequestId: string | null;
   conflictCode: string | null;
   confirmationSource?: "operator" | "fresh_observation";
+  /**
+   * The abandoned attempt's staged composer shape. "attachment_ready" proves the
+   * prompt was already converted into a composer attachment before the crash, so
+   * the retry may reuse that exact staged attachment instead of re-uploading.
+   */
+  composerPromptState?: "inline_ready" | "attachment_ready" | null;
 }
 
 export interface RunFailureEvidence {
@@ -570,6 +576,15 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
               status: "confirmed",
               retryRequestId: null,
               conflictCode: null,
+              // This branch rebuilds the recovery from scratch and used to drop the
+              // staged-attachment shape set one event earlier by not_sent_confirmed,
+              // which killed attachment reuse on retry. Fall back to the abandoned
+              // turn itself for streams written before the payload carried the field.
+              composerPromptState:
+                payload.composer_prompt_state === "inline_ready" ||
+                payload.composer_prompt_state === "attachment_ready"
+                  ? payload.composer_prompt_state
+                  : abandoned.composerPromptState ?? null,
             }
           : state.notSentRecovery ?? null,
     };
@@ -601,6 +616,16 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           payload.confirmation_source === "fresh_read_only_observation"
             ? "fresh_observation"
             : "operator",
+        // Prefer the event's own record; replay of streams written before this field
+        // existed falls back to the abandoned pending turn, whose staged shape came
+        // from the permanent controller_turn_submission_started record.
+        composerPromptState:
+          payload.composer_prompt_state === "inline_ready" ||
+          payload.composer_prompt_state === "attachment_ready"
+            ? payload.composer_prompt_state
+            : (state.pendingControllerTurns ?? []).find(
+                (turn) => turn.requestId === payload.request_id,
+              )?.composerPromptState ?? null,
       },
     };
   }

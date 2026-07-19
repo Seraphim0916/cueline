@@ -549,6 +549,9 @@ export async function confirmControllerTurnNotSent(
         conversation_url: conversationUrl,
         selected_model_label: selectedModelLabel,
         baseline_user_message_count: recoveryBaselineUserMessageCount,
+        ...(turn.composerPromptState === null
+          ? {}
+          : { composer_prompt_state: turn.composerPromptState }),
         ...(submittedEvidence === undefined
           ? { operator_confirmation: true }
           : {
@@ -581,6 +584,9 @@ export async function confirmControllerTurnNotSent(
         conversation_url: conversationUrl,
         selected_model_label: selectedModelLabel,
         baseline_user_message_count: recoveryBaselineUserMessageCount,
+        ...(turn.composerPromptState === null
+          ? {}
+          : { composer_prompt_state: turn.composerPromptState }),
         ...(submittedEvidence === undefined
           ? { operator_confirmation: true }
           : {
