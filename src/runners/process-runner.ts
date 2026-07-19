@@ -314,6 +314,9 @@ export class ProcessRunner implements RunnerAdapter {
           ...(observedProvider === undefined ? {} : { provider: observedProvider }),
         });
       });
+      child.stdout?.on("error", (error) => {
+        stderrCapture.append(errorText(error));
+      });
       child.stderr?.setEncoding("utf8");
       child.stderr?.on("data", (chunk: string | Buffer) => {
         stderrCapture.append(chunk.toString());
@@ -330,7 +333,19 @@ export class ProcessRunner implements RunnerAdapter {
           });
         }
       });
+      child.stderr?.on("error", (error) => {
+        stderrCapture.append(errorText(error));
+      });
       if (spec.stdin !== undefined) {
+        // A child that exits before draining stdin makes this write emit EPIPE on
+        // the stdin stream. Without an "error" listener Node rethrows it as an
+        // uncaught exception and takes the whole CueLine process (controller loop
+        // and every concurrent job) down with it. The child has already exited, so
+        // "close" still fires and finish() still reports the real exit code —
+        // capturing the stream error here only prevents the process-wide crash.
+        child.stdin?.on("error", (error) => {
+          stderrCapture.append(errorText(error));
+        });
         child.stdin?.end(spec.stdin, "utf8");
       }
       child.once("error", (error) => {
