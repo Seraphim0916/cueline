@@ -22,11 +22,11 @@
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 的包裝層。
 
-## 最新版本：0.4.2
+## 最新版本：0.4.3
 
 - 修復重開機後無法接收已完成附件型 ChatGPT Pro 回覆的問題。即使全新頁面水合後掛載的歷史 assistant 節點少於持久 baseline，CueLine 也能用精確的 run／round／request envelope 接受回覆；exact URL、雙 Pro 證據、user count、水合與 idle 安全閘門仍維持 fail-closed。真實 round 35 已零重送、零重複 job 復原；559/559 測試通過。
 
-完整內容請看 [changelog](CHANGELOG.md#042---2026-07-18) 或版本化的 [v0.4.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.2)。
+完整內容請看 [changelog](CHANGELOG.md#043---2026-07-19) 或版本化的 [v0.4.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.3)。
 
 ## 一次執行實際上怎麼跑
 
@@ -67,15 +67,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.4.2
+npm install -g cueline@0.4.3
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.4.2 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.2) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.4.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.3) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.2/cueline-0.4.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.3/cueline-0.4.3.tgz
 cueline install
 cueline doctor
 ```
@@ -193,7 +193,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.4.2
+CueLine 0.4.3
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

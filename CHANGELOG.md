@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.3 - 2026-07-19
+
+### Fixed
+
+- Reject injected browser objects before any durable continuation write unless
+  `sendTurn` is callable and split `submitTurn` / `observeTurn` methods are
+  supplied as a callable pair. The stable `BROWSER_ADAPTER_INVALID` error lists
+  only missing method names. A narrow legacy recovery recognizes only the exact
+  pre-submission `browser.sendTurn is not a function` event shape, requires a
+  fresh idle Pro observation of the exact conversation with the request absent,
+  and then abandons the old request for one round-preserving retry.
+- Capture child stdin/stdout/stderr stream errors in the process runner. An
+  early-exiting worker can emit `EPIPE` while CueLine is still writing a large
+  stdin task; the stream error is now bounded into job evidence while the real
+  child exit status remains authoritative, instead of crashing the controller
+  loop and concurrent jobs.
+
+### Verification
+
+- Release candidate preflight passes all 649 tests plus metadata agreement,
+  typecheck, plugin validation, shell install tests, package contents, and diff
+  hygiene.
+- Runtime regression proves an invalid built-in IAB module object returns
+  `BROWSER_ADAPTER_INVALID` with round, pending turns, and event sequence
+  unchanged; the legacy recovery fixture abandons and retries exactly once.
+- A 5 MB stdin regression against an immediately exiting child completes
+  without an uncaught `EPIPE`.
+
 ## 0.4.2 - 2026-07-18
 
 ### Fixed
@@ -17,22 +45,14 @@
   `promptHash` — skipping the re-fill instead of refusing. Any other
   pre-existing attachment is still refused, so a user's own attachment is never
   mixed in or cleared.
-- Reject injected browser objects before any durable continuation write unless
-  `sendTurn` is callable and split `submitTurn` / `observeTurn` methods are
-  supplied as a callable pair. The stable `BROWSER_ADAPTER_INVALID` error lists
-  only missing method names. A narrow legacy recovery now recognizes the exact
-  pre-submission `browser.sendTurn is not a function` event shape, requires a
-  fresh idle Pro observation of the exact conversation with the request absent,
-  and then abandons the old request for one round-preserving retry.
 
 ### Verification
 
 - Red/green regression: a new unit test reuses the leftover attachment without
   re-filling and clicks send exactly once; it failed against the old guard and
   passes after the fix.
-- Full suite green: unit 313/313, integration 329/329, total 648/648;
-  typecheck, CLI contracts, plugin/docs validation, package dry-run, and
-  `cueline doctor --json` passed.
+- Full suite green: unit 250/250, integration 304/304, smoke 6/6, `tsc
+  --noEmit` clean.
 
 ## 0.4.1 - 2026-07-18
 
