@@ -301,14 +301,20 @@ export function buildCueLineRunTimeline(
     Number.MAX_SAFE_INTEGER,
   );
   const limit = optionInteger(options.limit ?? DEFAULT_LIMIT, "limit", 1, MAX_LIMIT);
-  events.forEach((event, index) => {
-    if (event.sequence !== index + 1) {
+  // Authoritative events can legitimately have gaps: readAuthoritativeRunEvents
+  // filters out retired-owner events from anywhere in the log, so require a
+  // strictly increasing positive-integer sequence rather than gapless-from-1
+  // (RunStore.load tolerates the same sparse shape).
+  let previousSequence = 0;
+  for (const event of events) {
+    if (!Number.isSafeInteger(event.sequence) || event.sequence <= previousSequence) {
       throw new CueLineError(
         "RUN_TIMELINE_EVENTS_INVALID",
-        `Expected event sequence ${index + 1}, received ${event.sequence}.`,
+        `Event sequences must strictly increase as positive integers; received ${event.sequence} after ${previousSequence}.`,
       );
     }
-  });
+    previousSequence = event.sequence;
+  }
   const latestSequence = events.at(-1)?.sequence ?? 0;
   if (afterSequence > latestSequence) {
     throw new CueLineError(
