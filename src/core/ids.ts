@@ -22,6 +22,17 @@ function canonicalize(value: unknown, ancestors: Set<object>): string {
     if (Array.isArray(value)) {
       return `[${value.map((item) => canonicalize(item, ancestors)).join(",")}]`;
     }
+    // Only plain objects (or null-prototype records) canonicalize by their
+    // enumerable keys. Date/Map/Set/RegExp/typed arrays have none, so a
+    // fall-through would silently emit "{}" and durably persist a wrong value;
+    // reject them like every other unsupported type instead.
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      const name = (value as { constructor?: { name?: unknown } }).constructor?.name;
+      throw new TypeError(
+        `CANONICAL_JSON_UNSUPPORTED_${typeof name === "string" && name !== "" ? name : "object"}`,
+      );
+    }
     const record = value as Record<string, unknown>;
     const entries = Object.keys(record)
       .sort()
