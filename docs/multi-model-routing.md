@@ -256,3 +256,42 @@ Available routing lanes: default [codex-default]; taste-final [claude-opus-4-8-a
 ```
 
 That is the complete routing menu exposed to ChatGPT Pro. The wrapper paths, CLI arguments, model flags, environment cleanup, and permission flags remain local.
+
+## Work-capable workers with permission prompts bypassed
+
+The advise-only candidates above are the safe default. When the operator explicitly wants non-Codex workers to execute mutating `work` jobs, the blocking problem is interactive approval: agent CLIs stop and wait for a permission prompt that no one will answer inside a spawned runner. The bypass flags remove that gate — and with it every other approval gate.
+
+Understand the contract before registering any of these:
+
+- Registration is not a sandbox. A bypass-permission worker mutates whatever the dispatched task tells it to, with the full OS permissions of the CueLine process.
+- The routing format cannot branch argv on `advise` versus `work`, so a bypass candidate treats every job as mutating regardless of mode. Keep an advise-only candidate alongside it and encode the difference in the candidate ID.
+- The controller only ever sees candidate IDs, so make the risk visible in the ID (`-work` suffix here) and never reuse an advise ID for a bypass argv.
+
+Reference wrappers ship in `examples/runners/` (repository only, not part of the npm package):
+
+- `examples/runners/grok-work.sh` — native `grok` with `--permission-mode bypassPermissions`; unsets `XAI_API_KEY` to keep the CLI subscription login; task on stdin.
+- `examples/runners/gemini-work.sh` — Gemini through the Antigravity `agy` CLI with `--dangerously-skip-permissions`; establishes `NO_BROWSER=1` and strips API-key variables; task on stdin.
+
+Claude needs no wrapper; the work candidate is a direct sibling of the shipped advise candidate:
+
+```json
+{
+  "id": "claude-sonnet-5-work",
+  "argv": [
+    "claude",
+    "--disable-slash-commands",
+    "--model",
+    "claude-sonnet-5",
+    "--output-format",
+    "text",
+    "--dangerously-skip-permissions",
+    "-p",
+    "{task}"
+  ],
+  "task_input": "argv"
+}
+```
+
+Copy the wrappers to a private runner directory, `chmod 700` them, and register them by absolute path, exactly as in the four-lane example. Verify with `cueline routing --json`, then send each worker a one-line task through its wrapper directly before trusting it inside a run.
+
+The grok and claude work candidates were verified end-to-end (one-line task, correct reply) against grok `0.2.103` and claude `2.1.215` on 2026-07-19. The gemini wrapper reuses the flag contract of the advise wrapper verified on 2026-07-16, but its end-to-end check against agy `1.1.4` timed out on 2026-07-19 — every headless `agy --print` variant did, including the previously working one — so treat it as unverified until a one-line task round-trips on the installed agy.
