@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.4 - 2026-07-19
+
+### Fixed
+
+- Accept plain objects created in another Node realm when canonicalizing
+  durable state. A controller driving CueLine from a separate vm/context hands
+  over objects whose `Object.prototype` has a different identity; the
+  non-plain-object guard rejected them as `CANONICAL_JSON_UNSUPPORTED_Object`,
+  aborting `RunStore.load` before operator-confirmed not-sent recovery could
+  write anything. Plainness is now judged by prototype-chain shape plus the
+  `[object Object]` brand, so foreign plain data canonicalizes identically
+  while Date/Map/Set/RegExp, typed arrays, and class instances from any realm
+  stay rejected.
+
+### Verification
+
+- New unit and regression tests build cross-realm values with `node:vm`:
+  foreign plain objects and JSON-parsed specs canonicalize and hash exactly
+  like same-realm values, foreign non-plain objects still throw, and job spec
+  hashes recompute for specs materialized in a controller realm. The full
+  suite passes 653/653.
+- A real wedged run (`reconciliation_required`, round 68) loads past the
+  previous crash point with zero durable writes and no resend.
+
 ## 0.4.3 - 2026-07-19
 
 ### Fixed

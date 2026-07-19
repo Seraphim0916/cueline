@@ -22,11 +22,11 @@
 
 CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane을 감싼 래퍼가 아닙니다.
 
-## 최신 릴리스: 0.4.3
+## 최신 릴리스: 0.4.4
 
-- 재시작 후 완료된 첨부형 ChatGPT Pro 응답을 수락하지 못하는 문제를 수정했습니다. 새 페이지 하이드레이션에서 영속 baseline보다 적은 과거 assistant 노드만 마운트되어도 정확한 run／round／request envelope로 응답을 수락합니다. exact URL, 이중 Pro 증거, user count, 하이드레이션, idle 안전 검사는 fail-closed 상태로 유지됩니다. 실제 round 35는 재전송과 중복 job 없이 복구되었고 559/559 테스트를 통과했습니다.
+- 다른 Node realm(컨트롤러 vm/context)에서 넘어온 순수 객체를 영속 상태 정규화에서 수락하도록 수정했습니다. not-sent 복구를 위해 이전 run을 로드할 때 더 이상 `CANONICAL_JSON_UNSUPPORTED_Object`로 중단되지 않습니다. 어떤 realm의 Date/Map/Set/RegExp, typed array, 클래스 인스턴스는 계속 거부됩니다. 653/653 테스트를 통과했습니다.
 
-전체 내용은 [changelog](CHANGELOG.md#043---2026-07-19) 또는 버전이 지정된 [v0.4.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.3)에서 확인할 수 있습니다.
+전체 내용은 [changelog](CHANGELOG.md#044---2026-07-19) 또는 버전이 지정된 [v0.4.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.4)에서 확인할 수 있습니다.
 
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
@@ -67,15 +67,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.4.3
+npm install -g cueline@0.4.4
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.4.3 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.3)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.4.4 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.4)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.3/cueline-0.4.3.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.4/cueline-0.4.4.tgz
 cueline install
 cueline doctor
 ```
@@ -182,7 +182,7 @@ CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에
 
 ```console
 $ cueline doctor
-CueLine 0.4.3
+CueLine 0.4.4
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

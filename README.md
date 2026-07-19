@@ -22,15 +22,15 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.4.3
+## Latest release: 0.4.4
 
-- Rejects malformed injected browser adapters before any durable continuation
-  write and safely recovers the exact legacy pre-submission missing-method
-  failure only after fresh idle Pro evidence proves the request absent. Process
-  runners also contain child stdio `EPIPE` errors so one early-exiting worker
-  cannot crash the whole CueLine process.
+- Accepts plain objects that arrive from another Node realm (a controller
+  vm/context) when canonicalizing durable state, so loading an old run for
+  operator-confirmed not-sent recovery no longer aborts with
+  `CANONICAL_JSON_UNSUPPORTED_Object`. Date/Map/Set/RegExp, typed arrays, and
+  class instances from any realm are still rejected; 653/653 tests pass.
 
-Read the complete [changelog](CHANGELOG.md#043---2026-07-19) or the versioned [v0.4.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.3).
+Read the complete [changelog](CHANGELOG.md#044---2026-07-19) or the versioned [v0.4.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.4).
 
 ## How a run actually goes
 
@@ -73,15 +73,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.4.3
+npm install -g cueline@0.4.4
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.4.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.3), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.4.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.4), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.3/cueline-0.4.3.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.4/cueline-0.4.4.tgz
 cueline install
 cueline doctor
 ```
@@ -214,7 +214,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.4.3
+CueLine 0.4.4
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
