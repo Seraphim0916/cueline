@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.5 - 2026-07-20
+
+### Fixed
+
+- Operator-confirmed not-sent retries that reuse the staged composer attachment
+  now keep the attachment's original `request_id` as the controller-visible
+  protocol identity instead of minting a fresh retry id. The staged attachment
+  is immutable and embeds that id, so the old behavior made Pro's correct reply
+  fail identity validation with `CONTROL_ID_MISMATCH` and staged a needless
+  repair prompt. The retry lineage stays in `retry_of_request_id`, and a reply
+  carrying any other request identity still freezes the run without a repair
+  send.
+- Runs already wedged by the old dual-identity retry (response received,
+  rejected as `CONTROL_ID_MISMATCH`, repair prompt staged but never sent) now
+  reconcile read-only on continuation: the permanently recorded response is
+  re-validated against the attachment's own identity with no page interaction,
+  no repair send, and no new round. Accepting a command also clears the linked
+  not-sent recovery state.
+
+### Verification
+
+- 667/667 tests pass, including new regressions: the wedged-run event sequence
+  reconciles read-only against a browser adapter that throws on any page
+  access, a recorded response from a different conversation fails closed,
+  replay restores the attachment's controller identity from permanent events,
+  and an operator-confirmed attachment retry that receives a reply for any
+  other request identity freezes without repairing.
+
 ## 0.4.4 - 2026-07-19
 
 ### Fixed
