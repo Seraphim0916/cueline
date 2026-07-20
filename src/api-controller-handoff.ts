@@ -58,7 +58,7 @@ function isLegacyPreSubmissionAdapterFailure(
   },
 ): boolean {
   if (
-    turn.submissionState !== "possibly_sent" ||
+    (turn.submissionState !== "possibly_sent" && turn.submissionState !== "requested") ||
     turn.selectedModelLabel !== null ||
     turn.baselineUserMessageCount !== null ||
     turn.baselineAssistantMessageCount !== null ||
@@ -83,10 +83,20 @@ function isLegacyPreSubmissionAdapterFailure(
   const failure = eventPayload(immediateFailure);
   if (
     failure.code !== "CUELINE_INTERNAL" ||
-    failure.message !== "browser.sendTurn is not a function" ||
     failure.request_id !== turn.requestId ||
     failure.stage !== "controller_turn" ||
     failure.submission_state !== "requested"
+  ) {
+    return false;
+  }
+  // The legacy adapter shape (no sendTurn at all) recorded the turn as
+  // possibly_sent and is only recognizable by its exact message. An internal
+  // failure thrown at the submit entry before any checkpoint leaves the turn
+  // "requested" with no submission events, which is itself the pre-submission
+  // proof; the fresh read-only page observation below still gates recovery.
+  if (
+    turn.submissionState === "possibly_sent" &&
+    failure.message !== "browser.sendTurn is not a function"
   ) {
     return false;
   }

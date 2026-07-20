@@ -1018,7 +1018,16 @@ async function reconcileRejectedAttachmentRetryResponse(
     command,
     command_hash: acceptedCommandHash,
   });
-  return executeAcceptedCommand(store, command, acceptedCommandHash, options);
+  const outcome = await executeAcceptedCommand(
+    store,
+    command,
+    acceptedCommandHash,
+    options,
+  );
+  // Historical reconciliation is a read-only operation; letting a non-terminal
+  // command fall through would mint and submit the next round in the same
+  // invocation. Pause instead — only a fresh `continue` may drive the next round.
+  return outcome === "continue" ? "awaiting_controller" : outcome;
 }
 
 async function recordFreshSubmittedTurnNotSent(

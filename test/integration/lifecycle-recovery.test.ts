@@ -2182,7 +2182,7 @@ test("a taken-over turn with a recorded submitted event refuses browserless not-
 async function createRejectedAttachmentIdentityWedge(
   home: string,
   suffix: string,
-  options: { recordedConversationUrl?: string } = {},
+  options: { recordedConversationUrl?: string; action?: "complete" | "wait" } = {},
 ): Promise<{
   runId: string;
   originalRequestId: string;
@@ -2201,8 +2201,12 @@ async function createRejectedAttachmentIdentityWedge(
     run_id: runId,
     round: 85,
     request_id: originalRequestId,
-    action: "complete",
-    final_delivery_text: "RECONCILED_ORIGINAL_IDENTITY",
+    ...(options.action === "wait"
+      ? { action: "wait" }
+      : {
+          action: "complete",
+          final_delivery_text: "RECONCILED_ORIGINAL_IDENTITY",
+        }),
   })}</CueLineControl>`;
   const store = await RunStore.create({
     home,
@@ -2264,6 +2268,17 @@ async function createRejectedAttachmentIdentityWedge(
     retry_of_request_id: originalRequestId,
     recovery_prompt_hash: commandHash(originalPrompt),
     submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.append("controller_turn_submission_started", {
+    round: 85,
+    request_id: retryRequestId,
+    submission_state: "submitting",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "attachment_ready",
+    baseline_user_message_count: 101,
+    baseline_assistant_message_count: 16,
+    click_attempt_state: "attempting",
   });
   await store.append("controller_turn_submitted", {
     round: 85,
@@ -2403,6 +2418,203 @@ test("reconciling the recorded response fails closed when it came from a differe
     events.some((event) => event.type === "controller_command_accepted"),
     false,
   );
+});
+
+function callForbiddenBrowser(): BrowserAdapter {
+  return new Proxy(
+    {},
+    {
+      get(_target, property) {
+        return () => {
+          throw new Error(
+            `REAL_RUNTIME_BROWSER_CALL_FORBIDDEN:${String(property)}`,
+          );
+        };
+      },
+    },
+  ) as unknown as BrowserAdapter;
+}
+
+test("historical reconciliation pauses after accepting the recorded command instead of driving the next round", async () => {
+  const home = await temporaryHome();
+  const fixture = await createRejectedAttachmentIdentityWedge(home, "pauseboundary", {
+    action: "wait",
+  });
+  await writeStaleSubmitterLease(home, fixture.runId, "2026-07-15T00:00:00.000Z");
+  const takeover = await takeoverCueLineRuntime(fixture.runId, {
+    home,
+    now: () => new Date("2026-07-15T00:01:00.000Z"),
+  });
+  assert.equal(takeover.outcome, "taken_over");
+
+  const first = await continueCueLineRun({
+    runId: fixture.runId,
+    home,
+    conversationUrl: fixture.conversationUrl,
+    browser: callForbiddenBrowser(),
+    routingConfig,
+  });
+  assert.equal(first.status, "awaiting_controller");
+  const events = await readEvents(runPaths(home, fixture.runId).events);
+  assert.equal(
+    events.some((event) => event.type === "run_failed"),
+    false,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === "controller_turn_requested" &&
+        (event.payload as Record<string, unknown>).round === 86,
+    ),
+    false,
+  );
+  const accepted = events.filter(
+    (event) => event.type === "controller_command_accepted",
+  );
+  assert.equal(accepted.length, 1);
+  const pausedState = await loadCueLineRunState(fixture.runId, { home });
+  assert.equal((pausedState.pendingControllerTurns ?? []).length, 0);
+
+  const secondRounds: number[] = [];
+  const secondBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input): Promise<ControllerTurn> {
+      secondRounds.push(input.round);
+      return {
+        text: `<CueLineControl>${JSON.stringify({
+          protocol: "cueline/0.1",
+          run_id: fixture.runId,
+          round: input.round,
+          request_id: input.requestId,
+          action: "complete",
+          final_delivery_text: "ROUND86_DONE",
+        })}</CueLineControl>`,
+        conversationUrl: fixture.conversationUrl,
+        model: {
+          provider: "chatgpt",
+          selectedLabel: "Pro",
+          responseModelSlug: "gpt-5-6-pro",
+          source: "composer_and_response",
+        },
+      };
+    },
+  };
+  const second = await continueCueLineRun({
+    runId: fixture.runId,
+    home,
+    conversationUrl: fixture.conversationUrl,
+    browser: secondBrowser,
+    routingConfig,
+  });
+  assert.equal(second.status, "complete");
+  assert.deepEqual(secondRounds, [86]);
+  const finalEvents = await readEvents(runPaths(home, fixture.runId).events);
+  assert.equal(
+    finalEvents.some(
+      (event) =>
+        event.type === "controller_turn_requested" &&
+        (event.payload as Record<string, unknown>).round === 87,
+    ),
+    false,
+  );
+});
+
+test("a round minted by the old fallthrough and blocked before submission can be formally confirmed not sent", async () => {
+  const home = await temporaryHome();
+  const fixture = await createRejectedAttachmentIdentityWedge(home, "pollutedround", {
+    action: "wait",
+  });
+  const round86RequestId = "msg_round86_pollution_pollutedround";
+  const store = await RunStore.load({
+    home,
+    runId: fixture.runId,
+    initialState: initialRunState(fixture.runId, "unused", "caller", 100),
+    reducer: reduceRunState,
+  });
+  await store.append("controller_response_received", {
+    round: 85,
+    request_id: fixture.originalRequestId,
+    text: fixture.responseText,
+    conversation_url: fixture.conversationUrl,
+    selected_model_label: "Pro",
+    response_model_slug: "gpt-5-6-pro",
+    model_evidence_source: "composer_and_response",
+  });
+  await store.append("controller_response_reconciled", {
+    round: 85,
+    request_id: fixture.originalRequestId,
+    repair_attempt: 0,
+  });
+  await store.append("controller_turn_abandoned", {
+    round: 85,
+    request_id: fixture.retryRequestId,
+    reason: "superseded_by_reconciled_attachment_identity_response",
+  });
+  const acceptedCommand = {
+    protocol: "cueline/0.1",
+    run_id: fixture.runId,
+    round: 85,
+    request_id: fixture.originalRequestId,
+    action: "wait",
+  };
+  await store.append("controller_command_accepted", {
+    command: acceptedCommand,
+    command_hash: commandHash(acceptedCommand),
+  });
+  await store.append("controller_command_execution_completed", {
+    command_hash: commandHash(acceptedCommand),
+  });
+  const round86Prompt = `Round 86 controller observation pollutedround request ${round86RequestId}`;
+  await store.append("controller_turn_requested", {
+    round: 86,
+    request_id: round86RequestId,
+    prompt: round86Prompt,
+    prompt_hash: commandHash(round86Prompt),
+  });
+  await store.append("run_failed", {
+    code: "CUELINE_INTERNAL",
+    message: "REAL_RUNTIME_BROWSER_CALL_FORBIDDEN:submitTurn",
+    stage: "controller_turn",
+    request_id: round86RequestId,
+    submission_state: "requested",
+    conversation_url: fixture.conversationUrl,
+  });
+  await store.snapshot();
+
+  const observationBrowser: BrowserAdapter = {
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("not-sent confirmation must stay read-only");
+    },
+    async observeSubmittedTurn(): Promise<SubmittedTurnObservation> {
+      return {
+        status: "definitely_not_sent",
+        evidence: {
+          conversationUrl: fixture.conversationUrl,
+          selectedModelLabel: "Pro",
+          hydrated: true,
+          baselineUserMessageCount: 102,
+          observedUserMessageCount: 102,
+          requestMessageFound: false,
+          isAnswering: false,
+          composerPromptState: "inline_ready",
+          composerAttachmentCount: 0,
+          composerSendButtonEnabled: true,
+        },
+      };
+    },
+  } as BrowserAdapter;
+  const confirmation = await confirmControllerTurnNotSent(fixture.runId, {
+    home,
+    requestId: round86RequestId,
+    conversationUrl: fixture.conversationUrl,
+    browser: observationBrowser,
+  });
+  assert.equal(confirmation.outcome, "confirmed");
+  const state = await loadCueLineRunState(fixture.runId, { home });
+  assert.equal((state.pendingControllerTurns ?? []).length, 0);
+  assert.equal(state.round, 85);
+  assert.equal(state.notSentRecovery?.abandonedRequestId, round86RequestId);
+  assert.equal(state.notSentRecovery?.status, "confirmed");
 });
 
 test("replay restores the reused attachment's controller identity from permanent events", async () => {
