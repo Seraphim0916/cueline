@@ -713,7 +713,7 @@ class CodexIabAdapter implements BrowserAdapter {
     expectedConversationUrl: string,
     expectedIdentity: ExpectedControllerIdentity,
   ): Promise<PageChatState | undefined> {
-    const state = await readPageChatState(tab);
+    const state = await readPageChatState(tab, expectedIdentity);
     if (!sameChatGptConversationUrl(state.pageUrl, expectedConversationUrl)) {
       throw new CueLineError(
         "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
@@ -734,15 +734,17 @@ class CodexIabAdapter implements BrowserAdapter {
       attachmentBaseline === undefined &&
       !hasExactEnvelope
     ) return undefined;
-    if (state.lastUserText === null && !manualSendConfirmed) return undefined;
-    if (
-      !allowVisiblePromptMismatch &&
-      normalizedMessageText(state.lastUserText) !== normalizedMessageText(expectedPrompt)
-    ) {
-      throw new CueLineError(
-        "CONTROLLER_RECONCILIATION_MISMATCH",
-        "The exact conversation's last user message does not match the pending CueLine prompt. Refusing to import an unrelated response.",
-      );
+    if (!hasExactEnvelope) {
+      if (state.lastUserText === null && !manualSendConfirmed) return undefined;
+      if (
+        !allowVisiblePromptMismatch &&
+        normalizedMessageText(state.lastUserText) !== normalizedMessageText(expectedPrompt)
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_MISMATCH",
+          "The exact conversation's last user message does not match the pending CueLine prompt. Refusing to import an unrelated response.",
+        );
+      }
     }
     return !state.isAnswering &&
       state.lastMessageRole === "assistant" &&
@@ -1574,7 +1576,11 @@ class CodexIabAdapter implements BrowserAdapter {
         "The recovered response is no longer on the exact persisted ChatGPT conversation URL.",
       );
     }
-    return this.#resultFromCompletedTurn(tab, selectedModelLabel, completed);
+    const turn = await this.#resultFromCompletedTurn(tab, selectedModelLabel, completed);
+    return completed.assistantTextSource === "accessibility_exact_envelope" &&
+      hasExactControllerEnvelopeIdentity(completed.assistantText, expectedIdentity)
+      ? { ...turn, responseSource: "count_degraded_accessibility_exact_envelope" }
+      : turn;
   }
 
   #reconciliationFailure(error: unknown, input: BrowserTurnInput): CueLineError {

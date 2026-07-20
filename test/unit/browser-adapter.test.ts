@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createCodexIabAdapter } from "../../src/browser/codex-iab/chatgpt-client.js";
-import type { BrowserAdapter, BrowserTurnInput } from "../../src/browser/browser-adapter.js";
+import type {
+  BrowserAdapter,
+  BrowserTurnInput,
+  ControllerTurn,
+} from "../../src/browser/browser-adapter.js";
 import { CueLineError } from "../../src/core/errors.js";
 import { commandHash } from "../../src/core/ids.js";
 import {
@@ -4643,6 +4647,68 @@ test("recovers an existing completed response from the exact conversation withou
   assert.deepEqual(fixture.composer.fills, []);
   assert.equal(fixture.sendButtons[0]!.clicks, 0);
 });
+
+for (const scenario of [
+  { name: "stale", lastUserText: "older virtualized user message" },
+  { name: "null", lastUserText: null },
+] as const) {
+  test(`recovery accepts an exact accessibility envelope when lastUserText is ${scenario.name}`, async () => {
+    const conversationUrl = `https://chatgpt.com/c/exact-envelope-${scenario.name}-user`;
+    const runId = `run_exact_envelope_${scenario.name}_user`;
+    const requestId = `msg_exact_envelope_${scenario.name}_user`;
+    const response = `<CueLineControl>${JSON.stringify({
+      protocol: "cueline/0.1",
+      run_id: runId,
+      round: 94,
+      request_id: requestId,
+      action: "wait",
+    })}</CueLineControl>`;
+    const fixture = fakeBrowser({
+      initialUrl: conversationUrl,
+      initialModel: "Pro",
+      states: [
+        {
+          isAnswering: false,
+          assistantText: "",
+          userMessageCount: 0,
+          assistantMessageCount: 0,
+          assistantModelSlug: "gpt-5-6-pro",
+          lastUserText: scenario.lastUserText,
+          lastMessageRole: null,
+        },
+      ],
+      accessibilitySnapshots: [
+        `- main:\n  - article:\n    - heading "ChatGPT said:"\n    - paragraph: ${JSON.stringify(response)}`,
+      ],
+    });
+    const adapter = createCodexIabAdapter({
+      browser: fixture.browser,
+      conversationUrl,
+      pollIntervalMs: 1,
+      stableMs: 0,
+      timeoutMs: 20,
+    });
+
+    const turn = await adapter.recoverTurn!({
+      runId,
+      round: 94,
+      requestId,
+      prompt: "current round 94 prompt hidden by virtualization",
+    });
+
+    assert.equal(turn.text, response);
+    assert.equal(turn.conversationUrl, conversationUrl);
+    assert.equal(
+      (turn as ControllerTurn & {
+        responseSource?: "count_degraded_accessibility_exact_envelope";
+      }).responseSource,
+      "count_degraded_accessibility_exact_envelope",
+    );
+    assert.equal(fixture.accessibilitySnapshotReads(), 1);
+    assert.equal(fixture.sendSubmissions(), 0);
+    assert.deepEqual(fixture.composer.fills, []);
+  });
+}
 
 test("recovery treats contenteditable block newlines as the same user prompt", async () => {
   const conversationUrl = "https://chatgpt.com/c/recovery-block-newlines";

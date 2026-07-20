@@ -854,6 +854,8 @@ async function reconcilePendingControllerTurn(
     turn = options.browser.observeTurn
       ? await options.browser.observeTurn(recoveryInput)
       : await options.browser.recoverTurn!(recoveryInput);
+    deferRecoveredDispatch =
+      turn?.responseSource === "count_degraded_accessibility_exact_envelope";
   }
   if (turn === undefined) return "awaiting_controller";
   const command = await requestControllerCommand(

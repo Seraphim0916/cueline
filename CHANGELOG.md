@@ -11,6 +11,10 @@
   Pro response model slug, and full protocol/run/round/request envelope inside
   a ChatGPT-authored article; it never falls back to arbitrary page or user
   text.
+- The same exact assistant envelope now remains authoritative during the
+  second recovery read. A virtualized stale or missing last user message can
+  no longer reject it; without an exact envelope, visible prompt matching
+  remains mandatory.
 - Restarted submitted-turn recovery no longer treats a hydration jump from a
   persisted zero user-message baseline to the page's full historical count as
   proof that the current controller request was sent. CueLine now requires
@@ -24,12 +28,15 @@
 
 ### Verification
 
-- 684/684 tests pass. A simulated restarted round 94 with baseline user count
+- 687/687 tests pass. A simulated restarted round 94 with baseline user count
   111 and an ordinary DOM count of zero recovered the exact accessibility
   response, made zero submit/send calls, stayed on round 94, and registered its
-  dispatch only on the next independent continuation. The existing real
-  ChatGPT Web Pro round 87 recovery likewise performed one read-only
-  observation, made zero submit/send calls, and created no round 88.
+  dispatch only on the next independent continuation. Separate stale and null
+  `lastUserText` regressions plus a failed `possibly_sent` lifecycle case verify
+  that the second recovery read preserves the exact assistant envelope and its
+  deferred-dispatch provenance. The existing real ChatGPT Web Pro round 87
+  recovery likewise performed one read-only observation, made zero submit/send
+  calls, and created no round 88.
 
 ## 0.4.7 - 2026-07-20
 

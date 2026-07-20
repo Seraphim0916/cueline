@@ -24,6 +24,8 @@ export interface ControllerTurn {
   conversationUrl?: string;
   title?: string;
   model?: ControllerModelEvidence;
+  /** Narrow provenance used to preserve a separate dispatch boundary. */
+  responseSource?: "count_degraded_accessibility_exact_envelope";
 }
 
 export interface BrowserSubmittedTurnEvidence {
