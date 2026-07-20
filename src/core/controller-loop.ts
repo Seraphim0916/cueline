@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
-import type { BrowserSubmittedTurnEvidence } from "../browser/browser-adapter.js";
+import type {
+  BrowserSubmittedTurnEvidence,
+  ControllerTurn,
+} from "../browser/browser-adapter.js";
 import { JobStatusStore } from "../jobs/status.js";
 import {
   CancellationWatcher,
@@ -8,7 +11,7 @@ import {
 } from "../state/cancellation.js";
 import { defaultCueLineHome } from "../state/paths.js";
 import { readRuntimeLease, RuntimeLease } from "../state/runtime-lease.js";
-import { RunStore } from "../state/store.js";
+import { readAuthoritativeRunEvents, RunStore } from "../state/store.js";
 import { throwIfCancelled } from "./controller-abort.js";
 import {
   controllerConversationArchiveNeedsRecovery,
@@ -630,16 +633,22 @@ async function driveControllerLoop(
       state.notSentRecovery.retryRequestId === null
         ? state.notSentRecovery
         : undefined;
-    const requestId = messageId(id, round, "observation", {
-      jobs: evidenceJobs,
-      notices: state.notices,
-      ...(notSentRetry === undefined
-        ? {}
-        : {
-            not_sent_retry_of_request_id: notSentRetry.abandonedRequestId,
-            not_sent_retry_prompt_hash: notSentRetry.promptHash,
-          }),
-    });
+    // A staged composer attachment is immutable and already embeds the abandoned
+    // request_id, so that id stays the controller-visible protocol identity for the
+    // retry; minting a fresh id could only diverge from what Pro will actually read.
+    const requestId =
+      notSentRetry?.composerPromptState === "attachment_ready"
+        ? notSentRetry.abandonedRequestId
+        : messageId(id, round, "observation", {
+            jobs: evidenceJobs,
+            notices: state.notices,
+            ...(notSentRetry === undefined
+              ? {}
+              : {
+                  not_sent_retry_of_request_id: notSentRetry.abandonedRequestId,
+                  not_sent_retry_prompt_hash: notSentRetry.promptHash,
+                }),
+          });
     const observation = observationFor(state, round, requestId, evidenceJobs);
     const command = await requestControllerCommand(
       store,
@@ -684,6 +693,15 @@ async function reconcilePendingControllerTurn(
 ): Promise<CommandExecutionOutcome> {
   const pendingTurns = store.state.pendingControllerTurns ?? [];
   if (pendingTurns.length === 0) return "continue";
+  // Must run before the proven-unsent shortcut: abandoning the unsent repair turn
+  // there would re-enter the loop and mint a brand-new round even though this
+  // round's answer already exists in the permanent record.
+  const revalidated = await reconcileRejectedAttachmentRetryResponse(
+    store,
+    options,
+    pendingTurns,
+  );
+  if (revalidated !== undefined) return revalidated;
   const provenUnsent =
     pendingTurns.length === 1 &&
     isControllerTurnProvenUnsent(store.state, pendingTurns[0]);
@@ -876,6 +894,131 @@ async function reconcilePendingControllerTurn(
     acceptedCommandHash,
     options,
   );
+}
+
+// A reused staged attachment always delivers the abandoned request_id, but a
+// takeover reconciliation that predates the identity fix validated Pro's reply
+// against the freshly minted retry id, rejected the correct response with
+// CONTROL_ID_MISMATCH, and staged (never sent) a repair prompt. The rejected
+// response is already permanent evidence; re-validate it against the
+// attachment's own identity instead of ever sending anything again.
+async function reconcileRejectedAttachmentRetryResponse(
+  store: RunStore<CueLineRunState>,
+  options: ContinueControllerLoopOptions,
+  pendingTurns: CueLineRunState["pendingControllerTurns"],
+): Promise<CommandExecutionOutcome | undefined> {
+  if (pendingTurns.length !== 1) return undefined;
+  const pending = pendingTurns[0]!;
+  const recovery = store.state.notSentRecovery;
+  if (
+    pending.submissionState !== "requested" ||
+    pending.repairAttempt === 0 ||
+    recovery === undefined ||
+    recovery === null ||
+    recovery.retryRequestId !== pending.requestId ||
+    recovery.round !== pending.round ||
+    recovery.composerPromptState !== "attachment_ready" ||
+    recovery.abandonedRequestId === pending.requestId
+  ) {
+    return undefined;
+  }
+  const events = await readAuthoritativeRunEvents(
+    options.home ?? defaultCueLineHome(),
+    store.runId,
+  );
+  let recorded: Record<string, unknown> | undefined;
+  let rejectedAsIdMismatch = false;
+  for (const event of events) {
+    const payload =
+      typeof event.payload === "object" &&
+      event.payload !== null &&
+      !Array.isArray(event.payload)
+        ? (event.payload as Record<string, unknown>)
+        : {};
+    if (
+      event.type === "controller_response_received" &&
+      payload.round === pending.round &&
+      payload.request_id === pending.requestId &&
+      typeof payload.text === "string"
+    ) {
+      recorded = payload;
+      rejectedAsIdMismatch = false;
+      continue;
+    }
+    if (recorded !== undefined && event.type === "controller_response_rejected") {
+      if (payload.code === "CONTROL_ID_MISMATCH") {
+        rejectedAsIdMismatch = true;
+      } else {
+        recorded = undefined;
+        rejectedAsIdMismatch = false;
+      }
+      continue;
+    }
+    if (event.type === "controller_command_accepted") {
+      recorded = undefined;
+      rejectedAsIdMismatch = false;
+    }
+  }
+  if (recorded === undefined || !rejectedAsIdMismatch) return undefined;
+  const turn: ControllerTurn = {
+    text: recorded.text as string,
+    ...(typeof recorded.conversation_url === "string"
+      ? { conversationUrl: recorded.conversation_url }
+      : {}),
+    ...(typeof recorded.selected_model_label === "string" &&
+    typeof recorded.response_model_slug === "string" &&
+    recorded.model_evidence_source === "composer_and_response"
+      ? {
+          model: {
+            provider: "chatgpt" as const,
+            selectedLabel: recorded.selected_model_label,
+            responseModelSlug: recorded.response_model_slug,
+            source: "composer_and_response" as const,
+          },
+        }
+      : {}),
+  };
+  const expectedConversationUrl = assertConversationUrlCompatible(
+    store.state,
+    options.conversationUrl,
+    pending,
+  );
+  const evidenceJobs = await controllerEvidenceJobs(store);
+  const observation = observationFor(
+    store.state,
+    pending.round,
+    recovery.abandonedRequestId,
+    evidenceJobs,
+  );
+  const command = await requestControllerCommand(
+    store,
+    options.browser,
+    observation,
+    {
+      runId: store.state.runId,
+      round: pending.round,
+      requestId: recovery.abandonedRequestId,
+    },
+    options.maxRepairAttempts ?? DEFAULT_MAX_REPAIR_ATTEMPTS,
+    options.controllerInstructions ?? [],
+    { turn, attempt: 0, manualSendConfirmed: true },
+    (candidate) => validateCommandBeforeAcceptance(store, candidate, options, evidenceJobs),
+    options.signal,
+    expectedConversationUrl,
+    false,
+  );
+  if (command === undefined) return "awaiting_controller";
+  await store.append("controller_turn_abandoned", {
+    round: pending.round,
+    request_id: pending.requestId,
+    reason: "superseded_by_reconciled_attachment_identity_response",
+  });
+  const acceptedCommandHash = commandHash(command);
+  await store.append("controller_command_accepted", {
+    command,
+    command_hash: acceptedCommandHash,
+  });
+  return executeAcceptedCommand(store, command, acceptedCommandHash, options);
 }
 
 async function recordFreshSubmittedTurnNotSent(

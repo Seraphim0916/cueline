@@ -2178,3 +2178,245 @@ test("a taken-over turn with a recorded submitted event refuses browserless not-
     },
   );
 });
+
+async function createRejectedAttachmentIdentityWedge(
+  home: string,
+  suffix: string,
+  options: { recordedConversationUrl?: string } = {},
+): Promise<{
+  runId: string;
+  originalRequestId: string;
+  retryRequestId: string;
+  conversationUrl: string;
+  responseText: string;
+}> {
+  const runId = `run_rejected_identity_${suffix}`;
+  const originalRequestId = `msg_original_identity_${suffix}`;
+  const retryRequestId = `msg_retry_attempt_${suffix}`;
+  const conversationUrl = `https://chatgpt.com/c/rejected-identity-${suffix}`;
+  const originalPrompt = `Round 85 controller observation ${suffix} request ${originalRequestId}`;
+  const retryPrompt = originalPrompt.split(originalRequestId).join(retryRequestId);
+  const responseText = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 85,
+    request_id: originalRequestId,
+    action: "complete",
+    final_delivery_text: "RECONCILED_ORIGINAL_IDENTITY",
+  })}</CueLineControl>`;
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, originalPrompt, "caller", 100),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: originalPrompt,
+    executor: "caller",
+    max_rounds: 100,
+  });
+  await store.append("controller_turn_requested", {
+    round: 85,
+    request_id: originalRequestId,
+    prompt: originalPrompt,
+    prompt_hash: commandHash(originalPrompt),
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.append("controller_turn_submission_started", {
+    round: 85,
+    request_id: originalRequestId,
+    submission_state: "submitting",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    prompt_hash: commandHash(originalPrompt),
+    composer_prompt_state: "attachment_ready",
+    baseline_user_message_count: 101,
+    baseline_assistant_message_count: 16,
+    click_attempt_state: "attempting",
+  });
+  await store.append("controller_turn_not_sent_confirmed", {
+    round: 85,
+    request_id: originalRequestId,
+    prompt_hash: commandHash(originalPrompt),
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    baseline_user_message_count: 101,
+    composer_prompt_state: "attachment_ready",
+    operator_confirmation: true,
+  });
+  await store.append("controller_turn_abandoned", {
+    round: 85,
+    request_id: originalRequestId,
+    reason: "operator_confirmed_not_sent",
+    round_not_consumed: true,
+    prompt_hash: commandHash(originalPrompt),
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    baseline_user_message_count: 101,
+    composer_prompt_state: "attachment_ready",
+    operator_confirmation: true,
+  });
+  await store.append("controller_turn_requested", {
+    round: 85,
+    request_id: retryRequestId,
+    prompt: retryPrompt,
+    prompt_hash: commandHash(retryPrompt),
+    retry_of_request_id: originalRequestId,
+    recovery_prompt_hash: commandHash(originalPrompt),
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.append("controller_turn_submitted", {
+    round: 85,
+    request_id: retryRequestId,
+    submission_state: "submitted",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "attachment_ready",
+    baseline_user_message_count: 101,
+    baseline_assistant_message_count: 16,
+    click_attempt_state: "accepted",
+  });
+  await store.append("controller_response_received", {
+    round: 85,
+    request_id: retryRequestId,
+    text: responseText,
+    conversation_url: options.recordedConversationUrl ?? conversationUrl,
+    selected_model_label: "Pro",
+    response_model_slug: "gpt-5-6-pro",
+    model_evidence_source: "composer_and_response",
+  });
+  await store.append("controller_response_rejected", {
+    code: "CONTROL_ID_MISMATCH",
+    message: "Controller command identity does not match the pending request.",
+    repair_attempt: 0,
+  });
+  await store.append("controller_repair_requested", {
+    round: 85,
+    request_id: retryRequestId,
+    prompt: `repair prompt ${suffix}`,
+    prompt_hash: commandHash(`repair prompt ${suffix}`),
+    repair_attempt: 1,
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.snapshot();
+  return { runId, originalRequestId, retryRequestId, conversationUrl, responseText };
+}
+
+function pageUntouchableBrowser(): BrowserAdapter {
+  return {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("read-only reconciliation must not touch the page");
+    },
+    async submitTurn(): Promise<void> {
+      throw new Error("read-only reconciliation must not touch the page");
+    },
+    async observeTurn(): Promise<undefined> {
+      throw new Error("read-only reconciliation must not touch the page");
+    },
+  };
+}
+
+test("a response rejected only for the reused attachment's original request identity is reconciled read-only from the permanent record", async () => {
+  const home = await temporaryHome();
+  const fixture = await createRejectedAttachmentIdentityWedge(home, "acceptone");
+  const result = await continueCueLineRun({
+    runId: fixture.runId,
+    home,
+    conversationUrl: fixture.conversationUrl,
+    browser: pageUntouchableBrowser(),
+    routingConfig,
+  });
+  assert.equal(result.status, "complete");
+  const events = await readEvents(runPaths(home, fixture.runId).events);
+  const reconciled = events.find(
+    (event) => event.type === "controller_response_reconciled",
+  );
+  assert.equal(
+    (reconciled?.payload as Record<string, unknown> | undefined)?.request_id,
+    fixture.originalRequestId,
+  );
+  const accepted = events.filter(
+    (event) => event.type === "controller_command_accepted",
+  );
+  assert.equal(accepted.length, 1);
+  assert.equal(
+    (
+      (accepted[0]?.payload as Record<string, unknown>).command as Record<
+        string,
+        unknown
+      >
+    ).request_id,
+    fixture.originalRequestId,
+  );
+  const supersededRepair = events.find(
+    (event) =>
+      event.type === "controller_turn_abandoned" &&
+      (event.payload as Record<string, unknown>).reason ===
+        "superseded_by_reconciled_attachment_identity_response",
+  );
+  assert.equal(
+    (supersededRepair?.payload as Record<string, unknown> | undefined)?.request_id,
+    fixture.retryRequestId,
+  );
+  assert.equal(
+    events.filter((event) => event.type === "controller_repair_requested").length,
+    1,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        (event.type === "controller_turn_requested" ||
+          event.type === "controller_repair_requested") &&
+        (event.payload as Record<string, unknown>).round === 86,
+    ),
+    false,
+  );
+  const state = await loadCueLineRunState(fixture.runId, { home });
+  assert.equal((state.pendingControllerTurns ?? []).length, 0);
+  assert.equal(state.notSentRecovery ?? null, null);
+});
+
+test("reconciling the recorded response fails closed when it came from a different conversation", async () => {
+  const home = await temporaryHome();
+  const fixture = await createRejectedAttachmentIdentityWedge(home, "wrongconv", {
+    recordedConversationUrl: "https://chatgpt.com/c/other-conversation-wrongconv",
+  });
+  await assert.rejects(
+    continueCueLineRun({
+      runId: fixture.runId,
+      home,
+      conversationUrl: fixture.conversationUrl,
+      browser: pageUntouchableBrowser(),
+      routingConfig,
+    }),
+    (error: unknown) =>
+      (error as { code?: string }).code ===
+      "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+  );
+  const events = await readEvents(runPaths(home, fixture.runId).events);
+  assert.equal(
+    events.filter((event) => event.type === "controller_repair_requested").length,
+    1,
+  );
+  assert.equal(
+    events.some((event) => event.type === "controller_command_accepted"),
+    false,
+  );
+});
+
+test("replay restores the reused attachment's controller identity from permanent events", async () => {
+  const home = await temporaryHome();
+  const fixture = await createRejectedAttachmentIdentityWedge(home, "replayid");
+  const store = await RunStore.load({
+    home,
+    runId: fixture.runId,
+    initialState: initialRunState(fixture.runId, "unused", "caller", 100),
+    reducer: reduceRunState,
+  });
+  const pending = (store.state.pendingControllerTurns ?? [])[0];
+  assert.equal(pending?.requestId, fixture.retryRequestId);
+  assert.equal(store.state.notSentRecovery?.abandonedRequestId, fixture.originalRequestId);
+  assert.equal(store.state.notSentRecovery?.retryRequestId, fixture.retryRequestId);
+  assert.equal(store.state.notSentRecovery?.composerPromptState, "attachment_ready");
+});

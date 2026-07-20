@@ -738,6 +738,13 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           : (state.pendingControllerTurns ?? []).filter(
               (turn) => turn.requestId !== requestId,
             ),
+      notSentRecovery:
+        requestId !== undefined &&
+        state.notSentRecovery != null &&
+        (state.notSentRecovery.abandonedRequestId === requestId ||
+          state.notSentRecovery.retryRequestId === requestId)
+          ? null
+          : state.notSentRecovery ?? null,
     };
   }
   if (

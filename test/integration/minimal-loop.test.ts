@@ -3703,7 +3703,7 @@ test("continues after a proven pre-submit failure without trying to recover a no
   );
 });
 
-test("operator-confirmed not-sent retries the same prompt once under a new request identity", async () => {
+test("operator-confirmed not-sent retries the same prompt once keeping the staged attachment's request identity", async () => {
   const runId = "run_operator_not_sent_retry";
   const stateHome = await home();
   const conversationUrl = "https://chatgpt.com/c/operator-not-sent-retry";
@@ -3769,14 +3769,11 @@ test("operator-confirmed not-sent retries the same prompt once under a new reque
 
   assert.equal(result.status, "complete");
   assert.equal(retriedBrowser.calls.length, 1);
-  assert.notEqual(retriedBrowser.calls[0]?.requestId, abandonedRequestId);
+  // The staged attachment is immutable and embeds the abandoned request_id, so
+  // the retry keeps that exact controller-visible identity.
+  assert.equal(retriedBrowser.calls[0]?.requestId, abandonedRequestId);
   assert.equal(retriedBrowser.calls[0]?.round, 1);
-  assert.equal(
-    retriedBrowser.calls[0]?.prompt
-      .split(retriedBrowser.calls[0]!.requestId)
-      .join(abandonedRequestId),
-    abandonedPrompt,
-  );
+  assert.equal(retriedBrowser.calls[0]?.prompt, abandonedPrompt);
   const events = await readEvents(runPaths(stateHome, runId).events);
   const retryRequested = events.find(
     (event) =>
@@ -3788,6 +3785,105 @@ test("operator-confirmed not-sent retries the same prompt once under a new reque
     (retryRequested?.payload as Record<string, unknown> | undefined)
       ?.recovery_prompt_hash,
     commandHash(abandonedPrompt),
+  );
+});
+
+test("operator-confirmed not-sent attachment retry rejects a response for any other request identity without repairing", async () => {
+  const runId = "run_operator_not_sent_retry_wrong_identity";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/operator-not-sent-retry-wrong-identity";
+  let abandonedRequestId = "";
+  const firstBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input, hooks): Promise<ControllerTurn> {
+      abandonedRequestId = input.requestId;
+      await hooks?.onCheckpoint?.({
+        submissionState: "possibly_sent",
+        composerPromptState: "attachment_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: 1,
+      });
+      throw new CueLineError(
+        "CONTROLLER_SUBMISSION_AMBIGUOUS",
+        "The click outcome is unknown.",
+        {
+          details: {
+            stage: "submitting",
+            submission_state: "possibly_sent",
+            request_id: input.requestId,
+          },
+        },
+      );
+    },
+  };
+  await assert.rejects(
+    runControllerLoop({
+      request: "Retry exact controller evidence once",
+      runId,
+      home: stateHome,
+      browser: firstBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS",
+  );
+  await confirmControllerTurnNotSent(runId, {
+    home: stateHome,
+    requestId: abandonedRequestId,
+    conversationUrl,
+  });
+
+  let sendCalls = 0;
+  const wrongIdentityBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input, hooks): Promise<ControllerTurn> {
+      sendCalls += 1;
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitted",
+        composerPromptState: "attachment_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: 1,
+      });
+      return {
+        text: `<CueLineControl>${JSON.stringify({
+          protocol: "cueline/0.1",
+          run_id: runId,
+          round: input.round,
+          request_id: "msg_some_other_identity",
+          action: "complete",
+          final_delivery_text: "WRONG_IDENTITY",
+        })}</CueLineControl>`,
+        conversationUrl,
+        model: {
+          provider: "chatgpt",
+          selectedLabel: "Pro",
+          responseModelSlug: "gpt-5-6-pro",
+          source: "composer_and_response",
+        },
+      };
+    },
+  };
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      conversationUrl,
+      browser: wrongIdentityBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_NOT_SENT_RESPONSE_CONFLICT",
+  );
+  assert.equal(sendCalls, 1);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    events.filter((event) => event.type === "controller_repair_requested").length,
+    0,
   );
 });
 
