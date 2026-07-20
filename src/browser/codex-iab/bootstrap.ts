@@ -1,8 +1,10 @@
 import { CueLineError } from "../../core/errors.js";
+import type { ExpectedControllerIdentity } from "../../protocol/types.js";
 import type { ComposerPromptState } from "../browser-adapter.js";
+import { exactAccessibilityControllerEnvelopeText } from "./recovery-evidence.js";
 
 export interface PageChatState {
-  /** URL captured in the same DOM evaluation as the response evidence. */
+  /** URL captured with DOM evidence; accessibility recovery rechecks it before adoption. */
   pageUrl: string;
   isAnswering: boolean;
   assistantText: string;
@@ -11,6 +13,7 @@ export interface PageChatState {
   assistantModelSlug: string | null;
   lastUserText: string | null;
   lastMessageRole: "assistant" | "user" | null;
+  assistantTextSource?: "message_dom" | "accessibility_exact_envelope";
 }
 
 export interface PageComposerState {
@@ -125,109 +128,154 @@ export async function resolveIabBrowser(requested?: IabBrowser): Promise<IabBrow
   );
 }
 
-export async function readPageChatState(tab: IabTab): Promise<PageChatState> {
-  return tab.playwright.evaluate(() => {
-    const buttons = Array.from(document.querySelectorAll("button"));
-    const isAnswering = buttons.some((button) => {
-      const ariaLabel = button.getAttribute("aria-label")?.trim();
-      const label = (ariaLabel || button.textContent || "")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (
-        !/(stop|停止|中止|중지|정지)/i.test(label) ||
-        !/(answer|generat|respond|response|stream|thinking|回答|回覆|作答|生成|產生|思考|応答|생성|답변|응답)/i.test(
-          label,
-        )
-      ) {
-        return false;
-      }
-      if (
-        button.disabled ||
-        button.hidden ||
-        button.getAttribute("aria-disabled") === "true" ||
-        button.getAttribute("aria-hidden") === "true" ||
-        button.closest('[hidden], [aria-hidden="true"], [inert]') !== null
-      ) {
-        return false;
-      }
-      const checkVisibility = (
-        button as HTMLButtonElement & {
-          checkVisibility?: (options?: {
-            checkOpacity?: boolean;
-            checkVisibilityCSS?: boolean;
-          }) => boolean;
-        }
-      ).checkVisibility;
-      if (typeof checkVisibility === "function") {
-        try {
-          if (
-            !checkVisibility.call(button, {
-              checkOpacity: true,
-              checkVisibilityCSS: true,
-            })
-          ) {
-            return false;
-          }
-        } catch {
-          // Older browser bindings may expose checkVisibility without option support.
-          // The explicit style and geometry checks below remain the safe fallback.
-        }
-      }
-      const style = getComputedStyle(button);
-      if (
-        style.display === "none" ||
-        style.visibility === "hidden" ||
-        style.visibility === "collapse" ||
-        style.pointerEvents === "none" ||
-        Number(style.opacity) === 0
-      ) {
-        return false;
-      }
-      const bounds = button.getBoundingClientRect();
-      return bounds.width > 0 && bounds.height > 0 && button.getClientRects().length > 0;
-    });
-
-    const messages = Array.from(document.querySelectorAll("[data-message-author-role]"));
-    const assistantMessages = messages.filter(
-      (message) => message.getAttribute("data-message-author-role") === "assistant",
-    );
-    const userMessages = messages.filter(
-      (message) => message.getAttribute("data-message-author-role") === "user",
-    );
-    const last = assistantMessages.at(-1);
-    const visibleText =
-      last !== undefined && "innerText" in last
-        ? String((last as Element & { innerText?: string }).innerText ?? last.textContent ?? "")
-        : last?.textContent ?? "";
-    const assistantText = visibleText
-      .replace(/\u00a0/g, " ")
-      .trim();
-    const assistantModelSlug = last?.getAttribute("data-message-model-slug") ?? null;
-    const lastUser = userMessages.at(-1);
-    const lastUserVisibleText =
-      lastUser !== undefined && "innerText" in lastUser
-        ? String(
-            (lastUser as Element & { innerText?: string }).innerText ??
-              lastUser.textContent ??
-              "",
+export async function readPageChatState(
+  tab: IabTab,
+  exactControllerIdentity?: ExpectedControllerIdentity,
+): Promise<PageChatState> {
+  const state = await tab.playwright.evaluate<
+    PageChatState,
+    { allowCountDegradedModelEvidence: boolean }
+  >(
+    (
+      { allowCountDegradedModelEvidence } = {
+        allowCountDegradedModelEvidence: false,
+      },
+    ) => {
+      const buttons = Array.from(document.querySelectorAll("button"));
+      const isAnswering = buttons.some((button) => {
+        const ariaLabel = button.getAttribute("aria-label")?.trim();
+        const label = (ariaLabel || button.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (
+          !/(stop|停止|中止|중지|정지)/i.test(label) ||
+          !/(answer|generat|respond|response|stream|thinking|回答|回覆|作答|生成|產生|思考|応答|생성|답변|응답)/i.test(
+            label,
           )
-        : lastUser?.textContent ?? "";
-    const lastUserText =
-      lastUser === undefined ? null : lastUserVisibleText.replace(/\u00a0/g, " ").trim();
-    const lastRole = messages.at(-1)?.getAttribute("data-message-author-role");
-    const lastMessageRole =
-      lastRole === "assistant" || lastRole === "user" ? lastRole : null;
-    return {
-      pageUrl: window.location.href,
-      isAnswering,
-      assistantText,
-      userMessageCount: userMessages.length,
-      assistantMessageCount: assistantMessages.length,
-      assistantModelSlug,
-      lastUserText,
-      lastMessageRole,
-    };
-  });
+        ) {
+          return false;
+        }
+        if (
+          button.disabled ||
+          button.hidden ||
+          button.getAttribute("aria-disabled") === "true" ||
+          button.getAttribute("aria-hidden") === "true" ||
+          button.closest('[hidden], [aria-hidden="true"], [inert]') !== null
+        ) {
+          return false;
+        }
+        const checkVisibility = (
+          button as HTMLButtonElement & {
+            checkVisibility?: (options?: {
+              checkOpacity?: boolean;
+              checkVisibilityCSS?: boolean;
+            }) => boolean;
+          }
+        ).checkVisibility;
+        if (typeof checkVisibility === "function") {
+          try {
+            if (
+              !checkVisibility.call(button, {
+                checkOpacity: true,
+                checkVisibilityCSS: true,
+              })
+            ) {
+              return false;
+            }
+          } catch {
+            // Older browser bindings may expose checkVisibility without option support.
+            // The explicit style and geometry checks below remain the safe fallback.
+          }
+        }
+        const style = getComputedStyle(button);
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          style.visibility === "collapse" ||
+          style.pointerEvents === "none" ||
+          Number(style.opacity) === 0
+        ) {
+          return false;
+        }
+        const bounds = button.getBoundingClientRect();
+        return bounds.width > 0 && bounds.height > 0 && button.getClientRects().length > 0;
+      });
+
+      const messages = Array.from(document.querySelectorAll("[data-message-author-role]"));
+      const assistantMessages = messages.filter(
+        (message) => message.getAttribute("data-message-author-role") === "assistant",
+      );
+      const userMessages = messages.filter(
+        (message) => message.getAttribute("data-message-author-role") === "user",
+      );
+      const last = assistantMessages.at(-1);
+      const visibleText =
+        last !== undefined && "innerText" in last
+          ? String((last as Element & { innerText?: string }).innerText ?? last.textContent ?? "")
+          : last?.textContent ?? "";
+      const assistantText = visibleText
+        .replace(/\u00a0/g, " ")
+        .trim();
+      const modelTaggedMessages = Array.from(
+        document.querySelectorAll("[data-message-model-slug]"),
+      );
+      const assistantModelSlug =
+        last?.getAttribute("data-message-model-slug") ??
+        (allowCountDegradedModelEvidence
+          ? modelTaggedMessages.at(-1)?.getAttribute("data-message-model-slug")
+          : null) ??
+        null;
+      const lastUser = userMessages.at(-1);
+      const lastUserVisibleText =
+        lastUser !== undefined && "innerText" in lastUser
+          ? String(
+              (lastUser as Element & { innerText?: string }).innerText ??
+                lastUser.textContent ??
+                "",
+            )
+          : lastUser?.textContent ?? "";
+      const lastUserText =
+        lastUser === undefined ? null : lastUserVisibleText.replace(/\u00a0/g, " ").trim();
+      const lastRole = messages.at(-1)?.getAttribute("data-message-author-role");
+      const lastMessageRole: PageChatState["lastMessageRole"] =
+        lastRole === "assistant" || lastRole === "user" ? lastRole : null;
+      return {
+        pageUrl: window.location.href,
+        isAnswering,
+        assistantText,
+        userMessageCount: userMessages.length,
+        assistantMessageCount: assistantMessages.length,
+        assistantModelSlug,
+        lastUserText,
+        lastMessageRole,
+        assistantTextSource: "message_dom" as const,
+      };
+    },
+    { allowCountDegradedModelEvidence: exactControllerIdentity !== undefined },
+  );
+
+  if (
+    exactControllerIdentity === undefined ||
+    state.assistantMessageCount > 0 ||
+    state.assistantText !== ""
+  ) {
+    return state;
+  }
+
+  const snapshot = await tab.playwright.domSnapshot();
+  if (typeof snapshot !== "string") return state;
+  const exactEnvelope = exactAccessibilityControllerEnvelopeText(
+    snapshot,
+    exactControllerIdentity,
+  );
+  if (exactEnvelope === null) return state;
+
+  return {
+    ...state,
+    assistantText: exactEnvelope,
+    lastMessageRole: "assistant",
+    assistantTextSource: "accessibility_exact_envelope",
+  };
 }
 
 export async function readPageComposerState(

@@ -41,7 +41,12 @@ export interface BrowserSubmittedTurnEvidence {
 }
 
 export type BrowserSubmittedTurnObservation =
-  | { status: "response"; turn: ControllerTurn }
+  | {
+      status: "response";
+      turn: ControllerTurn;
+      /** Narrow provenance used to preserve a separate dispatch boundary. */
+      responseSource?: "count_degraded_accessibility_exact_envelope";
+    }
   | { status: "pending"; evidence?: BrowserSubmittedTurnEvidence }
   | { status: "definitely_not_sent"; evidence: BrowserSubmittedTurnEvidence };
 

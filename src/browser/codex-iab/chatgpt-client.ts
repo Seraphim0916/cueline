@@ -1265,11 +1265,16 @@ class CodexIabAdapter implements BrowserAdapter {
     let stableSignature = "";
     let stableSince = 0;
     let lastEvidence: BrowserSubmittedTurnEvidence | undefined;
+    const expectedIdentity: ExpectedControllerIdentity = {
+      runId: input.runId,
+      round: input.round,
+      requestId: input.requestId,
+    };
 
     for (;;) {
       throwIfCancelled(input.signal);
       const state = await withBrowserOperationTimeout(
-        () => readPageChatState(tab),
+        () => readPageChatState(tab, expectedIdentity),
         operationTimeoutMs,
         input.signal,
         () =>
@@ -1373,11 +1378,6 @@ class CodexIabAdapter implements BrowserAdapter {
         continue;
       }
 
-      const expectedIdentity: ExpectedControllerIdentity = {
-        runId: input.runId,
-        round: input.round,
-        requestId: input.requestId,
-      };
       const hasExactCurrentEnvelope = hasExactControllerEnvelopeIdentity(
         state.assistantText,
         expectedIdentity,
@@ -1390,6 +1390,53 @@ class CodexIabAdapter implements BrowserAdapter {
         requestMessageFound === true ||
         hasExactCurrentEnvelope ||
         hasReliablePostClickUserTurn;
+
+      const countDegradedExactEnvelope =
+        !baselineLoaded &&
+        state.assistantTextSource === "accessibility_exact_envelope" &&
+        isProLabel(selectedModelLabel) &&
+        hasExactCurrentEnvelope &&
+        !state.isAnswering;
+      if (countDegradedExactEnvelope) {
+        const checkpointState = await withBrowserOperationTimeout(
+          () => readPageChatState(tab),
+          operationTimeoutMs,
+          input.signal,
+          () =>
+            new CueLineError(
+              "CONTROLLER_RECONCILIATION_READ_TIMEOUT",
+              `ChatGPT's submitted-turn checkpoint read did not finish within ${operationTimeoutMs} ms.`,
+            ),
+        );
+        if (
+          !sameChatGptConversationUrl(
+            checkpointState.pageUrl,
+            this.#conversationUrl!,
+          )
+        ) {
+          throw new CueLineError(
+            "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+            "The ChatGPT conversation changed after the exact accessibility response was read.",
+          );
+        }
+        if (checkpointState.isAnswering) {
+          return { status: "pending", evidence };
+        }
+        const completed: PageChatState = {
+          ...state,
+          pageUrl: checkpointState.pageUrl,
+        };
+        const turn = await this.#resultFromCompletedTurn(
+          tab,
+          selectedModelLabel,
+          completed,
+        );
+        return {
+          status: "response",
+          turn,
+          responseSource: "count_degraded_accessibility_exact_envelope",
+        };
+      }
 
       if (baselineLoaded && currentRequestCorrelated && !state.isAnswering) {
         const turn = await this.#readExistingTurn(input, false);

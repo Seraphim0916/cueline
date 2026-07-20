@@ -818,6 +818,7 @@ async function reconcilePendingControllerTurn(
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   };
   let turn;
+  let deferRecoveredDispatch = false;
   if (
     observeSubmittedTurn !== undefined &&
     expectedConversationUrl !== null &&
@@ -846,6 +847,9 @@ async function reconcilePendingControllerTurn(
       return "awaiting_controller";
     }
     turn = submittedObservation.turn;
+    deferRecoveredDispatch =
+      submittedObservation.responseSource ===
+      "count_degraded_accessibility_exact_envelope";
   } else {
     turn = options.browser.observeTurn
       ? await options.browser.observeTurn(recoveryInput)
@@ -888,6 +892,16 @@ async function reconcilePendingControllerTurn(
     command,
     command_hash: acceptedCommandHash,
   });
+  if (
+    command.action === "dispatch" &&
+    options.returnAfterRecoveredControllerResponse === true &&
+    deferRecoveredDispatch
+  ) {
+    // controller_command_accepted durably stores this command as pending. A
+    // separate caller continuation executes it, so response recovery cannot
+    // both import an old browser turn and start newly dispatched work.
+    return "continue";
+  }
   return executeAcceptedCommand(
     store,
     command,
