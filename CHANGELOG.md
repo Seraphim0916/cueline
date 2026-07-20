@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.8 - 2026-07-20
+
+### Fixed
+
+- Restarted submitted-turn recovery no longer treats a hydration jump from a
+  persisted zero user-message baseline to the page's full historical count as
+  proof that the current controller request was sent. CueLine now requires
+  exact current-request evidence before parsing the last assistant response;
+  when the exact prompt or attachment is still staged and Pro is idle, that
+  composer evidence wins and the historical response cannot trigger repair.
+- Caller mode now returns `ready` after accepting and executing a recovered
+  non-terminal controller response. The same continuation cannot advance into
+  another controller round; a separate explicit `continue` is required.
+
+### Verification
+
+- 681/681 tests pass. A real ChatGPT Web Pro recovery of round 87 performed
+  one read-only submitted-turn observation, accepted the existing response,
+  made zero submit/send calls, and created no round 88.
+
 ## 0.4.7 - 2026-07-20
 
 ### Fixed

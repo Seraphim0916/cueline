@@ -2052,6 +2052,285 @@ test("submitted attachment observation proves not sent from residual composer ev
   assert.equal(fixture.sendSubmissions(), 0);
 });
 
+test("submitted attachment observation treats hydrated history uplift as not sent before stale response parsing", async () => {
+  const conversationUrl = "https://chatgpt.com/c/submitted-attachment-hydration-uplift";
+  const runId = "run_submitted_attachment_hydration_uplift";
+  const requestId = "msg_round_87_hydration_uplift";
+  const staleResponse = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 86,
+    request_id: "msg_round_86_stale",
+    action: "dispatch",
+    jobs: [],
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: staleResponse,
+        userMessageCount: 103,
+        assistantMessageCount: 102,
+        assistantModelSlug: "gpt-5-6-pro",
+        lastUserText: "round 86 request",
+        lastMessageRole: "assistant",
+      },
+    ],
+    composerStates: [
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: true,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 87,
+    requestId,
+    prompt: "round 87 attachment prompt",
+    attachmentPromptExpected: true,
+    baselineUserMessageCount: 0,
+    baselineAssistantMessageCount: 0,
+  });
+
+  assert.equal(observation.status, "definitely_not_sent");
+  assert.equal(observation.evidence.baselineUserMessageCount, 0);
+  assert.equal(observation.evidence.observedUserMessageCount, 103);
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("submitted inline observation treats hydrated history uplift as not sent while the exact prompt stays staged", async () => {
+  const conversationUrl = "https://chatgpt.com/c/submitted-inline-hydration-uplift";
+  const prompt = "round 87 inline prompt still staged";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "round 86 response",
+        userMessageCount: 103,
+        assistantMessageCount: 102,
+        lastUserText: "round 86 request",
+        lastMessageRole: "assistant",
+      },
+    ],
+    composerStates: [
+      {
+        state: "inline_ready",
+        inlineTextLength: prompt.length,
+        attachmentCount: 0,
+        sendButtonEnabled: true,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId: "run_submitted_inline_hydration_uplift",
+    round: 87,
+    requestId: "msg_submitted_inline_hydration_uplift",
+    prompt,
+    baselineUserMessageCount: 1,
+    baselineAssistantMessageCount: 1,
+  });
+
+  assert.equal(observation.status, "definitely_not_sent");
+  assert.equal(observation.evidence.observedUserMessageCount, 103);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("submitted attachment observation ignores a stale assistant when no current request is correlated", async () => {
+  const conversationUrl = "https://chatgpt.com/c/submitted-attachment-stale-assistant";
+  const runId = "run_submitted_attachment_stale_assistant";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: `<CueLineControl>${JSON.stringify({
+          protocol: "cueline/0.1",
+          run_id: runId,
+          round: 86,
+          request_id: "msg_stale_round_86",
+          action: "wait",
+        })}</CueLineControl>`,
+        userMessageCount: 103,
+        assistantMessageCount: 102,
+        assistantModelSlug: "gpt-5-6-pro",
+        lastUserText: "Pasted text(95).txt\nDocument",
+        lastMessageRole: "assistant",
+      },
+    ],
+    composerStates: [
+      {
+        state: "empty",
+        inlineTextLength: 0,
+        attachmentCount: 0,
+        sendButtonEnabled: false,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 87,
+    requestId: "msg_current_round_87",
+    prompt: "current round 87 attachment prompt",
+    attachmentPromptExpected: true,
+    baselineUserMessageCount: 0,
+    baselineAssistantMessageCount: 0,
+  });
+
+  assert.equal(observation.status, "pending");
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("submitted observation accepts a hydrated response after the exact current user request is correlated", async () => {
+  const conversationUrl = "https://chatgpt.com/c/submitted-current-request-correlated";
+  const runId = "run_submitted_current_request_correlated";
+  const requestId = "msg_submitted_current_request_correlated";
+  const prompt = "exact current round 87 inline prompt";
+  const response = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 87,
+    request_id: requestId,
+    action: "wait",
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: response,
+        userMessageCount: 103,
+        assistantMessageCount: 102,
+        assistantModelSlug: "gpt-5-6-pro",
+        lastUserText: prompt,
+        lastMessageRole: "assistant",
+      },
+    ],
+    composerStates: [
+      {
+        state: "empty",
+        inlineTextLength: 0,
+        attachmentCount: 0,
+        sendButtonEnabled: false,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 87,
+    requestId,
+    prompt,
+    baselineUserMessageCount: 1,
+    baselineAssistantMessageCount: 1,
+  });
+
+  assert.equal(observation.status, "response");
+  assert.equal(observation.status === "response" ? observation.turn.text : null, response);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("submitted attachment observation still exposes a malformed current response after reliable user-turn correlation", async () => {
+  const conversationUrl = "https://chatgpt.com/c/submitted-attachment-current-malformed";
+  const runId = "run_submitted_attachment_current_malformed";
+  const malformedResponse = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 87,
+    action: "inspect",
+    job_ids: ["job_existing"],
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: malformedResponse,
+        userMessageCount: 52,
+        assistantMessageCount: 5,
+        assistantModelSlug: "gpt-5-6-pro",
+        lastUserText: "Pasted text(96).txt\nDocument",
+        lastMessageRole: "assistant",
+      },
+    ],
+    composerStates: [
+      {
+        state: "empty",
+        inlineTextLength: 0,
+        attachmentCount: 0,
+        sendButtonEnabled: false,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 87,
+    requestId: "msg_current_round_87",
+    prompt: "current round 87 attachment prompt",
+    attachmentPromptExpected: true,
+    baselineUserMessageCount: 51,
+    baselineAssistantMessageCount: 4,
+  });
+
+  assert.equal(observation.status, "response");
+  assert.equal(observation.status === "response" ? observation.turn.text : null, malformedResponse);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
 test("legacy pre-submission observation derives an idle baseline without sending", async () => {
   const conversationUrl = "https://chatgpt.com/c/legacy-pre-submission-observation";
   const prompt = "Round 68 request envelope that was never submitted";

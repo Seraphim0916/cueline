@@ -3129,7 +3129,25 @@ test("split caller enforces the persisted max round limit across ownerless conti
     browser,
     routingConfig,
   });
-  assert.equal(second.status, "awaiting_controller");
+  assert.equal(second.status, "ready");
+  assert.equal(submissions, 1);
+
+  const third = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+  });
+  assert.equal(third.status, "awaiting_controller");
+  assert.equal(submissions, 2);
+
+  const fourth = await continueCueLineRun({
+    runId,
+    home: stateHome,
+    browser,
+    routingConfig,
+  });
+  assert.equal(fourth.status, "ready");
   assert.equal(submissions, 2);
 
   await assert.rejects(

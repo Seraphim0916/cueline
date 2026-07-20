@@ -474,6 +474,7 @@ export async function continueCueLineRun(
     archiveControllerConversationOnComplete:
       state.controllerConversationArchive?.enabled === true,
     returnAfterControllerSubmission: state.executor === "caller",
+    returnAfterRecoveredControllerResponse: state.executor === "caller",
     ...(options.reconcileRequestId === undefined
       ? {}
       : { reconcileRequestId: options.reconcileRequestId }),

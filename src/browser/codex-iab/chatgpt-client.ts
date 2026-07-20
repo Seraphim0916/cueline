@@ -1314,7 +1314,8 @@ class CodexIabAdapter implements BrowserAdapter {
         : null;
       const now = Date.now();
       const hydrated =
-        baselineLoaded && (baseline! > 0 || now >= deadline);
+        baselineLoaded &&
+        (baseline! > 0 || observedUserMessageCount! > 0 || now >= deadline);
       const evidence: BrowserSubmittedTurnEvidence = {
         conversationUrl: state.pageUrl,
         selectedModelLabel,
@@ -1338,8 +1339,7 @@ class CodexIabAdapter implements BrowserAdapter {
           : composerState.state === "inline_ready" &&
             composerState.sendButtonEnabled;
       const notSentCandidate =
-        baseline !== null &&
-        observedUserMessageCount === baseline &&
+        baselineLoaded &&
         requestMessageFound === false &&
         state.isAnswering === false &&
         stagedPromptRemains;
@@ -1357,17 +1357,47 @@ class CodexIabAdapter implements BrowserAdapter {
         stableSince = 0;
       }
 
-      if (
-        baselineLoaded &&
-        observedUserMessageCount !== null &&
-        observedUserMessageCount > baseline
-      ) {
+      // Exact staged composer evidence wins over historical DOM counts. A rebooted
+      // 0 baseline may hydrate into the full conversation history; parsing the
+      // last assistant message here would misclassify that stale response as the
+      // pending turn and could authorize a repair send.
+      if (stagedPromptRemains) {
+        if (baselineLoaded && (requestMessageFound === true || state.isAnswering)) {
+          return { status: "pending", evidence };
+        }
+        if (now >= deadline) return { status: "pending", evidence };
+        await delay(
+          Math.min(this.#options.pollIntervalMs, Math.max(1, deadline - now)),
+          input.signal,
+        );
+        continue;
+      }
+
+      const expectedIdentity: ExpectedControllerIdentity = {
+        runId: input.runId,
+        round: input.round,
+        requestId: input.requestId,
+      };
+      const hasExactCurrentEnvelope = hasExactControllerEnvelopeIdentity(
+        state.assistantText,
+        expectedIdentity,
+      );
+      const hasReliablePostClickUserTurn =
+        baseline !== null &&
+        baseline > 0 &&
+        observedUserMessageCount === baseline + 1;
+      const currentRequestCorrelated =
+        requestMessageFound === true ||
+        hasExactCurrentEnvelope ||
+        hasReliablePostClickUserTurn;
+
+      if (baselineLoaded && currentRequestCorrelated && !state.isAnswering) {
         const turn = await this.#readExistingTurn(input, false);
         return turn === undefined
           ? { status: "pending", evidence }
           : { status: "response", turn };
       }
-      if (baselineLoaded && (requestMessageFound === true || state.isAnswering)) {
+      if (baselineLoaded && (currentRequestCorrelated || state.isAnswering)) {
         return { status: "pending", evidence };
       }
       if (now >= deadline) {

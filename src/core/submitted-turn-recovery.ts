@@ -71,7 +71,7 @@ export function isDefinitelyNotSentObservation(
     /^Pro(?:\s|$)/i.test(evidence.selectedModelLabel) &&
     evidence.baselineUserMessageCount === turn.baselineUserMessageCount &&
     Number.isSafeInteger(evidence.observedUserMessageCount) &&
-    evidence.observedUserMessageCount === turn.baselineUserMessageCount &&
+    (evidence.observedUserMessageCount ?? -1) >= evidence.baselineUserMessageCount &&
     isExactChatGptConversationUrl(evidence.conversationUrl) &&
     sameChatGptConversationUrl(evidence.conversationUrl, expectedConversationUrl)
   );

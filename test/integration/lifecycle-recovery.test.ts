@@ -1651,12 +1651,43 @@ test("field submitted wedge pauses after fresh not-sent evidence and retries onl
   assert.equal((await loadCueLineRunState(runId, { home })).pendingControllerTurns.length, 1);
 });
 
+test("field submitted wedge accepts hydration count uplift as not sent without response parsing or repair", async () => {
+  const home = await temporaryHome();
+  const runId = `${submittedTurnWedgeFixture.fixtureRunId}_hydration_uplift`;
+  const { requestId } = await createSubmittedTurnWedge(home, runId);
+  const browser = submittedObservationBrowser(
+    definitelyNotSentObservation({ observedUserMessageCount: 103 }),
+  );
+
+  const result = await continueCueLineRun({
+    runId,
+    home,
+    browser,
+    conversationUrl: submittedTurnWedgeFixture.conversationUrl,
+    routingConfig,
+  });
+
+  assert.equal(result.status, "awaiting_controller");
+  assert.equal(browser.submitCalls, 0);
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.pendingControllerTurns.length, 0);
+  assert.equal(state.notSentRecovery?.abandonedRequestId, requestId);
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.filter((event) => event.type === "controller_response_received").length, 0);
+  assert.equal(events.filter((event) => event.type === "controller_response_rejected").length, 0);
+  assert.equal(events.filter((event) => event.type === "controller_repair_requested").length, 0);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_turn_requested" &&
+        (event.payload as Record<string, unknown>).retry_of_request_id === requestId,
+    ).length,
+    0,
+  );
+});
+
 test("submitted not-sent recovery refuses incomplete or conflicting page evidence", async () => {
   const cases: Array<{ name: string; observation: SubmittedTurnObservation }> = [
-    {
-      name: "count-increased",
-      observation: definitelyNotSentObservation({ observedUserMessageCount: 51 }),
-    },
     {
       name: "count-unknown",
       observation: definitelyNotSentObservation({ observedUserMessageCount: null }),
@@ -1713,6 +1744,243 @@ test("submitted not-sent recovery refuses incomplete or conflicting page evidenc
       fixture.name,
     );
   }
+});
+
+test("recovered inspect response reaches a ready boundary before any next controller submission", async () => {
+  const home = await temporaryHome();
+  const runId = "run_recovered_inspect_ready_boundary";
+  const requestId = "msg_recovered_inspect_ready_boundary";
+  const conversationUrl = "https://chatgpt.com/c/recovered-inspect-ready-boundary";
+  const prompt = "Recover the existing inspect response without sending another round";
+  const spec: ControllerJobSpec = {
+    job_key: "existing_terminal_job",
+    lane: "default",
+    mode: "advise",
+    task: "Already completed evidence",
+  };
+  const existingJobId = jobId(runId, spec.job_key, spec);
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, prompt, "caller", 100),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: prompt,
+    executor: "caller",
+    max_rounds: 100,
+  });
+  await store.append("job_registered", {
+    job: {
+      jobId: existingJobId,
+      jobKey: spec.job_key,
+      required: true,
+      spec,
+      status: "succeeded",
+      output: "existing evidence",
+      error: null,
+    },
+  });
+  await store.append("controller_turn_requested", {
+    round: 87,
+    request_id: requestId,
+    prompt,
+    prompt_hash: commandHash(prompt),
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.append("controller_turn_submitted", {
+    round: 87,
+    request_id: requestId,
+    submission_state: "submitted",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "attachment_ready",
+    baseline_user_message_count: 103,
+    baseline_assistant_message_count: 102,
+  });
+  await store.snapshot();
+
+  const responseText = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 87,
+    request_id: requestId,
+    action: "inspect",
+    job_ids: [existingJobId],
+  })}</CueLineControl>`;
+  let observeCalls = 0;
+  let submitCalls = 0;
+  let sendCalls = 0;
+  const browser: SubmittedObservationBrowser = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async observeSubmittedTurn(): Promise<SubmittedTurnObservation> {
+      observeCalls += 1;
+      return {
+        status: "response",
+        turn: {
+          text: responseText,
+          conversationUrl,
+          model: {
+            provider: "chatgpt",
+            selectedLabel: "Pro",
+            responseModelSlug: "gpt-5-6-pro",
+            source: "composer_and_response",
+          },
+        },
+      };
+    },
+    async observeTurn(): Promise<undefined> {
+      return undefined;
+    },
+    async submitTurn(): Promise<void> {
+      submitCalls += 1;
+      throw new Error("recovery boundary must not submit round 88");
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      sendCalls += 1;
+      throw new Error("recovery boundary must not send round 88");
+    },
+  };
+
+  const result = await continueCueLineRun({
+    runId,
+    home,
+    browser,
+    conversationUrl,
+    routingConfig,
+  });
+
+  assert.equal(result.status, "ready");
+  assert.equal(observeCalls, 1);
+  assert.equal(submitCalls, 0);
+  assert.equal(sendCalls, 0);
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.filter((event) => event.type === "controller_response_received").length, 1);
+  assert.equal(events.filter((event) => event.type === "controller_command_accepted").length, 1);
+  assert.equal(
+    events.filter((event) => event.type === "controller_command_execution_completed").length,
+    1,
+  );
+  assert.equal(events.filter((event) => event.type === "controller_response_rejected").length, 0);
+  assert.equal(events.filter((event) => event.type === "controller_repair_requested").length, 0);
+  assert.equal(events.filter((event) => event.type === "controller_turn_requested").length, 1);
+});
+
+test("correlated recovered response with a malformed envelope requests exactly one repair", async () => {
+  const home = await temporaryHome();
+  const runId = "run_correlated_recovered_response_repair";
+  const requestId = "msg_correlated_recovered_response_repair";
+  const conversationUrl = "https://chatgpt.com/c/correlated-recovered-response-repair";
+  const prompt = "Recover this current response and repair its malformed envelope once";
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, prompt, "caller", 100),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: prompt,
+    executor: "caller",
+    max_rounds: 100,
+  });
+  await store.append("controller_turn_requested", {
+    round: 87,
+    request_id: requestId,
+    prompt,
+    prompt_hash: commandHash(prompt),
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.append("controller_turn_submitted", {
+    round: 87,
+    request_id: requestId,
+    submission_state: "submitted",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "attachment_ready",
+    baseline_user_message_count: 103,
+    baseline_assistant_message_count: 102,
+  });
+  await store.snapshot();
+
+  const malformedResponse = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 87,
+    action: "inspect",
+    job_ids: ["job_missing_request_id"],
+  })}</CueLineControl>`;
+  let observeCalls = 0;
+  let submitCalls = 0;
+  let sendCalls = 0;
+  const browser: SubmittedObservationBrowser = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async observeSubmittedTurn(): Promise<SubmittedTurnObservation> {
+      observeCalls += 1;
+      return {
+        status: "response",
+        turn: {
+          text: malformedResponse,
+          conversationUrl,
+          model: {
+            provider: "chatgpt",
+            selectedLabel: "Pro",
+            responseModelSlug: "gpt-5-6-pro",
+            source: "composer_and_response",
+          },
+        },
+      };
+    },
+    async observeTurn(): Promise<undefined> {
+      return undefined;
+    },
+    async submitTurn(input, hooks): Promise<void> {
+      submitCalls += 1;
+      assert.equal(input.round, 87);
+      assert.equal(input.requestId, requestId);
+      assert.equal(input.repairAttempt, 1);
+      assert.match(input.prompt, /CONTROL_/);
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitting",
+        composerPromptState: "inline_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineUserMessageCount: 103,
+        baselineAssistantMessageCount: 102,
+        clickAttemptState: "attempting",
+      });
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitted",
+        composerPromptState: "inline_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineUserMessageCount: 103,
+        baselineAssistantMessageCount: 102,
+        clickAttemptState: "accepted",
+      });
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      sendCalls += 1;
+      throw new Error("correlated recovery must use split repair submission");
+    },
+  };
+
+  const result = await continueCueLineRun({
+    runId,
+    home,
+    browser,
+    conversationUrl,
+    routingConfig,
+  });
+
+  assert.equal(result.status, "awaiting_controller");
+  assert.equal(observeCalls, 1);
+  assert.equal(submitCalls, 1);
+  assert.equal(sendCalls, 0);
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.filter((event) => event.type === "controller_response_received").length, 1);
+  assert.equal(events.filter((event) => event.type === "controller_response_rejected").length, 1);
+  assert.equal(events.filter((event) => event.type === "controller_repair_requested").length, 1);
+  assert.equal(events.filter((event) => event.type === "controller_turn_submitted").length, 2);
 });
 
 test("confirmControllerTurnNotSent accepts the evidence-gated submitted wedge shape", async () => {

@@ -1375,6 +1375,12 @@ export async function continueControllerLoop(
       if (outcome === "terminal") return resultFromState(store.state);
       if (outcome === "awaiting_controller") return awaitingControllerResult(store.state);
       if (outcome === "awaiting_caller") return awaitingCallerResult(store.state);
+      if (
+        outcome === "continue" &&
+        cancellation.options.returnAfterRecoveredControllerResponse === true
+      ) {
+        return readyResult(store.state);
+      }
     } else if (options.conversationUrl) {
       await store.append("controller_conversation_bound", {
         conversation_url: options.conversationUrl,

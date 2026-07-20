@@ -38,6 +38,7 @@ export interface ControllerRuntimeOptions {
   laneConcurrency?: Readonly<Record<string, number>>;
   runtimeHeartbeatIntervalMs?: number;
   returnAfterControllerSubmission?: boolean;
+  returnAfterRecoveredControllerResponse?: boolean;
   archiveControllerConversationOnComplete?: boolean;
 }
 
