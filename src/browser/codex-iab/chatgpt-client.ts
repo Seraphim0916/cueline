@@ -68,6 +68,7 @@ const MODEL_LABEL_RETRY_INTERVAL_MS = 100;
 const COMPOSER_READY_TIMEOUT_MS = 30_000;
 const COMPOSER_READY_STABLE_MS = 250;
 const SUBMISSION_ACTION_TIMEOUT_MS = 10_000;
+const POST_CLICK_ACKNOWLEDGEMENT_TIMEOUT_MS = 10_000;
 const CONVERSATION_OPTIONS_SELECTOR = '[data-testid="conversation-options-button"]';
 const ARCHIVE_PROOF_TIMEOUT_MS = 10_000;
 type TurnStage = "pre_submit" | "submitting" | "submitted";
@@ -82,6 +83,11 @@ interface TurnAttemptContext {
 type SendTarget =
   | { kind: "locator"; locator: IabLocator }
   | { kind: "coordinate"; x: number; y: number };
+
+type PostClickAcknowledgement =
+  | { status: "submitted"; state: PageChatState }
+  | { status: "definitely_not_sent"; state: PageChatState }
+  | { status: "possibly_sent"; state: PageChatState };
 
 function throwIfCancelled(signal: AbortSignal | undefined): void {
   if (signal?.aborted !== true) return;
@@ -385,6 +391,118 @@ class CodexIabAdapter implements BrowserAdapter {
       (state.userMessageCount ?? 0) > (baseline.userMessageCount ?? 0) ||
       state.assistantMessageCount > baseline.assistantMessageCount
     );
+  }
+
+  async #waitForPostClickAcknowledgement(
+    tab: IabTab,
+    input: BrowserTurnInput,
+    context: TurnAttemptContext,
+    capturedConversationUrl?: string,
+  ): Promise<PostClickAcknowledgement> {
+    const baseline = context.baseline!;
+    const deadline =
+      Date.now() +
+      Math.min(this.#options.timeoutMs, POST_CLICK_ACKNOWLEDGEMENT_TIMEOUT_MS);
+    const operationTimeoutMs = Math.min(
+      SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.timeoutMs,
+    );
+    let stableSignature = "";
+    let stableSince = 0;
+    const normalizedPrompt = normalizedMessageText(input.prompt);
+
+    for (;;) {
+      throwIfCancelled(input.signal);
+      const state = await withBrowserOperationTimeout(
+        () => readPageChatState(tab),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_SUBMISSION_POSTCLICK_READ_TIMEOUT",
+            `ChatGPT's post-click state check did not finish within ${operationTimeoutMs} ms.`,
+          ),
+      );
+      const composerState = await withBrowserOperationTimeout(
+        () => readPageComposerState(tab, input.prompt, SEND_BUTTON_NAMES),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_SUBMISSION_POSTCLICK_READ_TIMEOUT",
+            `ChatGPT's post-click composer check did not finish within ${operationTimeoutMs} ms.`,
+          ),
+      );
+      if (
+        isConversationUrl(baseline.pageUrl) &&
+        !sameChatGptConversationUrl(state.pageUrl, baseline.pageUrl)
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+          "ChatGPT navigated to a different conversation after the single send click. Refusing to bind either conversation or click again.",
+        );
+      }
+
+      const observedUserMessageCount = state.userMessageCount ?? 0;
+      const baselineUserMessageCount = baseline.userMessageCount ?? 0;
+      const requestMessageFound =
+        state.lastUserText !== null &&
+        (normalizedMessageText(state.lastUserText) ===
+          normalizedPrompt ||
+          state.lastUserText.includes(input.requestId));
+      const stagedPromptRemains =
+        context.composerPromptState === "attachment_ready"
+          ? composerState.state === "attachment_ready" &&
+            composerState.attachmentCount > 0 &&
+            composerState.sendButtonEnabled
+          : composerState.state === "inline_ready" && composerState.sendButtonEnabled;
+      const createdConversation =
+        !isConversationUrl(baseline.pageUrl) &&
+        capturedConversationUrl !== undefined &&
+        isConversationUrl(capturedConversationUrl);
+      const userTurnAdded = observedUserMessageCount > baselineUserMessageCount;
+      const answeringStarted = !baseline.isAnswering && state.isAnswering;
+      const assistantTurnAdded =
+        state.assistantMessageCount > baseline.assistantMessageCount;
+
+      if (
+        requestMessageFound ||
+        createdConversation ||
+        userTurnAdded ||
+        answeringStarted ||
+        assistantTurnAdded
+      ) {
+        return { status: "submitted", state };
+      }
+      if (!stagedPromptRemains) {
+        return { status: "possibly_sent", state };
+      }
+
+      const now = Date.now();
+      const definitelyNotSentCandidate =
+        observedUserMessageCount === baselineUserMessageCount &&
+        state.assistantMessageCount === baseline.assistantMessageCount &&
+        !requestMessageFound &&
+        !state.isAnswering;
+      if (definitelyNotSentCandidate) {
+        const signature = `${observedUserMessageCount}:${state.assistantMessageCount}:${state.lastMessageRole}:${state.lastUserText ?? ""}:${composerState.state}:${composerState.attachmentCount}:${composerState.sendButtonEnabled}`;
+        if (signature !== stableSignature) {
+          stableSignature = signature;
+          stableSince = now;
+        }
+        if (now - stableSince >= this.#options.stableMs) {
+          return { status: "definitely_not_sent", state };
+        }
+      } else {
+        stableSignature = "";
+        stableSince = 0;
+      }
+      if (now >= deadline) return { status: "possibly_sent", state };
+      await delay(
+        Math.min(this.#options.pollIntervalMs, Math.max(1, deadline - now)),
+        input.signal,
+      );
+    }
   }
 
   async #resolveSendTarget(tab: IabTab): Promise<SendTarget> {
@@ -870,13 +988,45 @@ class CodexIabAdapter implements BrowserAdapter {
       context.baseline,
     );
     await this.#clickSend(tab, sendTarget, context.baseline, input, context, hooks);
+    let capturedConversationUrl: string | undefined;
     if (requireRecoverableCheckpoint) {
-      this.#conversationUrl = await captureConversationUrlAfterSubmit(
+      capturedConversationUrl = await captureConversationUrlAfterSubmit(
         tab,
         this.#conversationUrl,
         this.#options.timeoutMs,
         this.#options.pollIntervalMs,
         input.signal,
+      );
+      this.#conversationUrl = capturedConversationUrl;
+    }
+    const acknowledgement = await this.#waitForPostClickAcknowledgement(
+      tab,
+      input,
+      context,
+      capturedConversationUrl,
+    );
+    if (acknowledgement.status === "definitely_not_sent") {
+      throw new CueLineError(
+        "CONTROLLER_PROMPT_NOT_SENT",
+        "The send click completed, but the exact staged prompt remained in the composer and ChatGPT did not start the controller turn.",
+        { details: { submission_state: "definitely_not_sent" } },
+      );
+    }
+    if (acknowledgement.status === "possibly_sent") {
+      await this.#emitCheckpoint(
+        input,
+        tab,
+        context,
+        hooks,
+        "possibly_sent",
+        "accepted",
+        capturedConversationUrl,
+        acknowledgement.state,
+      );
+      throw new CueLineError(
+        "CONTROLLER_SUBMISSION_AMBIGUOUS",
+        "The staged prompt left the composer without enough evidence to prove submission. Refusing a second click; reconcile the exact conversation instead.",
+        { details: { submission_state: "possibly_sent" } },
       );
     }
     context.stage = "submitted";
@@ -887,8 +1037,8 @@ class CodexIabAdapter implements BrowserAdapter {
       hooks,
       "submitted",
       "accepted",
-      requireRecoverableCheckpoint ? this.#conversationUrl : undefined,
-      context.baseline,
+      capturedConversationUrl,
+      acknowledgement.state,
     );
     return tab;
   }
@@ -998,7 +1148,12 @@ class CodexIabAdapter implements BrowserAdapter {
         details: {
           ...existingDetails,
           stage: context.stage,
-          submission_state: submissionState,
+          submission_state:
+            existingDetails.submission_state === "definitely_not_sent" ||
+            existingDetails.submission_state === "possibly_sent" ||
+            existingDetails.submission_state === "submitted"
+              ? existingDetails.submission_state
+              : submissionState,
           request_id: input.requestId,
         },
       },

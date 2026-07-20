@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.7 - 2026-07-20
+
+### Fixed
+
+- A resolved ChatGPT send click is no longer treated as proof that the
+  controller turn was submitted. CueLine now waits for bounded post-click
+  acknowledgement: the exact request, a new user or assistant turn, answering
+  start, or a newly created conversation proves submission. An unchanged
+  staged prompt with stable message counts is `definitely_not_sent`; a prompt
+  that leaves the composer without corroborating evidence is `possibly_sent`
+  and is never clicked again automatically.
+- Fresh read-only `definitely_not_sent` recovery now records the confirmation
+  and abandonment, then returns an explicit pause boundary. The same
+  `continueCueLineRun()` invocation cannot fall through and resend; only a
+  separate continuation may retry the same controller round once.
+
+### Verification
+
+- 673/673 tests pass, including resolved-click no-op, exact user request,
+  attachment disappearance with and without answering evidence, zero-submit
+  recovery, and one-submit independent continuation regressions. Typecheck,
+  package dry-run, and whitespace validation also pass.
+
 ## 0.4.6 - 2026-07-20
 
 ### Fixed

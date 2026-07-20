@@ -843,7 +843,7 @@ async function reconcilePendingControllerTurn(
         pending,
         submittedObservation.evidence,
       );
-      return "continue";
+      return "awaiting_controller";
     }
     turn = submittedObservation.turn;
   } else {

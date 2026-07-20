@@ -1184,8 +1184,12 @@ test("submitTurn returns after one durable submission without waiting for Pro", 
   const fixture = fakeBrowser({
     states: [
       { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
     ],
-    submittedUrl: "https://chatgpt.com/c/detached-controller-wait",
+    urlReadSequence: [
+      "https://chatgpt.com/",
+      "https://chatgpt.com/c/detached-controller-wait",
+    ],
   });
   const adapter = createCodexIabAdapter({
     browser: fixture.browser,
@@ -1263,8 +1267,194 @@ test("submission checkpoints include prompt identity, user baseline, click phase
     assistantMessageCount: 1,
     lastMessageRole: "assistant",
     lastUserMessageHash: null,
-    isAnswering: false,
+    isAnswering: true,
   });
+});
+
+test("a resolved click with an unchanged staged attachment is definitely not sent", async () => {
+  const conversationUrl = "https://chatgpt.com/c/post-click-noop";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    hydratedComposer: true,
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: true,
+      },
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: true,
+      },
+    ],
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "",
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+        lastUserText: null,
+        lastMessageRole: null,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 20,
+  });
+  const checkpoints: string[] = [];
+
+  await assert.rejects(
+    adapter.submitTurn!(
+      {
+        runId: "run_post_click_noop",
+        round: 87,
+        requestId: "msg_post_click_noop",
+        prompt: "x".repeat(44_679),
+      },
+      {
+        async onCheckpoint(checkpoint) {
+          checkpoints.push(checkpoint.submissionState);
+        },
+      },
+    ),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_PROMPT_NOT_SENT" &&
+      (error.details as Record<string, unknown>).submission_state ===
+        "definitely_not_sent",
+  );
+
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.deepEqual(checkpoints, ["submitting"]);
+});
+
+test("post-click acknowledgement emits submitted once when the exact user request appears", async () => {
+  const conversationUrl = "https://chatgpt.com/c/post-click-exact-request";
+  const prompt = "Exact request acknowledgement";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "",
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+      },
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "",
+        userMessageCount: 1,
+        assistantMessageCount: 0,
+        lastUserText: prompt,
+        lastMessageRole: "user",
+      },
+    ],
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      { state: "inline_ready", inlineTextLength: prompt.length, attachmentCount: 0, sendButtonEnabled: true },
+      { state: "inline_ready", inlineTextLength: prompt.length, attachmentCount: 0, sendButtonEnabled: true },
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 20,
+  });
+  const checkpoints: string[] = [];
+
+  await adapter.submitTurn!(
+    { runId: "run_post_click_exact", round: 1, requestId: "msg_exact", prompt },
+    { async onCheckpoint(checkpoint) { checkpoints.push(checkpoint.submissionState); } },
+  );
+
+  assert.deepEqual(checkpoints, ["submitting", "submitted"]);
+});
+
+test("post-click acknowledgement accepts a removed attachment only when submission also started", async () => {
+  const conversationUrl = "https://chatgpt.com/c/post-click-attachment-accepted";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    hydratedComposer: true,
+    states: [
+      { pageUrl: conversationUrl, isAnswering: false, assistantText: "", userMessageCount: 3, assistantMessageCount: 1 },
+      { pageUrl: conversationUrl, isAnswering: true, assistantText: "", userMessageCount: 3, assistantMessageCount: 1 },
+    ],
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      { state: "attachment_ready", inlineTextLength: 0, attachmentCount: 1, sendButtonEnabled: true },
+      { state: "attachment_ready", inlineTextLength: 0, attachmentCount: 1, sendButtonEnabled: true },
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 20,
+  });
+  const checkpoints: string[] = [];
+
+  await adapter.submitTurn!(
+    { runId: "run_attachment_ack", round: 1, requestId: "msg_attachment_ack", prompt: "x".repeat(44_679) },
+    { async onCheckpoint(checkpoint) { checkpoints.push(checkpoint.submissionState); } },
+  );
+
+  assert.deepEqual(checkpoints, ["submitting", "submitted"]);
+});
+
+test("a removed attachment without request or answering evidence stays possibly sent", async () => {
+  const conversationUrl = "https://chatgpt.com/c/post-click-attachment-ambiguous";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    hydratedComposer: true,
+    states: [
+      { pageUrl: conversationUrl, isAnswering: false, assistantText: "", userMessageCount: 3, assistantMessageCount: 1 },
+    ],
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      { state: "attachment_ready", inlineTextLength: 0, attachmentCount: 1, sendButtonEnabled: true },
+      { state: "attachment_ready", inlineTextLength: 0, attachmentCount: 1, sendButtonEnabled: true },
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 20,
+  });
+  const checkpoints: string[] = [];
+
+  await assert.rejects(
+    adapter.submitTurn!(
+      { runId: "run_attachment_ambiguous", round: 1, requestId: "msg_attachment_ambiguous", prompt: "x".repeat(44_679) },
+      { async onCheckpoint(checkpoint) { checkpoints.push(checkpoint.submissionState); } },
+    ),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS" &&
+      (error.details as Record<string, unknown>).submission_state === "possibly_sent",
+  );
+
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.deepEqual(checkpoints, ["submitting", "possibly_sent"]);
 });
 
 test("operator-confirmed not-sent retry fails closed when the abandoned user message appears before retry click", async () => {
@@ -1376,7 +1566,10 @@ test("submitTurn waits for a delayed exact conversation URL after clicking only 
   const conversationUrl = "https://chatgpt.com/c/delayed-conversation-url";
   const fixture = fakeBrowser({
     initialUrl: "https://chatgpt.com/",
-    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+    ],
     urlReadSequence: [
       "https://chatgpt.com/",
       "https://chatgpt.com/",
@@ -1423,7 +1616,10 @@ test("submitTurn accepts an equivalent trailing-slash conversation URL", async (
   const equivalentUrl = `${conversationUrl}/?utm_source=cueline#latest`;
   const fixture = fakeBrowser({
     initialUrl: conversationUrl,
-    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+    ],
     urlReadSequence: [conversationUrl, equivalentUrl],
   });
   const adapter = createCodexIabAdapter({
@@ -1594,6 +1790,13 @@ test("observeTurn checks once without resending and later returns the exact comp
         lastMessageRole: "user",
       },
       {
+        isAnswering: true,
+        assistantText: "still thinking",
+        assistantMessageCount: 0,
+        lastUserText: prompt,
+        lastMessageRole: "user",
+      },
+      {
         isAnswering: false,
         assistantText: "completed controller response",
         assistantMessageCount: 1,
@@ -1613,7 +1816,7 @@ test("observeTurn checks once without resending and later returns the exact comp
     browser: fixture.browser,
     conversationUrl,
     pollIntervalMs: 1,
-    stableMs: 0,
+    stableMs: 1,
     timeoutMs: 1_000,
   });
 
@@ -3209,7 +3412,7 @@ test("does not mistake the previous stable assistant message for the new respons
   const adapter = createCodexIabAdapter({
     browser: fixture.browser,
     pollIntervalMs: 1,
-    stableMs: 0,
+    stableMs: 1,
     timeoutMs: 1_000,
   });
 
@@ -4397,7 +4600,8 @@ test("classifies an unexpected browser read failure after submission", async () 
       "code" in error &&
       error.code === "IAB_READ_FAILED_AFTER_SUBMIT" &&
       "details" in error &&
-      (error.details as { submission_state?: unknown }).submission_state === "submitted",
+      (error.details as { submission_state?: unknown }).submission_state ===
+        "possibly_sent",
   );
 });
 

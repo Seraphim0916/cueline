@@ -1549,13 +1549,11 @@ test("a stale caller observer is fenced and recovers one normally submitted turn
   );
 });
 
-test("field submitted wedge is reclassified from fresh evidence and creates exactly one retry", async () => {
+test("field submitted wedge pauses after fresh not-sent evidence and retries only on a separate continuation", async () => {
   const home = await temporaryHome();
   const runId = `${submittedTurnWedgeFixture.fixtureRunId}_recovery`;
   const { requestId } = await createSubmittedTurnWedge(home, runId);
-  const browser = submittedObservationBrowser(definitelyNotSentObservation(), {
-    allowRetrySubmit: true,
-  });
+  const browser = submittedObservationBrowser(definitelyNotSentObservation());
 
   const result = await continueCueLineRun({
     runId,
@@ -1566,15 +1564,15 @@ test("field submitted wedge is reclassified from fresh evidence and creates exac
   });
 
   assert.equal(result.status, "awaiting_controller");
-  assert.equal(browser.submitCalls, 1);
+  assert.equal(browser.submitCalls, 0);
   const firstEvents = await readEvents(runPaths(home, runId).events);
-  const retryRequests = firstEvents.filter(
+  const retryRequestsBeforeBoundary = firstEvents.filter(
     (event) =>
       event.type === "controller_turn_requested" &&
       (event.payload as Record<string, unknown>).retry_of_request_id ===
         requestId,
   );
-  assert.equal(retryRequests.length, 1);
+  assert.equal(retryRequestsBeforeBoundary.length, 0);
   assert.equal(
     firstEvents.filter(
       (event) =>
@@ -1587,15 +1585,33 @@ test("field submitted wedge is reclassified from fresh evidence and creates exac
     1,
   );
   const firstState = await loadCueLineRunState(runId, { home });
-  assert.equal(firstState.pendingControllerTurns.length, 1);
+  assert.equal(firstState.pendingControllerTurns.length, 0);
   assert.equal(
-    firstState.pendingControllerTurns[0]?.retryOfRequestId,
+    firstState.notSentRecovery?.abandonedRequestId,
     requestId,
   );
-  assert.notEqual(
-    firstState.pendingControllerTurns[0]?.requestId,
-    requestId,
+
+  const retryBrowser = submittedObservationBrowser(
+    { status: "pending" },
+    { allowRetrySubmit: true },
   );
+  const retried = await continueCueLineRun({
+    runId,
+    home,
+    browser: retryBrowser,
+    conversationUrl: submittedTurnWedgeFixture.conversationUrl,
+    routingConfig,
+  });
+  assert.equal(retried.status, "awaiting_controller");
+  assert.equal(retryBrowser.submitCalls, 1);
+  const retriedEvents = await readEvents(runPaths(home, runId).events);
+  const retryRequests = retriedEvents.filter(
+    (event) =>
+      event.type === "controller_turn_requested" &&
+      (event.payload as Record<string, unknown>).retry_of_request_id ===
+        requestId,
+  );
+  assert.equal(retryRequests.length, 1);
 
   let submittedRecoveryCalls = 0;
   const duplicateBrowser: SubmittedObservationBrowser = {
