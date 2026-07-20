@@ -4,21 +4,32 @@
 
 ### Fixed
 
+- Restarted submitted-turn recovery can now recover a completed Pro response
+  from the accessibility snapshot when ChatGPT long-conversation
+  virtualization reports zero ordinary message nodes. The exception requires
+  the exact bound conversation, selected Pro label, stopped-answering state,
+  Pro response model slug, and full protocol/run/round/request envelope inside
+  a ChatGPT-authored article; it never falls back to arbitrary page or user
+  text.
 - Restarted submitted-turn recovery no longer treats a hydration jump from a
   persisted zero user-message baseline to the page's full historical count as
   proof that the current controller request was sent. CueLine now requires
   exact current-request evidence before parsing the last assistant response;
   when the exact prompt or attachment is still staged and Pro is idle, that
   composer evidence wins and the historical response cannot trigger repair.
-- Caller mode now returns `ready` after accepting and executing a recovered
-  non-terminal controller response. The same continuation cannot advance into
-  another controller round; a separate explicit `continue` is required.
+- Caller mode now returns `ready` after accepting a count-degraded
+  accessibility response containing a `dispatch`. The command remains durable
+  but is not registered or executed until a separate explicit `continue`; the
+  recovery call also cannot advance into another controller round.
 
 ### Verification
 
-- 681/681 tests pass. A real ChatGPT Web Pro recovery of round 87 performed
-  one read-only submitted-turn observation, accepted the existing response,
-  made zero submit/send calls, and created no round 88.
+- 684/684 tests pass. A simulated restarted round 94 with baseline user count
+  111 and an ordinary DOM count of zero recovered the exact accessibility
+  response, made zero submit/send calls, stayed on round 94, and registered its
+  dispatch only on the next independent continuation. The existing real
+  ChatGPT Web Pro round 87 recovery likewise performed one read-only
+  observation, made zero submit/send calls, and created no round 88.
 
 ## 0.4.7 - 2026-07-20
 

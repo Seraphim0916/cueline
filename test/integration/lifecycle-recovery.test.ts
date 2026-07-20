@@ -1866,6 +1866,128 @@ test("recovered inspect response reaches a ready boundary before any next contro
   assert.equal(events.filter((event) => event.type === "controller_turn_requested").length, 1);
 });
 
+test("recovered round 94 dispatch waits for a separate continuation before registering work", async () => {
+  const home = await temporaryHome();
+  const runId = "run_round_94_dispatch_boundary";
+  const requestId = "msg_round_94_dispatch_boundary";
+  const conversationUrl = "https://chatgpt.com/c/round-94-dispatch-boundary";
+  const prompt = "Recover round 94 without submitting round 95";
+  const spec: ControllerJobSpec = {
+    job_key: "round_94_recovered_job",
+    lane: "default",
+    mode: "advise",
+    task: "Execute only on the next independent continuation",
+  };
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, prompt, "caller", 100),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: prompt,
+    executor: "caller",
+    max_rounds: 100,
+  });
+  await store.append("controller_turn_requested", {
+    round: 94,
+    request_id: requestId,
+    prompt,
+    prompt_hash: commandHash(prompt),
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.append("controller_turn_submitted", {
+    round: 94,
+    request_id: requestId,
+    submission_state: "submitted",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "inline_ready",
+    baseline_user_message_count: 111,
+    baseline_assistant_message_count: 94,
+  });
+  await store.snapshot();
+
+  const responseText = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 94,
+    request_id: requestId,
+    action: "dispatch",
+    jobs: [spec],
+  })}</CueLineControl>`;
+  let observeCalls = 0;
+  let submitCalls = 0;
+  let sendCalls = 0;
+  const browser: SubmittedObservationBrowser = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async observeSubmittedTurn(): Promise<SubmittedTurnObservation> {
+      observeCalls += 1;
+      return {
+        status: "response",
+        responseSource: "count_degraded_accessibility_exact_envelope",
+        turn: {
+          text: responseText,
+          conversationUrl,
+          model: {
+            provider: "chatgpt",
+            selectedLabel: "Pro",
+            responseModelSlug: "gpt-5-6-pro",
+            source: "composer_and_response",
+          },
+        },
+      };
+    },
+    async observeTurn(): Promise<undefined> {
+      return undefined;
+    },
+    async submitTurn(): Promise<void> {
+      submitCalls += 1;
+      throw new Error("round 94 recovery must not submit round 95");
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      sendCalls += 1;
+      throw new Error("round 94 recovery must not send round 95");
+    },
+  };
+
+  const recovered = await continueCueLineRun({
+    runId,
+    home,
+    browser,
+    conversationUrl,
+    routingConfig,
+  });
+
+  assert.equal(recovered.status, "ready");
+  assert.equal(observeCalls, 1);
+  assert.equal(submitCalls, 0);
+  assert.equal(sendCalls, 0);
+  const recoveredStatus = await loadCueLineRunStatus(runId, { home });
+  assert.equal(recoveredStatus.round, 94);
+  const recoveredState = await loadCueLineRunState(runId, { home });
+  assert.notEqual(recoveredState.pendingCommandExecution, null);
+  let events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.filter((event) => event.type === "job_registered").length, 0);
+  assert.equal(events.filter((event) => event.type === "controller_turn_requested").length, 1);
+
+  const dispatched = await continueCueLineRun({
+    runId,
+    home,
+    browser,
+    conversationUrl,
+    routingConfig,
+  });
+
+  assert.equal(dispatched.status, "awaiting_caller");
+  assert.equal(observeCalls, 1);
+  assert.equal(submitCalls, 0);
+  assert.equal(sendCalls, 0);
+  events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.filter((event) => event.type === "job_registered").length, 1);
+  assert.equal(events.filter((event) => event.type === "controller_turn_requested").length, 1);
+});
+
 test("correlated recovered response with a malformed envelope requests exactly one repair", async () => {
   const home = await temporaryHome();
   const runId = "run_correlated_recovered_response_repair";

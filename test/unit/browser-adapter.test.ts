@@ -129,6 +129,7 @@ function fakeBrowser(options: {
   archiveClickChangesUrlBeforeThrow?: boolean;
   archiveButtonAvailable?: boolean;
   archiveMenuItemAvailable?: boolean;
+  accessibilitySnapshots?: string[];
 }) {
   const composer = new FakeLocator();
   const hydratedComposer = new FakeLocator();
@@ -180,6 +181,7 @@ function fakeBrowser(options: {
   let coordinateClicks = 0;
   let composerStateRead = 0;
   let urlRead = 0;
+  let accessibilitySnapshotRead = 0;
   let hangUrlReads = false;
 
   const playwright = {
@@ -282,7 +284,12 @@ function fakeBrowser(options: {
       } as Result;
     },
     async domSnapshot() {
-      return {};
+      const snapshots = options.accessibilitySnapshots ?? [];
+      const snapshot = snapshots[
+        Math.min(accessibilitySnapshotRead, Math.max(0, snapshots.length - 1))
+      ];
+      accessibilitySnapshotRead += 1;
+      return snapshot ?? {};
     },
     async waitForTimeout() {},
   };
@@ -338,6 +345,7 @@ function fakeBrowser(options: {
     },
     coordinateClicks: () => coordinateClicks,
     sendSubmissions: () => sendSubmissions,
+    accessibilitySnapshotReads: () => accessibilitySnapshotRead,
   };
 }
 
@@ -1951,6 +1959,138 @@ test("submitted-turn observation refuses an unhydrated zero-count page", async (
   assert.equal(observation.status, "pending");
   assert.equal(observation.evidence?.hydrated, false);
   assert.equal(observation.evidence?.observedUserMessageCount, 0);
+});
+
+test("submitted-turn recovery accepts only an exact round 94 envelope from the accessibility snapshot when message counts regress to zero", async () => {
+  const conversationUrl = "https://chatgpt.com/c/round-94-virtualized-recovery";
+  const runId = "run_round_94_virtualized_recovery";
+  const requestId = "msg_round_94_virtualized_recovery";
+  const response = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 94,
+    request_id: requestId,
+    action: "dispatch",
+    jobs: [
+      {
+        job_key: "round_94_follow_up",
+        lane: "default",
+        mode: "advise",
+        task: "Continue only after the recovered response is durable",
+      },
+    ],
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "",
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+        assistantModelSlug: "gpt-5-6-pro",
+        lastUserText: null,
+        lastMessageRole: null,
+      },
+    ],
+    composerStates: [
+      {
+        state: "empty",
+        inlineTextLength: 0,
+        attachmentCount: 0,
+        sendButtonEnabled: false,
+      },
+    ],
+    accessibilitySnapshots: [
+      `- main:\n  - article:\n    - heading "ChatGPT said:"\n    - paragraph: ${JSON.stringify(response)}`,
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 94,
+    requestId,
+    prompt: "round 94 prompt hidden by ChatGPT virtualization",
+    baselineUserMessageCount: 111,
+    baselineAssistantMessageCount: 94,
+  });
+
+  assert.equal(observation.status, "response");
+  assert.equal(observation.status === "response" ? observation.turn.text : null, response);
+  assert.equal(
+    observation.status === "response" ? observation.responseSource : null,
+    "count_degraded_accessibility_exact_envelope",
+  );
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+  assert.equal(fixture.accessibilitySnapshotReads(), 1);
+});
+
+test("submitted-turn recovery does not treat unrelated accessibility text as the current response", async () => {
+  const conversationUrl = "https://chatgpt.com/c/round-94-accessibility-negative";
+  const runId = "run_round_94_accessibility_negative";
+  const requestId = "msg_round_94_accessibility_negative";
+  const userPromptEnvelope = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 94,
+    request_id: requestId,
+    action: "dispatch",
+    jobs: [],
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "",
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+        assistantModelSlug: "gpt-5-6-pro",
+      },
+    ],
+    composerStates: [
+      {
+        state: "empty",
+        inlineTextLength: 0,
+        attachmentCount: 0,
+        sendButtonEnabled: false,
+      },
+    ],
+    accessibilitySnapshots: [
+      `- main:\n  - article "You said":\n    - paragraph: ChatGPT, inspect this exact prompt only\n    - paragraph: ${JSON.stringify(userPromptEnvelope)}`,
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 94,
+    requestId,
+    prompt: "never import unrelated accessibility text",
+    baselineUserMessageCount: 111,
+    baselineAssistantMessageCount: 94,
+  });
+
+  assert.equal(observation.status, "pending");
+  assert.equal(fixture.sendSubmissions(), 0);
 });
 
 test("submitted attachment observation requires the residual staged attachment", async () => {
