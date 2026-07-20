@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.6 - 2026-07-20
+
+### Fixed
+
+- Historical response reconciliation now pauses after accepting the recorded
+  command instead of falling through into the normal controller loop. In 0.4.5
+  the same invocation could mint the next round and call the browser's submit
+  path — contradicting the read-only reconciliation contract and spending a
+  Pro send without an explicit continue. The reconcile branch now returns an
+  explicit awaiting state; only a fresh `continue` may drive the next round.
+- A round minted by that fallthrough and blocked before submission (pending
+  turn still `requested`, no submission events, `run_failed CUELINE_INTERNAL`)
+  can now enter the pre-submission not-sent confirmation path. Recovery still
+  requires the operator plus a fresh read-only page observation, and the retry
+  stays on the same round.
+
+### Verification
+
+- 669/669 tests pass, including new regressions: the full wedged-run event
+  sequence (submission checkpoints, rejected response, staged repair, real
+  runtime takeover) reconciles against a browser adapter whose every method
+  throws on invocation — the first continue succeeds with zero browser calls
+  and no next-round events, and only a second independent continue mints the
+  next round exactly once; a fallthrough-polluted round is formally confirmed
+  not sent with the round rolled back.
+
 ## 0.4.5 - 2026-07-20
 
 ### Fixed
