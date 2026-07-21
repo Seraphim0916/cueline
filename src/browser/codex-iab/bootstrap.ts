@@ -102,6 +102,33 @@ declare global {
   var agent: BrowserAgent | undefined;
 }
 
+function codexTurnSessionId(): string | undefined {
+  const sessionId =
+    globalThis.nodeRepl?.requestMeta?.["x-codex-turn-metadata"]?.session_id;
+  return typeof sessionId === "string" && sessionId.length > 0
+    ? sessionId
+    : undefined;
+}
+
+function iabBackendNotRegisteredError(cause: unknown): CueLineError {
+  const turnMetadataPresent = codexTurnSessionId() !== undefined;
+  return new CueLineError(
+    "IAB_BACKEND_NOT_REGISTERED",
+    "Codex browser runtime is initialized, but no in-app Browser backend is registered for this Codex session.",
+    {
+      cause,
+      details: {
+        turn_metadata_present: turnMetadataPresent,
+        probable_reason: turnMetadataPresent
+          ? "no-session-match"
+          : "missing-session-metadata",
+        recovery:
+          "從目前 Codex session 重開 IAB 面板後重試 continue;不得重送 prompt、不得開新對話",
+      },
+    },
+  );
+}
+
 export async function resolveIabBrowser(requested?: IabBrowser): Promise<IabBrowser> {
   if (requested) {
     await requested.documentation?.();
@@ -117,7 +144,12 @@ export async function resolveIabBrowser(requested?: IabBrowser): Promise<IabBrow
     return globalThis.iab;
   }
   if (globalThis.agent?.browsers?.get) {
-    const browser = await globalThis.agent.browsers.get("iab");
+    let browser: IabBrowser;
+    try {
+      browser = await globalThis.agent.browsers.get("iab");
+    } catch (error) {
+      throw iabBackendNotRegisteredError(error);
+    }
     await browser.documentation?.();
     globalThis.iab = browser;
     return browser;

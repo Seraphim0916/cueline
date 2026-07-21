@@ -44,9 +44,19 @@ if (CUELINE_VERSION !== expectedCueLineVersion) throw new Error(`CUELINE_VERSION
 
 var iabBrowser = globalThis.browser;
 if (!iabBrowser) throw new Error("IAB_BROWSER_MISSING: initialize and pass the current built-in Browser binding");
+const turnMetadata = globalThis.nodeRepl?.requestMeta?.["x-codex-turn-metadata"];
+const hasSessionId = typeof turnMetadata?.session_id === "string" && turnMetadata.session_id.length > 0;
+const listedBrowsers = await globalThis.agent?.browsers?.list?.();
+if (listedBrowsers !== undefined && listedBrowsers.length === 0) {
+  const probableReason = hasSessionId ? "no-session-match" : "missing-session-metadata";
+  throw new Error(
+    `IAB_BACKEND_NOT_REGISTERED: ${probableReason}. Reopen or claim the IAB panel from the current Codex session, then retry continue. Do not resend the prompt and do not open a new Pro conversation.`,
+  );
+}
 const browser = createCodexIabAdapter({
   browser: iabBrowser,
-  // Optional: conversationUrl: "https://chatgpt.com/c/..."
+  // For continuing an existing bound run, pass the exact persisted URL:
+  // conversationUrl: "https://chatgpt.com/c/..."
 });
 
 let result = await startCueLineRun({
@@ -157,8 +167,8 @@ const {
 
 const result = await continueCueLineRun({
   runId: EXISTING_RUN_ID,
-  // Omit browser/conversationUrl only when CueLine already persisted the exact URL.
-  // conversationUrl: "https://chatgpt.com/c/...",
+  // Required when injecting or constructing a Browser adapter for a bound run.
+  conversationUrl: "https://chatgpt.com/c/EXACT_BOUND_CONVERSATION",
 });
 ```
 
@@ -175,6 +185,17 @@ cueline run reconcile RUN_ID \
 ```
 
 Then continue with the same `reconcileRequestId`. The exact conversation URL, Pro selector/response slug, and protocol/run/round/request envelope must all match. This path may restore the specified abandoned turn only when no same/newer command was accepted. It never resends the prompt or dispatches a job twice.
+
+For a submitted turn proven sent to the wrong ChatGPT conversation, do not use operator not-sent assertion alone. Use the browser-backed read-only recovery and provide the orphan conversation exact URL:
+
+```bash
+cueline run reconcile RUN_ID \
+  --request-id REQUEST_ID \
+  --misdirected-conversation-url https://chatgpt.com/c/ORPHAN_CONVERSATION \
+  --json
+```
+
+CueLine must observe the orphan assistant exact run/round/request envelope and the bound conversation idle at the prior envelope with current request absent. If the orphan is still answering, report `pending` and do not retry. Never click or archive the orphan conversation; leave cleanup to the operator.
 
 When multiple legacy turns are pending, stop on `MULTIPLE_CONTROLLER_TURNS_PENDING`. Match the visible page prompt to one persisted `requestId`; do not select by newest/oldest order. Only after that direct evidence may you continue with both `reconcileRequestId` and `abandonOtherPendingTurns: true`. CueLine records the abandoned requests.
 

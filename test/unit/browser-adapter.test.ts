@@ -28,6 +28,18 @@ import { acquireChatGptTab } from "../../src/browser/codex-iab/tab-discovery.js"
 type BrowserGlobals = typeof globalThis & {
   browser?: IabBrowser;
   iab?: IabBrowser;
+  agent?: {
+    browsers?: {
+      get?(type: string): Promise<IabBrowser>;
+    };
+  };
+  nodeRepl?: {
+    requestMeta?: {
+      "x-codex-turn-metadata"?: {
+        session_id?: unknown;
+      };
+    };
+  };
 };
 
 class FakeLocator implements IabLocator {
@@ -5128,4 +5140,349 @@ test("classifies a failed write-ahead checkpoint as definitely not sent", async 
   );
   assert.deepEqual(fixture.composer.fills, ["Do not click without a durable checkpoint"]);
   assert.equal(fixture.sendButtons[0]!.clicks, 0);
+});
+
+test("refuses pre-click submission when expected conversation differs from selected tab", async () => {
+  const fixture = fakeBrowser({
+    initialUrl: "https://chatgpt.com/c/wrong-target",
+    initialModel: "Pro",
+    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_preclick_wrong_target",
+      round: 1,
+      requestId: "msg_preclick_wrong_target",
+      prompt: "Controller prompt",
+      expectedConversationUrl: "https://chatgpt.com/c/bound-target",
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH" &&
+      (error.details as Record<string, unknown>).stage === "pre_submit",
+  );
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+function controllerEnvelope(
+  runId: string,
+  round: number,
+  requestId: string,
+): string {
+  return `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round,
+    request_id: requestId,
+    action: "complete",
+    final_delivery_text: "ok",
+  })}</CueLineControl>`;
+}
+
+test("misdirected observation confirms after zero-count hydration becomes stable", async () => {
+  const runId = "run_misdirected_hydration_race";
+  const requestId = "msg_misdirected_hydration_race";
+  const boundUrl = "https://chatgpt.com/c/bound-hydration-race";
+  const orphanUrl = "https://chatgpt.com/c/orphan-hydration-race";
+  const currentEnvelope = controllerEnvelope(runId, 95, requestId);
+  const priorEnvelope = controllerEnvelope(runId, 94, "msg_prior_hydration_race");
+  const fixture = fakeBrowser({
+    initialUrl: orphanUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "",
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+      },
+      {
+        isAnswering: false,
+        assistantText: currentEnvelope,
+        userMessageCount: 1,
+        assistantMessageCount: 1,
+        lastMessageRole: "assistant",
+      },
+      {
+        isAnswering: false,
+        assistantText: priorEnvelope,
+        userMessageCount: 94,
+        assistantMessageCount: 94,
+        lastUserText: "round 94 prompt",
+        lastMessageRole: "assistant",
+      },
+      {
+        isAnswering: false,
+        assistantText: currentEnvelope,
+        userMessageCount: 1,
+        assistantMessageCount: 1,
+        lastMessageRole: "assistant",
+      },
+      {
+        isAnswering: false,
+        assistantText: currentEnvelope,
+        userMessageCount: 1,
+        assistantMessageCount: 1,
+        lastMessageRole: "assistant",
+      },
+      {
+        isAnswering: false,
+        assistantText: priorEnvelope,
+        userMessageCount: 94,
+        assistantMessageCount: 94,
+        lastUserText: "round 94 prompt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl: boundUrl,
+    pollIntervalMs: 1,
+    stableMs: 1,
+    timeoutMs: 1_000,
+  });
+
+  const observation = await adapter.observeMisdirectedTurn!({
+    runId,
+    round: 95,
+    requestId,
+    prompt: "round 95 prompt",
+    expectedConversationUrl: boundUrl,
+    misdirectedConversationUrl: orphanUrl,
+    expectedPriorRound: 94,
+    expectedPriorRequestId: "msg_prior_hydration_race",
+  });
+
+  assert.equal(observation.status, "confirmed");
+  assert.equal(observation.evidence.misdirected.assistantMessageCount, 1);
+  assert.equal(observation.evidence.misdirected.exactEnvelopeFound, true);
+});
+
+test("misdirected observation stays pending when orphan page never hydrates", async () => {
+  const runId = "run_misdirected_never_hydrates";
+  const requestId = "msg_misdirected_never_hydrates";
+  const boundUrl = "https://chatgpt.com/c/bound-never-hydrates";
+  const orphanUrl = "https://chatgpt.com/c/orphan-never-hydrates";
+  const priorEnvelope = controllerEnvelope(runId, 94, "msg_prior_never_hydrates");
+  const fixture = fakeBrowser({
+    initialUrl: orphanUrl,
+    initialModel: "Pro",
+    states: [
+      ...Array.from({ length: 50 }, () => ({
+        isAnswering: false,
+        assistantText: "",
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+      })),
+      {
+        isAnswering: false,
+        assistantText: priorEnvelope,
+        userMessageCount: 94,
+        assistantMessageCount: 94,
+        lastUserText: "round 94 prompt",
+        lastMessageRole: "assistant",
+      },
+      {
+        isAnswering: false,
+        assistantText: priorEnvelope,
+        userMessageCount: 94,
+        assistantMessageCount: 94,
+        lastUserText: "round 94 prompt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl: boundUrl,
+    pollIntervalMs: 1,
+    stableMs: 1,
+    timeoutMs: 5,
+  });
+
+  const observation = await adapter.observeMisdirectedTurn!({
+    runId,
+    round: 95,
+    requestId,
+    prompt: "round 95 prompt",
+    expectedConversationUrl: boundUrl,
+    misdirectedConversationUrl: orphanUrl,
+    expectedPriorRound: 94,
+    expectedPriorRequestId: "msg_prior_never_hydrates",
+  });
+
+  assert.equal(observation.status, "pending");
+  assert.equal(observation.evidence.misdirected.assistantMessageCount, 0);
+  assert.equal(observation.evidence.misdirected.exactEnvelopeFound, false);
+});
+
+test("misdirected observation confirmed requires every identity and idle gate", async () => {
+  const cases = [
+    { name: "missing orphan envelope", exactEnvelope: false },
+    { name: "orphan still answering", orphanAnswering: true },
+    { name: "bound request found", boundRequestFound: true },
+    { name: "missing prior envelope", priorEnvelope: false },
+    { name: "bound still answering", boundAnswering: true },
+  ];
+  for (const scenario of cases) {
+    const runId = `run_misdirected_gate_${scenario.name.replaceAll(" ", "_")}`;
+    const requestId = `msg_misdirected_gate_${scenario.name.replaceAll(" ", "_")}`;
+    const boundUrl = `https://chatgpt.com/c/bound-${scenario.name.replaceAll(" ", "-")}`;
+    const orphanUrl = `https://chatgpt.com/c/orphan-${scenario.name.replaceAll(" ", "-")}`;
+    const currentEnvelope = controllerEnvelope(runId, 95, requestId);
+    const priorRequestId = `msg_prior_${scenario.name.replaceAll(" ", "_")}`;
+    const priorEnvelope = controllerEnvelope(runId, 94, priorRequestId);
+    const fixture = fakeBrowser({
+      initialUrl: orphanUrl,
+      initialModel: "Pro",
+      states: [
+        {
+          isAnswering: scenario.orphanAnswering === true,
+          assistantText:
+            scenario.exactEnvelope === false ? "unrelated response" : currentEnvelope,
+          userMessageCount: 1,
+          assistantMessageCount: 1,
+          lastMessageRole: "assistant",
+        },
+        {
+          isAnswering: scenario.orphanAnswering === true,
+          assistantText:
+            scenario.exactEnvelope === false ? "unrelated response" : currentEnvelope,
+          userMessageCount: 1,
+          assistantMessageCount: 1,
+          lastMessageRole: "assistant",
+        },
+        {
+          isAnswering: scenario.boundAnswering === true,
+          assistantText:
+            scenario.priorEnvelope === false ? "previous response" : priorEnvelope,
+          userMessageCount: 94,
+          assistantMessageCount: 94,
+          lastUserText:
+            scenario.boundRequestFound === true
+              ? `round 95 prompt ${requestId}`
+              : "round 94 prompt",
+          lastMessageRole: "assistant",
+        },
+      ],
+    });
+    const adapter = createCodexIabAdapter({
+      browser: fixture.browser,
+      conversationUrl: boundUrl,
+      pollIntervalMs: 1,
+      stableMs: 1,
+      timeoutMs: 20,
+    });
+
+    const observation = await adapter.observeMisdirectedTurn!({
+      runId,
+      round: 95,
+      requestId,
+      prompt: "round 95 prompt",
+      expectedConversationUrl: boundUrl,
+      misdirectedConversationUrl: orphanUrl,
+      expectedPriorRound: 94,
+      expectedPriorRequestId: priorRequestId,
+    });
+
+    assert.equal(observation.status, "pending", scenario.name);
+  }
+});
+
+async function withBrowserRuntimeGlobals<T>(
+  setup: (globals: BrowserGlobals) => void,
+  run: () => Promise<T>,
+): Promise<T> {
+  const globals = globalThis as BrowserGlobals;
+  const descriptors = new Map(
+    ["browser", "iab", "agent", "nodeRepl"].map((name) => [
+      name,
+      Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
+  );
+  delete globals.browser;
+  delete globals.iab;
+  delete globals.agent;
+  delete globals.nodeRepl;
+  setup(globals);
+
+  try {
+    return await run();
+  } finally {
+    for (const [name, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globals as Record<string, unknown>)[name];
+    }
+  }
+}
+
+test("reports missing session metadata when agent iab backend is unavailable", async () => {
+  await withBrowserRuntimeGlobals(
+    (globals) => {
+      globals.agent = {
+        browsers: {
+          async get() {
+            throw new Error("No browser is available");
+          },
+        },
+      };
+      globals.nodeRepl = { requestMeta: {} };
+    },
+    async () => {
+      await assert.rejects(
+        resolveIabBrowser(),
+        (error: unknown) =>
+          error instanceof CueLineError &&
+          error.code === "IAB_BACKEND_NOT_REGISTERED" &&
+          (error.details as Record<string, unknown>).turn_metadata_present ===
+            false &&
+          (error.details as Record<string, unknown>).probable_reason ===
+            "missing-session-metadata" &&
+          (error.details as Record<string, unknown>).recovery ===
+            "從目前 Codex session 重開 IAB 面板後重試 continue;不得重送 prompt、不得開新對話",
+      );
+    },
+  );
+});
+
+test("reports session mismatch when agent iab backend is unavailable with turn metadata", async () => {
+  await withBrowserRuntimeGlobals(
+    (globals) => {
+      globals.agent = {
+        browsers: {
+          async get() {
+            throw new Error("No browser is available");
+          },
+        },
+      };
+      globals.nodeRepl = {
+        requestMeta: {
+          "x-codex-turn-metadata": {
+            session_id: "codex-session-123",
+          },
+        },
+      };
+    },
+    async () => {
+      await assert.rejects(
+        resolveIabBrowser(),
+        (error: unknown) =>
+          error instanceof CueLineError &&
+          error.code === "IAB_BACKEND_NOT_REGISTERED" &&
+          (error.details as Record<string, unknown>).turn_metadata_present ===
+            true &&
+          (error.details as Record<string, unknown>).probable_reason ===
+            "no-session-match",
+      );
+    },
+  );
 });

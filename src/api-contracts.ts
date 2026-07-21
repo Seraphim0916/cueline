@@ -1,4 +1,7 @@
-import type { BrowserAdapter } from "./browser/browser-adapter.js";
+import type {
+  BrowserAdapter,
+  BrowserMisdirectedTurnEvidence,
+} from "./browser/browser-adapter.js";
 import type { CodexIabAdapterOptions } from "./browser/codex-iab/chatgpt-client.js";
 import type { CueLineRunStatusSummary } from "./core/run-status.js";
 import type { RoutingConfig } from "./router/types.js";
@@ -108,6 +111,17 @@ export interface ControllerNotSentConfirmation {
   conversationUrl: string;
   promptHash: string;
   outcome: "confirmed" | "already_confirmed";
+}
+
+export interface ControllerMisdirectedConfirmation {
+  runId: string;
+  requestId: string;
+  conversationUrl: string;
+  misdirectedConversationUrl: string;
+  promptHash: string;
+  outcome: "confirmed" | "already_confirmed" | "pending";
+  observedBaselineUserMessageCount?: number | null;
+  evidence?: BrowserMisdirectedTurnEvidence;
 }
 
 export interface CueLineCallerJobResultInput {

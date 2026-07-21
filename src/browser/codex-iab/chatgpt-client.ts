@@ -3,6 +3,8 @@ import type {
   BrowserConversationArchiveEvidence,
   BrowserConversationArchiveHooks,
   BrowserConversationArchiveInput,
+  BrowserMisdirectedTurnObservation,
+  BrowserMisdirectedTurnObservationInput,
   BrowserSubmittedTurnEvidence,
   BrowserSubmittedTurnObservation,
   BrowserTurnHooks,
@@ -898,6 +900,26 @@ class CodexIabAdapter implements BrowserAdapter {
     }
     context.selectedModelLabel = await this.#ensureProModel(tab, input.signal);
     context.baseline = await readPageChatState(tab);
+    const expectedConversationUrl =
+      input.expectedConversationUrl ?? this.#conversationUrl;
+    if (
+      expectedConversationUrl !== undefined &&
+      !sameChatGptConversationUrl(context.baseline.pageUrl, expectedConversationUrl)
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+        "The selected ChatGPT tab does not match the expected CueLine conversation; refusing pre-click submission.",
+        {
+          details: {
+            stage: "pre_submit",
+            submission_state: "definitely_not_sent",
+            request_id: input.requestId,
+            expected_conversation_url: expectedConversationUrl,
+            observed_conversation_url: context.baseline.pageUrl,
+          },
+        },
+      );
+    }
     if (input.notSentRecovery !== undefined) {
       const currentUrl = context.baseline.pageUrl;
       const userMessageCount = context.baseline.userMessageCount ?? 0;
@@ -1483,6 +1505,198 @@ class CodexIabAdapter implements BrowserAdapter {
         );
       }
       return await this.#observeSubmittedDelivery(tab, input, selectedModelLabel);
+    } catch (error) {
+      throw this.#reconciliationFailure(error, input);
+    }
+  }
+
+  async #readStableControllerEnvelopeState(
+    tab: IabTab,
+    expectedConversationUrl: string,
+    expectedIdentity: ExpectedControllerIdentity,
+    operationTimeoutMs: number,
+    readTimeoutMessage: string,
+    signal?: AbortSignal,
+  ): Promise<{ status: "stable"; state: PageChatState } | { status: "pending"; state: PageChatState }> {
+    const deadline = Date.now() + this.#options.timeoutMs;
+    let previousSignature: string | undefined;
+    let previousEnvelope: boolean | undefined;
+    let stableSince = 0;
+    let lastState: PageChatState | undefined;
+    const readState = (timeoutMs: number) =>
+      withBrowserOperationTimeout(
+        () => readPageChatState(tab, expectedIdentity),
+        timeoutMs,
+        signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_RECONCILIATION_READ_TIMEOUT",
+            readTimeoutMessage,
+          ),
+      );
+
+    for (;;) {
+      throwIfCancelled(signal);
+      const remainingMs = Math.max(1, deadline - Date.now());
+      const state = await readState(Math.min(operationTimeoutMs, remainingMs));
+      lastState = state;
+      if (!sameChatGptConversationUrl(state.pageUrl, expectedConversationUrl)) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+          "Misdirected recovery evidence was read from a different ChatGPT conversation DOM.",
+        );
+      }
+      const exactEnvelopeFound = hasExactControllerEnvelopeIdentity(
+        state.assistantText,
+        expectedIdentity,
+      );
+      const signature = JSON.stringify({
+        assistantText: state.assistantText,
+        assistantMessageCount: state.assistantMessageCount,
+        assistantModelSlug: state.assistantModelSlug,
+        isAnswering: state.isAnswering,
+        userMessageCount: state.userMessageCount ?? null,
+        lastUserText: state.lastUserText,
+        lastMessageRole: state.lastMessageRole,
+      });
+      if (
+        state.assistantMessageCount > 0 &&
+        signature === previousSignature &&
+        exactEnvelopeFound === previousEnvelope &&
+        Date.now() - stableSince >= this.#options.stableMs
+      ) {
+        return { status: "stable", state };
+      }
+      if (
+        signature !== previousSignature ||
+        exactEnvelopeFound !== previousEnvelope
+      ) {
+        previousSignature = signature;
+        previousEnvelope = exactEnvelopeFound;
+        stableSince = Date.now();
+      }
+      const now = Date.now();
+      if (now >= deadline) return { status: "pending", state };
+      await delay(
+        Math.min(
+          this.#options.pollIntervalMs,
+          Math.max(1, deadline - now),
+        ),
+        signal,
+      );
+    }
+  }
+
+  async observeMisdirectedTurn(
+    input: BrowserMisdirectedTurnObservationInput,
+  ): Promise<BrowserMisdirectedTurnObservation> {
+    try {
+      const browser = await this.#getBrowser();
+      const operationTimeoutMs = Math.min(
+        SUBMISSION_ACTION_TIMEOUT_MS,
+        this.#options.timeoutMs,
+      );
+      const currentIdentity: ExpectedControllerIdentity = {
+        runId: input.runId,
+        round: input.round,
+        requestId: input.requestId,
+      };
+      const priorIdentity: ExpectedControllerIdentity = {
+        runId: input.runId,
+        round: input.expectedPriorRound,
+        requestId: input.expectedPriorRequestId,
+      };
+
+      const misdirectedTab = await browser.tabs.new();
+      await withBrowserOperationTimeout(
+        () => misdirectedTab.goto(input.misdirectedConversationUrl),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_RECONCILIATION_READ_TIMEOUT",
+            `ChatGPT's misdirected conversation navigation did not finish within ${operationTimeoutMs} ms.`,
+          ),
+      );
+      const misdirectedRead = await this.#readStableControllerEnvelopeState(
+        misdirectedTab,
+        input.misdirectedConversationUrl,
+        currentIdentity,
+        operationTimeoutMs,
+        `ChatGPT's misdirected conversation read did not finish within ${operationTimeoutMs} ms.`,
+        input.signal,
+      );
+      const misdirectedState = misdirectedRead.state;
+
+      const boundTab = await browser.tabs.new();
+      await withBrowserOperationTimeout(
+        () => boundTab.goto(input.expectedConversationUrl),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_RECONCILIATION_READ_TIMEOUT",
+            `ChatGPT's bound conversation navigation did not finish within ${operationTimeoutMs} ms.`,
+          ),
+      );
+      const selectedModelLabel = await readComposerModelLabelWhenReady(
+        boundTab,
+        input.signal,
+      );
+      const boundRead = await this.#readStableControllerEnvelopeState(
+        boundTab,
+        input.expectedConversationUrl,
+        priorIdentity,
+        operationTimeoutMs,
+        `ChatGPT's bound conversation read did not finish within ${operationTimeoutMs} ms.`,
+        input.signal,
+      );
+      const boundState = boundRead.state;
+
+      const exactEnvelopeFound = hasExactControllerEnvelopeIdentity(
+        misdirectedState.assistantText,
+        currentIdentity,
+      );
+      const priorEnvelopeFound = hasExactControllerEnvelopeIdentity(
+        boundState.assistantText,
+        priorIdentity,
+      );
+      const requestMessageFound =
+        boundState.lastUserText !== null &&
+        (normalizedMessageText(boundState.lastUserText) ===
+          normalizedMessageText(input.prompt) ||
+          boundState.lastUserText.includes(input.requestId));
+      const evidence = {
+        misdirectedConversationUrl: input.misdirectedConversationUrl,
+        boundConversationUrl: input.expectedConversationUrl,
+        selectedModelLabel,
+        misdirected: {
+          pageUrl: misdirectedState.pageUrl,
+          isAnswering: misdirectedState.isAnswering,
+          assistantMessageCount: misdirectedState.assistantMessageCount,
+          exactEnvelopeFound,
+        },
+        bound: {
+          pageUrl: boundState.pageUrl,
+          isAnswering: boundState.isAnswering,
+          userMessageCount: boundState.userMessageCount ?? null,
+          assistantMessageCount: boundState.assistantMessageCount,
+          requestMessageFound,
+          priorEnvelopeFound,
+        },
+      };
+      const confirmed =
+        misdirectedRead.status === "stable" &&
+        boundRead.status === "stable" &&
+        exactEnvelopeFound &&
+        !misdirectedState.isAnswering &&
+        requestMessageFound === false &&
+        priorEnvelopeFound &&
+        !boundState.isAnswering;
+      return {
+        status: confirmed ? "confirmed" : "pending",
+        evidence,
+      };
     } catch (error) {
       throw this.#reconciliationFailure(error, input);
     }

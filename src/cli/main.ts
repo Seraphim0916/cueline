@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   cancelCueLineJob,
   cancelCueLineRun,
+  confirmControllerTurnMisdirected,
   confirmControllerTurnNotSent,
   confirmManualControllerSubmission,
   loadCueLineRunStatus,
@@ -27,6 +28,7 @@ import { defaultCueLineHome } from "../state/paths.js";
 import { readRuntimeLease } from "../state/runtime-lease.js";
 import { readAuthoritativeRunEvents } from "../state/store.js";
 import { CUELINE_VERSION } from "../version.js";
+import { createCodexIabAdapter } from "../browser/codex-iab/chatgpt-client.js";
 import { serveCueLineMcp } from "../mcp/server.js";
 import { handleHealthCommand } from "./health-commands.js";
 import type { CliIo } from "./io.js";
@@ -73,7 +75,7 @@ function help(): string {
     "  run verify     verify durable run evidence without returning its content",
     "  run audit-secrets  scan durable events for secret-shaped strings; never prints them",
     "  run export     emit one sanitized support bundle (status, verify, doctor, timeline)",
-    "  run reconcile  confirm one manually sent controller turn; never resends it",
+    "  run reconcile  confirm one manually sent, not-sent, or misdirected controller turn",
     "  run takeover   explicitly retire one exact stale runtime owner",
     "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
     "  run cancel     request safe cancellation; ownerless work becomes ambiguous",
@@ -110,6 +112,7 @@ function help(): string {
     "  cueline run export <run-id> [--out <new-file>] [--limit <1..1000>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --not-sent-confirmed [--conversation-url <url>] [--json]",
+    "  cueline run reconcile <run-id> --request-id <request-id> --misdirected-conversation-url <url> [--json]",
     "  cueline run takeover <run-id> [--json]",
     "  cueline run reconcile-runtime <run-id> [--json]",
     "  cueline run cancel <run-id> [--json]",
@@ -738,6 +741,7 @@ export async function main(
     ) {
       let requestId: string | undefined;
       let conversationUrl: string | undefined;
+      let misdirectedConversationUrl: string | undefined;
       let manualConfirmed = false;
       let notSentConfirmed = false;
       let json = false;
@@ -747,13 +751,19 @@ export async function main(
         if (argument === "--request-id" && typeof args[index + 1] === "string") {
           requestId = args[index + 1];
           index += 1;
-        } else if (
-          argument === "--conversation-url" &&
-          typeof args[index + 1] === "string"
-        ) {
-          conversationUrl = args[index + 1];
-          index += 1;
-        } else if (argument === "--manual-send-confirmed") {
+      } else if (
+        argument === "--conversation-url" &&
+        typeof args[index + 1] === "string"
+      ) {
+        conversationUrl = args[index + 1];
+        index += 1;
+      } else if (
+        argument === "--misdirected-conversation-url" &&
+        typeof args[index + 1] === "string"
+      ) {
+        misdirectedConversationUrl = args[index + 1];
+        index += 1;
+      } else if (argument === "--manual-send-confirmed") {
           manualConfirmed = true;
         } else if (argument === "--not-sent-confirmed") {
           notSentConfirmed = true;
@@ -764,26 +774,37 @@ export async function main(
         }
       }
       if (
-        !valid ||
-        !requestId ||
-        Number(manualConfirmed) + Number(notSentConfirmed) !== 1
-      ) {
-        throw new CueLineError(
-          "CLI_ARGUMENTS_INVALID",
-          "usage: cueline run reconcile <run-id> --request-id <request-id> (--manual-send-confirmed | --not-sent-confirmed) [--conversation-url <url>] [--json]",
-        );
-      }
-      const result = notSentConfirmed
-        ? await confirmControllerTurnNotSent(args[2], {
+      !valid ||
+      !requestId ||
+      Number(manualConfirmed) +
+        Number(notSentConfirmed) +
+        Number(misdirectedConversationUrl !== undefined) !==
+        1
+    ) {
+      throw new CueLineError(
+        "CLI_ARGUMENTS_INVALID",
+        "usage: cueline run reconcile <run-id> --request-id <request-id> (--manual-send-confirmed | --not-sent-confirmed [--conversation-url <url>] | --misdirected-conversation-url <url>) [--json]",
+      );
+    }
+    const result =
+      misdirectedConversationUrl !== undefined
+        ? await confirmControllerTurnMisdirected(args[2], {
             environment,
             requestId,
-            ...(conversationUrl === undefined ? {} : { conversationUrl }),
+            misdirectedConversationUrl,
+            browser: createCodexIabAdapter(),
           })
-        : await confirmManualControllerSubmission(args[2], {
-            environment,
-            requestId,
-            ...(conversationUrl === undefined ? {} : { conversationUrl }),
-          });
+        : notSentConfirmed
+          ? await confirmControllerTurnNotSent(args[2], {
+              environment,
+              requestId,
+              ...(conversationUrl === undefined ? {} : { conversationUrl }),
+            })
+          : await confirmManualControllerSubmission(args[2], {
+              environment,
+              requestId,
+              ...(conversationUrl === undefined ? {} : { conversationUrl }),
+            });
       if (json) io.stdout(JSON.stringify(result, null, 2));
       else io.stdout(`${result.runId}\t${result.requestId}\t${result.outcome}\tno_resend`);
       return 0;

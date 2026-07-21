@@ -8,6 +8,8 @@ export interface BrowserTurnInput {
   attachmentPromptExpected?: boolean;
   baselineUserMessageCount?: number;
   baselineAssistantMessageCount?: number;
+  /** Exact conversation URL expected before any composer mutation or send click. */
+  expectedConversationUrl?: string;
   /** Narrow read-only recovery for legacy failures before any submission method call. */
   legacyPreSubmissionRecovery?: boolean;
   notSentRecovery?: {
@@ -49,8 +51,44 @@ export type BrowserSubmittedTurnObservation =
       /** Narrow provenance used to preserve a separate dispatch boundary. */
       responseSource?: "count_degraded_accessibility_exact_envelope";
     }
-  | { status: "pending"; evidence?: BrowserSubmittedTurnEvidence }
-  | { status: "definitely_not_sent"; evidence: BrowserSubmittedTurnEvidence };
+| { status: "pending"; evidence?: BrowserSubmittedTurnEvidence }
+| { status: "definitely_not_sent"; evidence: BrowserSubmittedTurnEvidence };
+
+export interface BrowserMisdirectedTurnObservationInput {
+  runId: string;
+  round: number;
+  requestId: string;
+  prompt: string;
+  expectedConversationUrl: string;
+  misdirectedConversationUrl: string;
+  expectedPriorRound: number;
+  expectedPriorRequestId: string;
+  signal?: AbortSignal;
+}
+
+export interface BrowserMisdirectedTurnEvidence {
+  misdirectedConversationUrl: string;
+  boundConversationUrl: string;
+  selectedModelLabel: string | null;
+  misdirected: {
+    pageUrl: string;
+    isAnswering: boolean;
+    assistantMessageCount: number;
+    exactEnvelopeFound: boolean;
+  };
+  bound: {
+    pageUrl: string;
+    isAnswering: boolean;
+    userMessageCount: number | null;
+    assistantMessageCount: number;
+    requestMessageFound: boolean;
+    priorEnvelopeFound: boolean;
+  };
+}
+
+export type BrowserMisdirectedTurnObservation =
+  | { status: "confirmed"; evidence: BrowserMisdirectedTurnEvidence }
+  | { status: "pending"; evidence: BrowserMisdirectedTurnEvidence };
 
 export interface ControllerModelEvidence {
   provider: "chatgpt";
@@ -122,10 +160,14 @@ export interface BrowserAdapter {
   /** Observe the exact submitted turn once; undefined means Pro is not finished yet. */
   observeTurn?(input: BrowserTurnInput): Promise<ControllerTurn | undefined>;
   /** Observe a normally submitted turn without sending, including durable not-sent evidence. */
-  observeSubmittedTurn?(
-    input: BrowserTurnInput,
-  ): Promise<BrowserSubmittedTurnObservation>;
-  sendTurn(input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<ControllerTurn>;
+observeSubmittedTurn?(
+input: BrowserTurnInput,
+): Promise<BrowserSubmittedTurnObservation>;
+/** Read-only proof that a submitted request landed in a different exact conversation. */
+observeMisdirectedTurn?(
+input: BrowserMisdirectedTurnObservationInput,
+): Promise<BrowserMisdirectedTurnObservation>;
+sendTurn(input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<ControllerTurn>;
   recoverTurn?(input: BrowserTurnInput): Promise<ControllerTurn>;
   /** Archive one exact completed controller conversation. Implementations must never retry the archive click. */
   archiveConversation?(

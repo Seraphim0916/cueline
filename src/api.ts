@@ -7,6 +7,7 @@ import type {
   StartCueLineRunOptions,
 } from "./api-contracts.js";
 import {
+  confirmControllerTurnMisdirected,
   confirmControllerTurnNotSent,
   confirmManualControllerSubmission,
 } from "./api-controller-handoff.js";
@@ -505,6 +506,7 @@ export async function continueCueLineRun(
 
 export {
   confirmManualControllerSubmission,
+  confirmControllerTurnMisdirected,
   confirmControllerTurnNotSent,
   submitCueLineCallerJobResult,
 } from "./api-controller-handoff.js";

@@ -4,6 +4,11 @@ import path from "node:path";
 interface CodexNodeRuntime {
   cwd?: string;
   homeDir?: string;
+  requestMeta?: {
+    "x-codex-turn-metadata"?: {
+      session_id?: unknown;
+    };
+  };
 }
 
 declare global {

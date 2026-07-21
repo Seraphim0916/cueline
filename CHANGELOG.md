@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 - 2026-07-21
+
+### Fixed
+
+- Add read-only misdirected submission recovery for a submitted controller turn that landed in the wrong ChatGPT conversation. `cueline run reconcile ... --misdirected-conversation-url URL` now requires exact orphan envelope evidence, a clean bound conversation at the prior envelope, Pro evidence, and then authorizes only the existing one-shot not-sent retry. Browser submission now also checks the expected conversation URL before any composer mutation or send click.
+- Harden misdirected recovery observation against ChatGPT hydration races. Orphan conversation reads now require a stable snapshot and cannot report `confirmed` unless the same evidence snapshot has the exact orphan envelope, both conversations idle, the bound request absent, and the prior bound envelope present.
+- Fix misdirected recovery livelock on cold observation tabs. `observeMisdirectedTurn` now polls within one call until orphan and bound conversations reach stable hydrated evidence or the deadline; deadline `pending` JSON includes full evidence for diagnostics.
+- Controller decision pending continuations can perform durable local dispatch without a browser; browser resolution remains lazy until the next browser-bound turn.
+
+- Codex IAB fallback now converts session-filtered
+  `agent.browsers.get("iab")` failures into `IAB_BACKEND_NOT_REGISTERED`
+  with missing-session-metadata versus no-session-match diagnostics and
+  recovery guidance.
+
+### Verification
+
+- 696/696 tests pass. The live chain in `/Users/vincentw/.openclaw/changelogs/2026-07-21-cueline-iab-session-provider-recovery.md` verifies session-provider loss, fail-closed recovery, misdirected submission evidence gates, and restored round 95 delivery for `run_2707dc7332cd6d6f9c5c3d5cf21a33fd` events 1715-1723. This chain is release evidence for the 1.0 B-area "host mutation event" bar.
+
 ## 0.4.8 - 2026-07-20
 
 ### Fixed

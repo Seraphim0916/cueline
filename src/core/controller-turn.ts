@@ -488,11 +488,17 @@ export async function requestControllerCommand(
           "The regenerated controller prompt does not match the operator-confirmed checkpoint.",
         );
       }
-      const input: BrowserTurnInput = {
-        runId: expected.runId,
-        round: expected.round,
-        requestId: expected.requestId,
-        prompt,
+    const expectedBrowserConversationUrl =
+      expectedConversationUrl ?? notSentRetry?.conversationUrl;
+    const input: BrowserTurnInput = {
+      runId: expected.runId,
+      round: expected.round,
+      requestId: expected.requestId,
+      prompt,
+      ...(expectedBrowserConversationUrl === null ||
+      expectedBrowserConversationUrl === undefined
+        ? {}
+        : { expectedConversationUrl: expectedBrowserConversationUrl }),
         ...(attempt === 0 && notSentRetry !== undefined
           ? {
               notSentRecovery: {

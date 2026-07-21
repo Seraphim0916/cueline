@@ -7,6 +7,8 @@ import test from "node:test";
 
 import type {
   BrowserAdapter,
+  BrowserMisdirectedTurnObservation,
+  BrowserMisdirectedTurnObservationInput,
   BrowserSubmittedTurnEvidence,
   BrowserSubmittedTurnObservation,
   BrowserTurnHooks,
@@ -16,6 +18,7 @@ import type {
 import {
   cancelCueLineJob,
   cancelCueLineRun,
+  confirmControllerTurnMisdirected,
   confirmControllerTurnNotSent,
   continueCueLineRun,
   loadCueLineRunState,
@@ -26,8 +29,10 @@ import {
   takeoverCueLineRuntime,
 } from "../../src/api.js";
 import { commandHash, jobId } from "../../src/core/ids.js";
+import { CueLineError } from "../../src/core/errors.js";
 import { isSafeStaleCallerObservationRecovery } from "../../src/core/run-status.js";
 import { initialRunState, reduceRunState } from "../../src/core/state-machine.js";
+import { loadPersistedRunStore } from "../../src/core/persisted-run.js";
 import { JobStatusStore } from "../../src/jobs/status.js";
 import type { ControllerJobSpec } from "../../src/protocol/types.js";
 import { readEvents } from "../../src/state/event-log.js";
@@ -44,8 +49,172 @@ interface SubmittedObservationBrowser extends BrowserAdapter {
   observeSubmittedTurn(input: BrowserTurnInput): Promise<SubmittedTurnObservation>;
 }
 
+interface MisdirectedObservationBrowser extends BrowserAdapter {
+  observeMisdirectedTurn(
+    input: BrowserMisdirectedTurnObservationInput,
+  ): Promise<BrowserMisdirectedTurnObservation>;
+}
+
+interface MisdirectedFixture {
+  runId: string;
+  requestId: string;
+  round: number;
+  priorRound: number;
+  priorRequestId: string;
+  prompt: string;
+  conversationUrl: string;
+  misdirectedConversationUrl: string;
+  baselineUserMessageCount: number;
+}
+
 async function temporaryHome(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "cueline-lifecycle-"));
+}
+
+async function createMisdirectedSubmittedWedge(
+  home: string,
+  suffix: string,
+): Promise<MisdirectedFixture> {
+  const runId = `run_misdirected_${suffix}`;
+  const { requestId } = await createSubmittedTurnWedge(home, runId);
+  const conversationUrl = submittedTurnWedgeFixture.conversationUrl;
+  const misdirectedConversationUrl = `https://chatgpt.com/c/orphan-misdirected-${suffix}`;
+  const store = await loadPersistedRunStore(home, runId);
+  const turn = store.state.pendingControllerTurns.find(
+    (candidate) => candidate.requestId === requestId,
+  );
+  assert.notEqual(turn, undefined);
+  await store.append("run_failed", {
+    code: "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+    request_id: requestId,
+    stage: "controller_turn",
+    submission_state: "submitted",
+    message: "submitted checkpoint conversation mismatch",
+  });
+  await store.snapshot();
+  const events = await readEvents(runPaths(home, runId).events);
+  const prior = events
+    .filter((event) => event.type === "controller_command_accepted")
+    .map((event) => {
+      const payload = event.payload as Record<string, unknown>;
+      return payload.command as Record<string, unknown>;
+    })
+    .filter(
+      (command) =>
+        typeof command.round === "number" &&
+        turn !== undefined &&
+        command.round < turn.round,
+    )
+    .at(-1);
+  if (typeof prior?.round !== "number" || typeof prior.request_id !== "string") {
+    throw new Error("misdirected fixture missing prior accepted controller identity");
+  }
+  return {
+    runId,
+    requestId,
+    round: turn!.round,
+    priorRound: prior.round,
+    priorRequestId: prior.request_id,
+    prompt: turn!.prompt,
+    conversationUrl,
+    misdirectedConversationUrl,
+    baselineUserMessageCount: turn!.baselineUserMessageCount ?? 0,
+  };
+}
+
+function misdirectedObservationBrowser(
+  fixture: MisdirectedFixture,
+  observation: BrowserMisdirectedTurnObservation,
+  options: { allowRetrySubmit?: boolean } = {},
+): MisdirectedObservationBrowser & { submitCalls: number; observedInputs: unknown[] } {
+  let submitCalls = 0;
+  const observedInputs: unknown[] = [];
+  return {
+    submissionCheckpointContract: "write_ahead_v1",
+    get submitCalls() {
+      return submitCalls;
+    },
+    observedInputs,
+    async observeMisdirectedTurn(input): Promise<BrowserMisdirectedTurnObservation> {
+      observedInputs.push(input);
+      assert.equal(input.runId, fixture.runId);
+      assert.equal(input.round, fixture.round);
+      assert.equal(input.requestId, fixture.requestId);
+      assert.equal(input.prompt, fixture.prompt);
+      assert.equal(input.expectedConversationUrl, fixture.conversationUrl);
+      assert.equal(input.misdirectedConversationUrl, fixture.misdirectedConversationUrl);
+      assert.equal(input.expectedPriorRound, fixture.priorRound);
+      assert.equal(input.expectedPriorRequestId, fixture.priorRequestId);
+      return observation;
+    },
+    async observeTurn(): Promise<undefined> {
+      return undefined;
+    },
+    async submitTurn(input, hooks?: BrowserTurnHooks): Promise<void> {
+      if (options.allowRetrySubmit !== true) {
+        throw new Error("misdirected reconciliation test must not submit");
+      }
+      submitCalls += 1;
+      assert.equal(input.runId, fixture.runId);
+      assert.equal(input.round, fixture.round);
+      assert.equal(input.notSentRecovery?.abandonedRequestId, fixture.requestId);
+      assert.equal(input.expectedConversationUrl, fixture.conversationUrl);
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitting",
+        composerPromptState: "attachment_ready",
+        conversationUrl: fixture.conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: fixture.round,
+        baselineUserMessageCount: fixture.baselineUserMessageCount,
+        requestId: input.requestId,
+        round: input.round,
+        runId: input.runId,
+        promptHash: commandHash(input.prompt),
+      });
+      await hooks?.onCheckpoint?.({
+        submissionState: "submitted",
+        composerPromptState: "attachment_ready",
+        conversationUrl: fixture.conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineAssistantMessageCount: fixture.round,
+        baselineUserMessageCount: fixture.baselineUserMessageCount,
+        requestId: input.requestId,
+        round: input.round,
+        runId: input.runId,
+        promptHash: commandHash(input.prompt),
+      });
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("misdirected reconciliation must not use sendTurn");
+    },
+  };
+}
+
+function confirmedMisdirectedObservation(
+  fixture: MisdirectedFixture,
+  overrides: Partial<BrowserMisdirectedTurnObservation["evidence"]> = {},
+): BrowserMisdirectedTurnObservation {
+  const evidence = {
+    misdirectedConversationUrl: fixture.misdirectedConversationUrl,
+    boundConversationUrl: fixture.conversationUrl,
+    selectedModelLabel: "Pro",
+    misdirected: {
+      pageUrl: fixture.misdirectedConversationUrl,
+      isAnswering: false,
+      assistantMessageCount: fixture.round,
+      exactEnvelopeFound: true,
+    },
+    bound: {
+      pageUrl: fixture.conversationUrl,
+      isAnswering: false,
+      userMessageCount: fixture.baselineUserMessageCount,
+      assistantMessageCount: fixture.priorRound,
+      requestMessageFound: false,
+      priorEnvelopeFound: true,
+    },
+    ...overrides,
+  };
+  return { status: "confirmed", evidence };
 }
 
 async function createSubmittedTurnWedge(
@@ -2236,6 +2405,149 @@ test("confirmControllerTurnNotSent accepts the evidence-gated submitted wedge sh
     requestId,
   );
   assert.equal(state.notSentRecovery?.retryRequestId, null);
+});
+
+test("confirmControllerTurnMisdirected records read-only evidence and authorizes one retry", async () => {
+  const home = await temporaryHome();
+  const fixture = await createMisdirectedSubmittedWedge(home, "happy");
+  const browser = misdirectedObservationBrowser(
+    fixture,
+    confirmedMisdirectedObservation(fixture),
+  );
+
+  const confirmation = await confirmControllerTurnMisdirected(fixture.runId, {
+    home,
+    requestId: fixture.requestId,
+    misdirectedConversationUrl: fixture.misdirectedConversationUrl,
+    browser,
+  });
+
+  assert.equal(confirmation.outcome, "confirmed");
+  assert.equal(
+    confirmation.observedBaselineUserMessageCount,
+    fixture.baselineUserMessageCount,
+  );
+  assert.equal(browser.submitCalls, 0);
+  let state = await loadCueLineRunState(fixture.runId, { home });
+  assert.equal(state.pendingControllerTurns.length, 0);
+  assert.equal(state.notSentRecovery?.abandonedRequestId, fixture.requestId);
+  assert.equal(state.notSentRecovery?.conversationUrl, fixture.conversationUrl);
+  assert.equal(
+    state.notSentRecovery?.baselineUserMessageCount,
+    fixture.baselineUserMessageCount,
+  );
+  const confirmedEvents = await readEvents(runPaths(home, fixture.runId).events);
+  assert.equal(
+    confirmedEvents.filter((event) => event.type === "controller_turn_misdirected_confirmed")
+      .length,
+    1,
+  );
+  assert.equal(
+    confirmedEvents.filter((event) => {
+      const payload = event.payload as Record<string, unknown>;
+      return (
+        event.type === "controller_turn_not_sent_confirmed" &&
+        payload.request_id === fixture.requestId
+      );
+    }).length,
+    1,
+  );
+
+  const retryBrowser = misdirectedObservationBrowser(
+    fixture,
+    confirmedMisdirectedObservation(fixture),
+    { allowRetrySubmit: true },
+  );
+  const continued = await continueCueLineRun({
+    runId: fixture.runId,
+    home,
+    browser: retryBrowser,
+    conversationUrl: fixture.conversationUrl,
+  });
+
+  assert.equal(continued.status, "awaiting_controller");
+  assert.equal(retryBrowser.submitCalls, 1);
+  state = await loadCueLineRunState(fixture.runId, { home });
+  assert.equal(state.round, fixture.round);
+  assert.equal(state.pendingControllerTurns.length, 1);
+  assert.equal(state.pendingControllerTurns[0]?.retryOfRequestId, fixture.requestId);
+  assert.notEqual(state.pendingControllerTurns[0]?.requestId, fixture.requestId);
+  const retriedEvents = await readEvents(runPaths(home, fixture.runId).events);
+  const requested95 = retriedEvents.filter((event) => {
+    const payload = event.payload as Record<string, unknown>;
+    return event.type === "controller_turn_requested" && payload.round === fixture.round;
+  });
+  assert.equal(requested95.length, 2);
+});
+
+test("confirmControllerTurnMisdirected returns pending without mutation while orphan answer is active", async () => {
+  const home = await temporaryHome();
+  const fixture = await createMisdirectedSubmittedWedge(home, "pending");
+  const before = await readEvents(runPaths(home, fixture.runId).events);
+  const browser = misdirectedObservationBrowser(fixture, {
+    ...confirmedMisdirectedObservation(fixture),
+    status: "pending",
+    evidence: {
+      ...confirmedMisdirectedObservation(fixture).evidence,
+      misdirected: {
+        ...confirmedMisdirectedObservation(fixture).evidence.misdirected,
+        isAnswering: true,
+        exactEnvelopeFound: false,
+      },
+    },
+  });
+
+  const confirmation = await confirmControllerTurnMisdirected(fixture.runId, {
+    home,
+    requestId: fixture.requestId,
+    misdirectedConversationUrl: fixture.misdirectedConversationUrl,
+    browser,
+  });
+
+  assert.equal(confirmation.outcome, "pending");
+  assert.deepEqual(await readEvents(runPaths(home, fixture.runId).events), before);
+});
+
+test("confirmControllerTurnMisdirected fails closed on URL and evidence conflicts", async () => {
+  const home = await temporaryHome();
+  const sameUrlFixture = await createMisdirectedSubmittedWedge(home, "sameurl");
+  await assert.rejects(
+    confirmControllerTurnMisdirected(sameUrlFixture.runId, {
+      home,
+      requestId: sameUrlFixture.requestId,
+      misdirectedConversationUrl: sameUrlFixture.conversationUrl,
+      browser: misdirectedObservationBrowser(
+        sameUrlFixture,
+        confirmedMisdirectedObservation(sameUrlFixture),
+      ),
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+  );
+
+  const weakFixture = await createMisdirectedSubmittedWedge(home, "weakevidence");
+  await assert.rejects(
+    confirmControllerTurnMisdirected(weakFixture.runId, {
+      home,
+      requestId: weakFixture.requestId,
+      misdirectedConversationUrl: weakFixture.misdirectedConversationUrl,
+      browser: misdirectedObservationBrowser(
+        weakFixture,
+        confirmedMisdirectedObservation(weakFixture, {
+          misdirected: {
+            pageUrl: weakFixture.misdirectedConversationUrl,
+            isAnswering: false,
+            assistantMessageCount: weakFixture.round,
+            exactEnvelopeFound: false,
+          },
+        }),
+      ),
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_NOT_SENT_EVIDENCE_INSUFFICIENT",
+  );
 });
 
 test("explicit reconciliation confirms a submission-started residual attachment without resending", async () => {

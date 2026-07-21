@@ -613,7 +613,8 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
         retryRequestId: null,
         conflictCode: null,
         confirmationSource:
-          payload.confirmation_source === "fresh_read_only_observation"
+          payload.confirmation_source === "fresh_read_only_observation" ||
+          payload.confirmation_source === "misdirected_read_only_observation"
             ? "fresh_observation"
             : "operator",
         // Prefer the event's own record; replay of streams written before this field

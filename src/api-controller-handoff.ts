@@ -3,11 +3,15 @@ import type {
   CueLineCallerJobResultInput,
   CueLineCallerJobSubmissionResult,
   CueLineCallerWorkClaimProof,
+  ControllerMisdirectedConfirmation,
   ControllerNotSentConfirmation,
   CueLineRuntimeOptions,
   ManualControllerSubmissionConfirmation,
 } from "./api-contracts.js";
-import type { BrowserSubmittedTurnEvidence } from "./browser/browser-adapter.js";
+import type {
+  BrowserMisdirectedTurnEvidence,
+  BrowserSubmittedTurnEvidence,
+} from "./browser/browser-adapter.js";
 import { validateCallerWorkResultClaim } from "./api-caller-work.js";
 import { boundedControllerEventEvidence } from "./core/controller-turn.js";
 import {
@@ -136,6 +140,65 @@ function isLegacyDefinitelyNotSentObservation(
     evidence.isAnswering === false &&
     evidence.observedUserMessageCount !== null
   );
+}
+
+function lastAcceptedControllerIdentityBefore(
+  events: AuthoritativeRunEvent[],
+  round: number,
+): { round: number; requestId: string } | null {
+  let accepted: { round: number; requestId: string } | null = null;
+  for (const event of events) {
+    if (event.type !== "controller_command_accepted") continue;
+    const payload = eventPayload(event);
+    const command =
+      typeof payload.command === "object" &&
+      payload.command !== null &&
+      !Array.isArray(payload.command)
+        ? (payload.command as Record<string, unknown>)
+        : {};
+    if (typeof command.round !== "number" || command.round >= round) continue;
+    if (typeof command.request_id !== "string") continue;
+    if (accepted === null || command.round > accepted.round) {
+      accepted = { round: command.round, requestId: command.request_id };
+    }
+  }
+  return accepted;
+}
+
+function assertMisdirectedEvidence(
+  evidence: BrowserMisdirectedTurnEvidence,
+  expectedConversationUrl: string,
+  misdirectedConversationUrl: string,
+): void {
+  if (
+    !sameChatGptConversationUrl(
+      evidence.misdirected.pageUrl,
+      misdirectedConversationUrl,
+    ) ||
+    !sameChatGptConversationUrl(evidence.bound.pageUrl, expectedConversationUrl)
+  ) {
+    throw new CueLineError(
+      "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+      "Misdirected recovery evidence was read from an unexpected ChatGPT conversation.",
+    );
+  }
+  if (!/^Pro(?:\s|$)/i.test(evidence.selectedModelLabel ?? "")) {
+    throw new CueLineError(
+      "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
+      "Misdirected recovery requires exact Pro composer model evidence on the bound conversation.",
+    );
+  }
+  if (
+    !evidence.misdirected.exactEnvelopeFound ||
+    evidence.bound.requestMessageFound ||
+    evidence.bound.isAnswering ||
+    !evidence.bound.priorEnvelopeFound
+  ) {
+    throw new CueLineError(
+      "CONTROLLER_NOT_SENT_EVIDENCE_INSUFFICIENT",
+      "Misdirected recovery requires exact orphan envelope evidence and a clean, idle bound conversation at the prior controller envelope.",
+    );
+  }
 }
 
 export async function confirmManualControllerSubmission(
@@ -620,6 +683,312 @@ export async function confirmControllerTurnNotSent(
       conversationUrl,
       promptHash: turn.promptHash,
       outcome: existingRecovery === null ? "confirmed" : "already_confirmed",
+    };
+  } finally {
+    await lease.release();
+  }
+}
+
+export async function confirmControllerTurnMisdirected(
+  runId: string,
+  options: Pick<
+    CueLineRuntimeOptions,
+    "home" | "environment" | "now" | "browser"
+  > & {
+    requestId: string;
+    misdirectedConversationUrl: string;
+  },
+): Promise<ControllerMisdirectedConfirmation> {
+  const environment = options.environment ?? runtimeEnvironment();
+  const home = options.home ?? defaultCueLineHome(environment);
+  await loadPersistedRunStore(home, runId);
+  const runtime = await readRuntimeLease(home, runId, {
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  const retiredOwner =
+    (runtime.ownership === "active" || runtime.ownership === "stale") &&
+    runtime.ownerId !== undefined &&
+    (await retireDeadRuntimeLease(home, runId, runtime.ownerId))
+      ? { ownerId: runtime.ownerId, ownership: runtime.ownership }
+      : undefined;
+  const lease = await RuntimeLease.claim({
+    home,
+    runId,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  try {
+    const store = await loadPersistedRunStore(home, runId);
+    store.bindRuntimeOwner(lease.ownerId);
+    if (retiredOwner !== undefined) {
+      await store.append("runtime_dead_owner_retired", {
+        owner_id: retiredOwner.ownerId,
+        previous_ownership: retiredOwner.ownership,
+      });
+    }
+    const state = store.state;
+    const existingRecovery =
+      state.notSentRecovery?.abandonedRequestId === options.requestId
+        ? state.notSentRecovery
+        : null;
+    const turn = (state.pendingControllerTurns ?? []).find(
+      (candidate) => candidate.requestId === options.requestId,
+    );
+    if (turn === undefined) {
+      if (existingRecovery !== null) {
+        return {
+          runId,
+          requestId: options.requestId,
+          conversationUrl: existingRecovery.conversationUrl,
+          misdirectedConversationUrl: options.misdirectedConversationUrl,
+          promptHash: existingRecovery.promptHash,
+          outcome: "already_confirmed",
+          observedBaselineUserMessageCount: existingRecovery.baselineUserMessageCount,
+        };
+      }
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_REQUEST_NOT_FOUND",
+        `Pending controller request '${options.requestId}' was not found.`,
+      );
+    }
+    if ((state.pendingControllerTurns ?? []).length !== 1) {
+      throw new CueLineError(
+        "OTHER_CONTROLLER_TURNS_PENDING",
+        "Misdirected recovery requires exactly one pending controller turn.",
+      );
+    }
+    const cancellation = await readCancellationObservation(home, runId);
+    if (cancellation.runRequested || cancellation.jobRequests.length > 0) {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_STATE_INVALID",
+        "Misdirected recovery is forbidden while run or job cancellation is pending.",
+      );
+    }
+    if (turn.submissionState !== "submitted") {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_STATE_INVALID",
+        "Misdirected recovery requires a submitted pending controller turn.",
+      );
+    }
+    if (turn.retryOfRequestId !== undefined && turn.retryOfRequestId !== null) {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_RETRY_EXHAUSTED",
+        "The pending turn is already the one authorized not-sent retry; refusing another retry.",
+      );
+    }
+    if (turn.manualSendConfirmed) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_CONFIRMATION_CONFLICT",
+        "The turn is already operator-confirmed as sent; it cannot also be recovered as misdirected.",
+      );
+    }
+    if (turn.submissionCheckpointContract !== "write_ahead_v1") {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_STATE_INVALID",
+        "Misdirected recovery requires the write-ahead submission checkpoint contract.",
+      );
+    }
+    if (turn.selectedModelLabel === null || !/^Pro(?:\s|$)/i.test(turn.selectedModelLabel)) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_MODEL_UNVERIFIED",
+        "The pending turn lacks exact Pro composer model evidence.",
+      );
+    }
+    if (!/^[0-9a-f]{64}$/.test(turn.promptHash)) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_PROMPT_HASH_INVALID",
+        "The pending turn lacks a valid prompt hash.",
+      );
+    }
+    if (
+      state.lastFailure?.code !== "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH" ||
+      state.lastFailure.requestId !== turn.requestId
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_STATE_INVALID",
+        "Misdirected recovery requires the exact conversation-mismatch failure for this request.",
+      );
+    }
+    const conversationUrl = state.conversationUrl ?? turn.conversationUrl;
+    if (conversationUrl === null || conversationUrl === undefined) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_URL_REQUIRED",
+        "Misdirected recovery requires the exact bound ChatGPT conversation URL.",
+      );
+    }
+    if (!isExactChatGptConversationUrl(conversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+        "Misdirected recovery requires an exact bound ChatGPT conversation URL.",
+      );
+    }
+    if (!isExactChatGptConversationUrl(options.misdirectedConversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+        "Misdirected recovery requires an exact misdirected ChatGPT conversation URL.",
+      );
+    }
+    if (
+      sameChatGptConversationUrl(
+        options.misdirectedConversationUrl,
+        conversationUrl,
+      )
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+        "The misdirected conversation URL must differ from the bound CueLine conversation.",
+      );
+    }
+    const events = await readAuthoritativeRunEvents(home, runId);
+    for (const event of events) {
+      const payload = eventPayload(event);
+      if (
+        event.type === "controller_response_received" &&
+        payload.request_id === options.requestId
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_SUPERSEDED",
+          "A controller response for this request was already received; refusing misdirected recovery.",
+        );
+      }
+      if (event.type !== "controller_command_accepted") continue;
+      const command =
+        typeof payload.command === "object" &&
+        payload.command !== null &&
+        !Array.isArray(payload.command)
+          ? (payload.command as Record<string, unknown>)
+          : {};
+      if (
+        command.request_id === options.requestId ||
+        (typeof command.round === "number" && command.round >= turn.round)
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_SUPERSEDED",
+          "A command for this request or the same/newer controller round was already accepted.",
+        );
+      }
+    }
+    const prior = lastAcceptedControllerIdentityBefore(events, turn.round);
+    if (prior === null) {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_EVIDENCE_REQUIRED",
+        "Misdirected recovery requires an accepted prior controller envelope to validate the bound conversation.",
+      );
+    }
+    const browser = options.browser;
+    if (browser?.observeMisdirectedTurn === undefined) {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_EVIDENCE_REQUIRED",
+        "Misdirected recovery requires a fresh read-only Browser observation.",
+      );
+    }
+    const observation = await browser.observeMisdirectedTurn({
+      runId,
+      round: turn.round,
+      requestId: turn.requestId,
+      prompt: turn.prompt,
+      expectedConversationUrl: conversationUrl,
+      misdirectedConversationUrl: options.misdirectedConversationUrl,
+      expectedPriorRound: prior.round,
+      expectedPriorRequestId: prior.requestId,
+    });
+    if (observation.status === "pending") {
+      return {
+        runId,
+        requestId: turn.requestId,
+        conversationUrl,
+        misdirectedConversationUrl: options.misdirectedConversationUrl,
+        promptHash: turn.promptHash,
+        outcome: "pending",
+        observedBaselineUserMessageCount: observation.evidence.bound.userMessageCount,
+        evidence: observation.evidence,
+      };
+    }
+    assertMisdirectedEvidence(
+      observation.evidence,
+      conversationUrl,
+      options.misdirectedConversationUrl,
+    );
+    const selectedModelLabel = observation.evidence.selectedModelLabel;
+    const recoveryBaselineUserMessageCount =
+      observation.evidence.bound.userMessageCount ?? turn.baselineUserMessageCount ?? 0;
+    await store.append("controller_turn_misdirected_confirmed", {
+      round: turn.round,
+      request_id: turn.requestId,
+      prompt_hash: turn.promptHash,
+      bound_conversation_url: conversationUrl,
+      misdirected_conversation_url: options.misdirectedConversationUrl,
+      selected_model_label: selectedModelLabel,
+      prior_round: prior.round,
+      prior_request_id: prior.requestId,
+      orphan_evidence: {
+        exact_envelope_found: observation.evidence.misdirected.exactEnvelopeFound,
+        is_answering: observation.evidence.misdirected.isAnswering,
+        assistant_message_count:
+          observation.evidence.misdirected.assistantMessageCount,
+      },
+      bound_evidence: {
+        request_message_found: observation.evidence.bound.requestMessageFound,
+        is_answering: observation.evidence.bound.isAnswering,
+        prior_envelope_found: observation.evidence.bound.priorEnvelopeFound,
+        observed_user_message_count:
+          observation.evidence.bound.userMessageCount,
+        assistant_message_count:
+          observation.evidence.bound.assistantMessageCount,
+      },
+    });
+    await store.append("controller_turn_not_sent_confirmed", {
+      round: turn.round,
+      request_id: turn.requestId,
+      prompt_hash: turn.promptHash,
+      conversation_url: conversationUrl,
+      selected_model_label: selectedModelLabel,
+      baseline_user_message_count: recoveryBaselineUserMessageCount,
+      ...(turn.composerPromptState === null
+        ? {}
+        : { composer_prompt_state: turn.composerPromptState }),
+      observed_user_message_count: recoveryBaselineUserMessageCount,
+      request_message_found: false,
+      is_answering: false,
+      page_hydrated: true,
+      submission_state: "definitely_not_sent",
+      confirmation_source: "misdirected_read_only_observation",
+      operator_confirmation: false,
+    });
+    if (
+      (store.state.pendingControllerTurns ?? []).some(
+        (candidate) => candidate.requestId === turn.requestId,
+      )
+    ) {
+      await store.append("controller_turn_abandoned", {
+        round: turn.round,
+        request_id: turn.requestId,
+        reason: "misdirected_submission_confirmed",
+        round_not_consumed: true,
+        prompt_hash: turn.promptHash,
+        conversation_url: conversationUrl,
+        selected_model_label: selectedModelLabel,
+        baseline_user_message_count: recoveryBaselineUserMessageCount,
+        ...(turn.composerPromptState === null
+          ? {}
+          : { composer_prompt_state: turn.composerPromptState }),
+        observed_user_message_count: recoveryBaselineUserMessageCount,
+        request_message_found: false,
+        is_answering: false,
+        page_hydrated: true,
+        submission_state: "definitely_not_sent",
+        confirmation_source: "misdirected_read_only_observation",
+        operator_confirmation: false,
+      });
+    }
+    await store.snapshot();
+    return {
+      runId,
+      requestId: turn.requestId,
+      conversationUrl,
+      misdirectedConversationUrl: options.misdirectedConversationUrl,
+      promptHash: turn.promptHash,
+      outcome: "confirmed",
+      observedBaselineUserMessageCount: recoveryBaselineUserMessageCount,
     };
   } finally {
     await lease.release();

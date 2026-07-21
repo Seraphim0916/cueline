@@ -36,6 +36,7 @@ const KNOWN_EVENT_TYPES = new Set([
   "controller_submission_succeeded",
   "controller_turn_abandoned",
   "controller_turn_manual_submission_confirmed",
+  "controller_turn_misdirected_confirmed",
   "controller_turn_not_sent_confirmed",
   "controller_turn_requested",
   "controller_turn_retry_conflict",
