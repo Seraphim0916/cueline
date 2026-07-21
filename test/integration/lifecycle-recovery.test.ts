@@ -2094,7 +2094,7 @@ test("recovered round 94 dispatch waits for a separate continuation before regis
       observeCalls += 1;
       return {
         status: "response",
-        responseSource: "count_degraded_accessibility_exact_envelope",
+        responseSource: "count_degraded_message_dom_exact_envelope",
         turn: {
           text: responseText,
           conversationUrl,
@@ -2155,6 +2155,121 @@ test("recovered round 94 dispatch waits for a separate continuation before regis
   events = await readEvents(runPaths(home, runId).events);
   assert.equal(events.filter((event) => event.type === "job_registered").length, 1);
   assert.equal(events.filter((event) => event.type === "controller_turn_requested").length, 1);
+});
+
+test("stable pending observation persists diagnostics and surfaces them in run status", async () => {
+  const home = await temporaryHome();
+  const runId = "run_stable_pending_diagnostic";
+  const requestId = "msg_stable_pending_diagnostic";
+  const conversationUrl = "https://chatgpt.com/c/stable-pending-diagnostic";
+  const prompt = "Observe a stable virtualized pending turn";
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: initialRunState(runId, prompt, "caller", 100),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: prompt, executor: "caller", max_rounds: 100 });
+  await store.append("controller_turn_requested", {
+    round: 95,
+    request_id: requestId,
+    prompt,
+    prompt_hash: commandHash(prompt),
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.append("controller_turn_submitted", {
+    round: 95,
+    request_id: requestId,
+    submission_state: "submitted",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "inline_ready",
+    baseline_user_message_count: 10,
+    baseline_assistant_message_count: 10,
+  });
+  await store.snapshot();
+
+  const diagnostic = {
+    code: "CONTROLLER_OBSERVATION_PENDING_STABLE" as const,
+    failedCondition: "observed 9 < baseline 10",
+    stableForMs: 600_000,
+    thresholdMs: 600_000,
+    observedUserMessageCount: 9,
+    baselineUserMessageCount: 10,
+    requestMessageFound: false,
+    requestMessageFoundBy: null,
+    assistantTextFoundBy: "last_message" as const,
+    composerPromptState: "empty" as const,
+    sourcesConsulted: ["message_dom"],
+  };
+  const browser: SubmittedObservationBrowser = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async observeSubmittedTurn() {
+      return {
+        status: "pending",
+        evidence: {
+          conversationUrl,
+          selectedModelLabel: "Pro",
+          hydrated: true,
+          baselineUserMessageCount: 10,
+          observationBaselineUserMessageCount: 9,
+          observedUserMessageCount: 9,
+          countRegressionDetected: true,
+          requestMessageFound: false,
+          requestMessageScanComplete: true,
+          accessibilityRequestIdFound: null,
+          isAnswering: false,
+          composerPromptState: "empty",
+          composerAttachmentCount: 0,
+          composerSendButtonEnabled: false,
+          pendingDiagnostic: diagnostic,
+        },
+      };
+    },
+    async submitTurn() {
+      throw new Error("stable pending diagnostics must never resend");
+    },
+    async observeTurn() {
+      return undefined;
+    },
+    async sendTurn() {
+      throw new Error("stable pending diagnostics must stay read-only");
+    },
+  };
+
+  const result = await continueCueLineRun({
+    runId,
+    home,
+    browser,
+    conversationUrl,
+    routingConfig,
+  });
+
+  assert.equal(result.status, "awaiting_controller");
+  const events = await readEvents(runPaths(home, runId).events);
+  const notices = events.filter((event) => event.type === "notice");
+  assert.equal(notices.length, 2);
+  assert.equal(
+    notices.some((event) =>
+      String((event.payload as Record<string, unknown>).message).includes(
+        "CONTROLLER_OBSERVATION_COUNT_REGRESSION",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    notices.some((event) =>
+      String((event.payload as Record<string, unknown>).message).includes(
+        "CONTROLLER_OBSERVATION_PENDING_STABLE",
+      ),
+    ),
+    true,
+  );
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.pendingObservationDiagnostic?.failedCondition, diagnostic.failedCondition);
+  const status = await loadCueLineRunStatus(runId, { home });
+  assert.equal(status.controller.pendingDiagnostic?.code, diagnostic.code);
+  assert.equal(status.controller.pendingDiagnostic?.failedCondition, diagnostic.failedCondition);
 });
 
 test("possibly-sent exact-envelope recovery preserves the round 94 dispatch boundary", async () => {

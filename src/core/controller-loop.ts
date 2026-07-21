@@ -828,7 +828,40 @@ async function reconcilePendingControllerTurn(
       options.browser,
       recoveryInput,
     );
-    if (submittedObservation.status === "pending") return "awaiting_controller";
+    const submittedEvidence = submittedObservation.evidence;
+    if (
+      submittedEvidence?.countRegressionDetected === true &&
+      !store.state.notices.some((notice) =>
+        notice.includes(
+          `CONTROLLER_OBSERVATION_COUNT_REGRESSION: request=${pending.requestId}`,
+        ),
+      )
+    ) {
+      await store.append("notice", {
+        message: `CONTROLLER_OBSERVATION_COUNT_REGRESSION: request=${pending.requestId} observed=${submittedEvidence.observedUserMessageCount ?? "unknown"} baseline=${submittedEvidence.baselineUserMessageCount}`,
+        count_regression: {
+          request_id: pending.requestId,
+          observed_user_message_count: submittedEvidence.observedUserMessageCount,
+          baseline_user_message_count: submittedEvidence.baselineUserMessageCount,
+          observation_baseline_user_message_count:
+            submittedEvidence.observationBaselineUserMessageCount ?? null,
+        },
+      });
+    }
+    if (submittedObservation.status === "pending") {
+      const diagnostic = submittedObservation.evidence?.pendingDiagnostic;
+      if (
+        diagnostic !== undefined &&
+        store.state.pendingObservationDiagnostic?.failedCondition !==
+          diagnostic.failedCondition
+      ) {
+        await store.append("notice", {
+          message: `${diagnostic.code}: ${diagnostic.failedCondition}`,
+          pending_observation_diagnostic: diagnostic,
+        });
+      }
+      return "awaiting_controller";
+    }
     if (submittedObservation.status === "definitely_not_sent") {
       if (
         !isDefinitelyNotSentObservation(
@@ -849,13 +882,16 @@ async function reconcilePendingControllerTurn(
     turn = submittedObservation.turn;
     deferRecoveredDispatch =
       submittedObservation.responseSource ===
-      "count_degraded_accessibility_exact_envelope";
+        "count_degraded_accessibility_exact_envelope" ||
+      submittedObservation.responseSource ===
+        "count_degraded_message_dom_exact_envelope";
   } else {
     turn = options.browser.observeTurn
       ? await options.browser.observeTurn(recoveryInput)
       : await options.browser.recoverTurn!(recoveryInput);
     deferRecoveredDispatch =
-      turn?.responseSource === "count_degraded_accessibility_exact_envelope";
+      turn?.responseSource === "count_degraded_accessibility_exact_envelope" ||
+      turn?.responseSource === "count_degraded_message_dom_exact_envelope";
   }
   if (turn === undefined) return "awaiting_controller";
   const command = await requestControllerCommand(

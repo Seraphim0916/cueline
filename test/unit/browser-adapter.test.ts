@@ -297,6 +297,11 @@ function fakeBrowser(options: {
           (state.assistantMessageCount > 0
             ? options.responseModelSlug ?? "gpt-5-6-pro"
             : null),
+        requestMessageScanComplete:
+          state.requestMessageScanComplete ??
+          (typeof argument === "object" &&
+            argument !== null &&
+            "exactControllerIdentity" in argument),
       } as Result;
     },
     async domSnapshot() {
@@ -305,7 +310,7 @@ function fakeBrowser(options: {
         Math.min(accessibilitySnapshotRead, Math.max(0, snapshots.length - 1))
       ];
       accessibilitySnapshotRead += 1;
-      return snapshot ?? {};
+      return snapshot ?? "";
     },
     async waitForTimeout() {},
   };
@@ -968,6 +973,90 @@ test("ignores a hidden residual Stop answering button after the Pro response com
       ["document", documentDescriptor],
       ["window", windowDescriptor],
       ["getComputedStyle", styleDescriptor],
+    ] as const) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globalThis as Record<string, unknown>)[name];
+    }
+  }
+});
+
+test("page chat state finds request and response identities outside the last visible messages", async () => {
+  const runId = "run_identity_scan";
+  const requestId = "msg_identity_scan";
+  const prompt = `controller request ${requestId}`;
+  const response = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 96,
+    request_id: requestId,
+    action: "wait",
+  })}</CueLineControl>`;
+  const message = (
+    role: "user" | "assistant",
+    text: string,
+    modelSlug: string | null = null,
+  ) => ({
+    innerText: text,
+    textContent: text,
+    getAttribute(name: string) {
+      if (name === "data-message-author-role") return role;
+      if (name === "data-message-model-slug") return modelSlug;
+      return null;
+    },
+  });
+  const messages = [
+    message("user", prompt),
+    message("assistant", response, "gpt-5-6-pro"),
+    message("user", "virtualized unrelated last user"),
+    message("assistant", "virtualized unrelated last assistant", "gpt-5-6-pro"),
+  ];
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelectorAll(selector: string) {
+        if (selector === "button") return [];
+        if (selector === "[data-message-author-role]") return messages;
+        if (selector === "[data-message-model-slug]") {
+          return messages.filter((entry) => entry.getAttribute("data-message-model-slug"));
+        }
+        return [];
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { location: { href: "https://chatgpt.com/c/identity-scan" } },
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result, Argument>(
+        pageFunction: (argument: Argument) => Result | Promise<Result>,
+        argument: Argument,
+      ): Promise<Result> {
+        return pageFunction(argument);
+      },
+      async domSnapshot() {
+        return "";
+      },
+    },
+  } as unknown as IabTab;
+
+  try {
+    const state = await readPageChatState(
+      tab,
+      { runId, round: 96, requestId },
+      prompt,
+    );
+    assert.equal(state.requestMessageFound, true);
+    assert.equal(state.requestMessageFoundBy, "request_id_scan");
+    assert.equal(state.assistantText, response);
+    assert.equal(state.assistantTextFoundBy, "exact_envelope_scan");
+  } finally {
+    for (const [name, descriptor] of [
+      ["document", documentDescriptor],
+      ["window", windowDescriptor],
     ] as const) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
       else delete (globalThis as Record<string, unknown>)[name];
@@ -1876,7 +1965,7 @@ test("observeTurn checks once without resending and later returns the exact comp
   );
 });
 
-test("submitted-turn observation waits past an initial 0/0 page before classifying not sent", async () => {
+test("submitted-turn observation stays pending after an initial 0/0 count regression", async () => {
   const conversationUrl = "https://chatgpt.com/c/submitted-turn-hydration";
   const prompt = "Round 34 prompt absent after restart";
   const fixture = fakeBrowser({
@@ -1929,9 +2018,10 @@ test("submitted-turn observation waits past an initial 0/0 page before classifyi
     baselineAssistantMessageCount: 49,
   } as BrowserTurnInput & { baselineUserMessageCount: number });
 
-  assert.equal(observation.status, "definitely_not_sent");
+  assert.equal(observation.status, "pending");
   assert.equal(observation.evidence?.hydrated, true);
   assert.equal(observation.evidence?.observedUserMessageCount, 50);
+  assert.equal(observation.evidence?.countRegressionDetected, true);
 });
 
 test("submitted-turn observation refuses an unhydrated zero-count page", async () => {
@@ -2049,6 +2139,202 @@ test("submitted-turn recovery accepts only an exact round 94 envelope from the a
   assert.equal(fixture.sendSubmissions(), 0);
   assert.deepEqual(fixture.composer.fills, []);
   assert.equal(fixture.accessibilitySnapshotReads(), 1);
+});
+
+test("submitted-turn recovery accepts an exact message DOM envelope when counts regress", async () => {
+  const conversationUrl = "https://chatgpt.com/c/message-dom-count-regression";
+  const runId = "run_message_dom_count_regression";
+  const requestId = "msg_message_dom_count_regression";
+  const response = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 95,
+    request_id: requestId,
+    action: "wait",
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: response,
+        assistantTextSource: "message_dom",
+        userMessageCount: 9,
+        assistantMessageCount: 9,
+        assistantModelSlug: "gpt-5-6-pro",
+        lastUserText: "virtualized stale request",
+        lastMessageRole: "assistant",
+      },
+    ],
+    composerStates: [
+      {
+        state: "empty",
+        inlineTextLength: 0,
+        attachmentCount: 0,
+        sendButtonEnabled: false,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 95,
+    requestId,
+    prompt: "round 95 prompt hidden by DOM virtualization",
+    baselineUserMessageCount: 10,
+    baselineAssistantMessageCount: 10,
+  });
+
+  assert.equal(observation.status, "response");
+  assert.equal(observation.status === "response" ? observation.turn.text : null, response);
+  assert.equal(
+    observation.status === "response" ? observation.responseSource : null,
+    "count_degraded_message_dom_exact_envelope",
+  );
+  assert.equal(
+    observation.status === "response"
+      ? observation.evidence?.countRegressionDetected
+      : null,
+    true,
+  );
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("submitted-turn message DOM recovery rejects a wrong request identity", async () => {
+  const conversationUrl = "https://chatgpt.com/c/message-dom-wrong-request";
+  const runId = "run_message_dom_wrong_request";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: `<CueLineControl>${JSON.stringify({
+          protocol: "cueline/0.1",
+          run_id: runId,
+          round: 95,
+          request_id: "msg_other_request",
+          action: "wait",
+        })}</CueLineControl>`,
+        assistantTextSource: "message_dom",
+        userMessageCount: 9,
+        assistantMessageCount: 9,
+        assistantModelSlug: "gpt-5-6-pro",
+        lastMessageRole: "assistant",
+      },
+    ],
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    pendingDiagnosticMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 95,
+    requestId: "msg_expected_request",
+    prompt: "expected request",
+    baselineUserMessageCount: 10,
+    baselineAssistantMessageCount: 10,
+  });
+
+  assert.equal(observation.status, "pending");
+  assert.equal(
+    observation.status === "pending"
+      ? observation.evidence?.countRegressionDetected
+      : null,
+    true,
+  );
+  assert.equal(
+    observation.status === "pending"
+      ? observation.evidence?.observationBaselineUserMessageCount
+      : null,
+    9,
+  );
+  assert.match(
+    observation.status === "pending"
+      ? observation.evidence?.pendingDiagnostic?.failedCondition ?? ""
+      : "",
+    /observed 9 < baseline 10/,
+  );
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("submitted-turn message DOM recovery stays pending when answering restarts at checkpoint", async () => {
+  const conversationUrl = "https://chatgpt.com/c/message-dom-checkpoint-answering";
+  const runId = "run_message_dom_checkpoint_answering";
+  const requestId = "msg_message_dom_checkpoint_answering";
+  const response = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 95,
+    request_id: requestId,
+    action: "wait",
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: response,
+        assistantTextSource: "message_dom",
+        userMessageCount: 9,
+        assistantMessageCount: 9,
+        assistantModelSlug: "gpt-5-6-pro",
+        lastMessageRole: "assistant",
+      },
+      {
+        isAnswering: true,
+        assistantText: response,
+        assistantTextSource: "message_dom",
+        userMessageCount: 9,
+        assistantMessageCount: 9,
+        assistantModelSlug: "gpt-5-6-pro",
+        lastMessageRole: "assistant",
+      },
+    ],
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 95,
+    requestId,
+    prompt: "round 95 prompt",
+    baselineUserMessageCount: 10,
+    baselineAssistantMessageCount: 10,
+  });
+
+  assert.equal(observation.status, "pending");
+  assert.equal(fixture.sendSubmissions(), 0);
 });
 
 test("submitted-turn recovery does not treat unrelated accessibility text as the current response", async () => {
@@ -2205,6 +2491,103 @@ test("submitted attachment observation proves not sent from residual composer ev
   assert.equal(observation.evidence.composerPromptState, "attachment_ready");
   assert.equal(observation.evidence.composerAttachmentCount, 1);
   assert.equal(observation.evidence.composerSendButtonEnabled, true);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("submitted attachment observation stays pending when accessibility still contains the request id", async () => {
+  const conversationUrl = "https://chatgpt.com/c/submitted-attachment-accessibility-request";
+  const requestId = "msg_accessibility_request_still_visible";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "prior response",
+        userMessageCount: 101,
+        assistantMessageCount: 100,
+        lastUserText: "prior request",
+        lastMessageRole: "assistant",
+      },
+    ],
+    composerStates: [
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: true,
+      },
+    ],
+    accessibilitySnapshots: [`- article "You said": ${requestId}`],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId: "run_accessibility_request_still_visible",
+    round: 85,
+    requestId,
+    prompt: "round 85 attachment prompt",
+    attachmentPromptExpected: true,
+    baselineUserMessageCount: 101,
+    baselineAssistantMessageCount: 100,
+  });
+
+  assert.equal(observation.status, "pending");
+  assert.equal(observation.evidence?.accessibilityRequestIdFound, true);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("count regression forbids definitely not sent even when the prompt remains staged", async () => {
+  const conversationUrl = "https://chatgpt.com/c/regressed-staged-composer";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: "prior response",
+        userMessageCount: 9,
+        assistantMessageCount: 9,
+        lastUserText: "virtualized different request",
+        lastMessageRole: "assistant",
+      },
+    ],
+    composerStates: [
+      {
+        state: "inline_ready",
+        inlineTextLength: 20,
+        attachmentCount: 0,
+        sendButtonEnabled: true,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId: "run_regressed_staged_composer",
+    round: 85,
+    requestId: "msg_regressed_staged_composer",
+    prompt: "regressed staged prompt",
+    baselineUserMessageCount: 10,
+    baselineAssistantMessageCount: 10,
+  });
+
+  assert.equal(observation.status, "pending");
+  assert.equal(observation.evidence?.countRegressionDetected, true);
   assert.equal(fixture.sendSubmissions(), 0);
 });
 

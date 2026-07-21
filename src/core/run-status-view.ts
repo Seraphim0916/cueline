@@ -38,6 +38,9 @@ export function safeCueLineRunStatus(status: CueLineRunStatusSummary) {
       lastAcceptedAction: status.controller.lastAcceptedAction,
       lastAcceptedRequestId: status.controller.lastAcceptedRequestId,
       lastAcceptedJobKeys: [...status.controller.lastAcceptedJobKeys],
+      ...(status.controller.pendingDiagnostic == null
+        ? {}
+        : { pendingDiagnostic: { ...status.controller.pendingDiagnostic } }),
       ...(status.controller.reconciliation === undefined ||
       (status.controller.reconciliation.requiredReason === null &&
         status.controller.reconciliation.operatorConfirmation === null &&

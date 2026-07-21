@@ -15,6 +15,19 @@ import { jobSpecHash } from "./ids.js";
 
 export type CueLineRunStatus = "running" | "complete" | "blocked" | "cancelled" | "failed";
 export type CueLineExecutor = "caller" | "process";
+export interface ControllerPendingObservationDiagnostic {
+  code: "CONTROLLER_OBSERVATION_PENDING_STABLE";
+  failedCondition: string;
+  stableForMs: number;
+  thresholdMs: number;
+  observedUserMessageCount: number | null;
+  baselineUserMessageCount: number;
+  requestMessageFound: boolean | null;
+  requestMessageFoundBy: string | null;
+  assistantTextFoundBy: string | null;
+  composerPromptState: string | null;
+  sourcesConsulted: string[];
+}
 export const DEFAULT_MAX_ROUNDS = 12;
 export const DEFAULT_MAX_REPAIR_ATTEMPTS = 2;
 export type StoredJobStatus = JobObservation["status"];
@@ -179,6 +192,7 @@ export interface CueLineRunState {
   /** Content identity that fences a paginated inspect against output replacement. */
   inspectionEvidenceHash?: string | null;
   notices: string[];
+  pendingObservationDiagnostic: ControllerPendingObservationDiagnostic | null;
   commandHashes: string[];
   pendingCommandExecution: PendingCommandExecution | null;
   finalDeliveryText: string | null;
@@ -311,6 +325,7 @@ export function initialRunState(
     inspectionEvidenceOffset: 0,
     inspectionEvidenceHash: null,
     notices: [],
+    pendingObservationDiagnostic: null,
     commandHashes: [],
     pendingCommandExecution: null,
     finalDeliveryText: null,
@@ -518,6 +533,7 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       // otherwise a crash between these two events can resend the next round.
       pendingControllerTurns: state.pendingControllerTurns ?? [],
       lastFailure: null,
+      pendingObservationDiagnostic: null,
     };
   }
   if (event.type === "controller_turn_abandoned" && typeof payload.request_id === "string") {
@@ -761,7 +777,21 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     };
   }
   if (event.type === "notice" && typeof payload.message === "string") {
-    return { ...state, notices: [...state.notices, payload.message] };
+    const candidate = payload.pending_observation_diagnostic;
+    const pendingObservationDiagnostic =
+      typeof candidate === "object" &&
+      candidate !== null &&
+      !Array.isArray(candidate) &&
+      (candidate as Record<string, unknown>).code ===
+        "CONTROLLER_OBSERVATION_PENDING_STABLE" &&
+      typeof (candidate as Record<string, unknown>).failedCondition === "string"
+        ? (structuredClone(candidate) as ControllerPendingObservationDiagnostic)
+        : state.pendingObservationDiagnostic;
+    return {
+      ...state,
+      notices: [...state.notices, payload.message],
+      pendingObservationDiagnostic,
+    };
   }
   if (event.type === "job_registered") {
     const job = payload.job as StoredJob | undefined;

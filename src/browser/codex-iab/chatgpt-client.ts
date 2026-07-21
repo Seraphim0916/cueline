@@ -12,6 +12,7 @@ import type {
   ComposerPromptState,
   ControllerModelEvidence,
   ControllerTurn,
+  PendingObservationDiagnostic,
 } from "../browser-adapter.js";
 import {
   isExactChatGptConversationUrl as isConversationUrl,
@@ -20,6 +21,7 @@ import {
 import { CueLineError } from "../../core/errors.js";
 import { commandHash } from "../../core/ids.js";
 import {
+  readAccessibilityRequestIdPresence,
   readPageChatState,
   readPageComposerState,
   resolveIabBrowser,
@@ -55,11 +57,14 @@ export interface CodexIabAdapterOptions {
   pollIntervalMs?: number;
   /** Non-negative integer no greater than Node's maximum timer delay. */
   stableMs?: number;
+  /** Stable pending duration before structured diagnostics are emitted. */
+  pendingDiagnosticMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1_000;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STABLE_MS = 1_500;
+const DEFAULT_PENDING_DIAGNOSTIC_MS = 10 * 60 * 1_000;
 const COMPOSER_HYDRATION_TIMEOUT_MS = 5_000;
 const SUBMITTED_RECOVERY_HYDRATION_TIMEOUT_MS = 10_000;
 const CONTENTEDITABLE_COMPOSER_SELECTOR = '#prompt-textarea[contenteditable="true"]';
@@ -250,11 +255,12 @@ async function readComposerModelLabelWhenReady(
 
 class CodexIabAdapter implements BrowserAdapter {
   readonly submissionCheckpointContract = "write_ahead_v1" as const;
-  readonly #options: Required<Pick<CodexIabAdapterOptions, "timeoutMs" | "pollIntervalMs" | "stableMs">> &
+  readonly #options: Required<Pick<CodexIabAdapterOptions, "timeoutMs" | "pollIntervalMs" | "stableMs" | "pendingDiagnosticMs">> &
     Pick<CodexIabAdapterOptions, "browser" | "conversationUrl">;
   #browser: IabBrowser | undefined;
   #tab: IabTab | undefined;
   #conversationUrl: string | undefined;
+  readonly #pendingObservations = new Map<string, { signature: string; since: number }>();
 
   constructor(options: CodexIabAdapterOptions) {
     if (
@@ -285,10 +291,57 @@ class CodexIabAdapter implements BrowserAdapter {
         0,
         "IAB_STABLE_WINDOW_INVALID",
       ),
+      pendingDiagnosticMs: validatedTimingOption(
+        "pendingDiagnosticMs",
+        options.pendingDiagnosticMs ?? DEFAULT_PENDING_DIAGNOSTIC_MS,
+        0,
+        "IAB_PENDING_DIAGNOSTIC_WINDOW_INVALID",
+      ),
       ...(options.browser === undefined ? {} : { browser: options.browser }),
       ...(options.conversationUrl === undefined ? {} : { conversationUrl: options.conversationUrl }),
     };
     this.#conversationUrl = options.conversationUrl;
+  }
+
+  #pendingObservation(
+    input: BrowserTurnInput,
+    evidence: BrowserSubmittedTurnEvidence,
+    signature: string,
+    failedCondition: string,
+  ): BrowserSubmittedTurnObservation {
+    const key = `${input.runId}:${input.round}:${input.requestId}`;
+    const now = Date.now();
+    const prior = this.#pendingObservations.get(key);
+    const since = prior?.signature === signature ? prior.since : now;
+    this.#pendingObservations.set(key, { signature, since });
+    const stableForMs = Math.max(0, now - since);
+    if (stableForMs >= this.#options.pendingDiagnosticMs) {
+      const diagnostic: PendingObservationDiagnostic = {
+        code: "CONTROLLER_OBSERVATION_PENDING_STABLE",
+        failedCondition,
+        stableForMs,
+        thresholdMs: this.#options.pendingDiagnosticMs,
+        observedUserMessageCount: evidence.observedUserMessageCount,
+        baselineUserMessageCount: evidence.baselineUserMessageCount,
+        requestMessageFound: evidence.requestMessageFound,
+        requestMessageFoundBy: evidence.requestMessageFoundBy ?? null,
+        assistantTextFoundBy: evidence.assistantTextFoundBy ?? null,
+        composerPromptState: evidence.composerPromptState ?? null,
+        sourcesConsulted: [
+          "message_dom",
+          ...(evidence.accessibilityRequestIdFound === null ||
+          evidence.accessibilityRequestIdFound === undefined
+            ? []
+            : ["accessibility_snapshot"]),
+        ],
+      };
+      evidence.pendingDiagnostic = diagnostic;
+    }
+    return { status: "pending", evidence };
+  }
+
+  #clearPendingObservation(input: BrowserTurnInput): void {
+    this.#pendingObservations.delete(`${input.runId}:${input.round}:${input.requestId}`);
   }
 
   async #getBrowser(): Promise<IabBrowser> {
@@ -1289,6 +1342,12 @@ class CodexIabAdapter implements BrowserAdapter {
     let stableSignature = "";
     let stableSince = 0;
     let lastEvidence: BrowserSubmittedTurnEvidence | undefined;
+    let observationBaselineUserMessageCount = Number.isSafeInteger(
+      baselineUserMessageCount,
+    )
+      ? baselineUserMessageCount!
+      : null;
+    let countRegressionDetected = false;
     const expectedIdentity: ExpectedControllerIdentity = {
       runId: input.runId,
       round: input.round,
@@ -1298,7 +1357,7 @@ class CodexIabAdapter implements BrowserAdapter {
     for (;;) {
       throwIfCancelled(input.signal);
       const state = await withBrowserOperationTimeout(
-        () => readPageChatState(tab, expectedIdentity),
+        () => readPageChatState(tab, expectedIdentity, input.prompt),
         operationTimeoutMs,
         input.signal,
         () =>
@@ -1331,34 +1390,60 @@ class CodexIabAdapter implements BrowserAdapter {
       const baseline = Number.isSafeInteger(baselineUserMessageCount)
         ? baselineUserMessageCount!
         : observedUserMessageCount;
+      if (
+        observedUserMessageCount !== null &&
+        observationBaselineUserMessageCount !== null &&
+        observedUserMessageCount < observationBaselineUserMessageCount
+      ) {
+        countRegressionDetected = true;
+        observationBaselineUserMessageCount = observedUserMessageCount;
+      } else if (
+        observationBaselineUserMessageCount === null &&
+        observedUserMessageCount !== null
+      ) {
+        observationBaselineUserMessageCount = observedUserMessageCount;
+      }
       const baselineLoaded =
         baseline !== null &&
         observedUserMessageCount !== null &&
         observedUserMessageCount >= baseline;
-      const requestMessageFound = baselineLoaded
-        ? state.lastUserText !== null &&
+      const requestMessageFound =
+        state.requestMessageFound ??
+        (state.lastUserText !== null &&
           (normalizedMessageText(state.lastUserText) ===
             normalizedMessageText(input.prompt) ||
-            state.lastUserText.includes(input.requestId))
-        : null;
+            state.lastUserText.includes(input.requestId)));
+      const hasExactCurrentEnvelope = hasExactControllerEnvelopeIdentity(
+        state.assistantText,
+        expectedIdentity,
+      );
       const now = Date.now();
       const hydrated =
-        baselineLoaded &&
-        (baseline! > 0 || observedUserMessageCount! > 0 || now >= deadline);
+        observationBaselineUserMessageCount !== null &&
+        observedUserMessageCount !== null &&
+        (observationBaselineUserMessageCount > 0 ||
+          observedUserMessageCount > 0 ||
+          (!countRegressionDetected && now >= deadline));
       const evidence: BrowserSubmittedTurnEvidence = {
         conversationUrl: state.pageUrl,
         selectedModelLabel,
         hydrated,
         baselineUserMessageCount: baseline ?? 0,
+        observationBaselineUserMessageCount,
         observedUserMessageCount,
+        countRegressionDetected,
         requestMessageFound,
-        isAnswering: baselineLoaded ? state.isAnswering : null,
+        requestMessageFoundBy: state.requestMessageFoundBy ?? null,
+        requestMessageScanComplete: state.requestMessageScanComplete === true,
+        accessibilityRequestIdFound: null,
+        ...(state.assistantTextFoundBy === undefined
+          ? {}
+          : { assistantTextFoundBy: state.assistantTextFoundBy }),
+        isAnswering: state.isAnswering,
         composerPromptState: composerState.state,
         composerAttachmentCount: composerState.attachmentCount,
         composerSendButtonEnabled: composerState.sendButtonEnabled,
       };
-      lastEvidence = evidence;
-
       const stagedPromptRemains = legacyPreSubmissionRecovery
         ? true
         : input.attachmentPromptExpected === true
@@ -1367,11 +1452,51 @@ class CodexIabAdapter implements BrowserAdapter {
             composerState.sendButtonEnabled
           : composerState.state === "inline_ready" &&
             composerState.sendButtonEnabled;
-      const notSentCandidate =
-        baselineLoaded &&
+      const notSentPreconditions =
+        !countRegressionDetected &&
+        state.requestMessageScanComplete === true &&
         requestMessageFound === false &&
         state.isAnswering === false &&
         stagedPromptRemains;
+      if (notSentPreconditions) {
+        evidence.accessibilityRequestIdFound = await withBrowserOperationTimeout(
+          () => readAccessibilityRequestIdPresence(tab, input.requestId),
+          operationTimeoutMs,
+          input.signal,
+          () =>
+            new CueLineError(
+              "CONTROLLER_RECONCILIATION_READ_TIMEOUT",
+              `ChatGPT's accessibility request scan did not finish within ${operationTimeoutMs} ms.`,
+            ),
+        );
+      }
+      lastEvidence = evidence;
+      const notSentCandidate =
+        notSentPreconditions && evidence.accessibilityRequestIdFound === false;
+      const failedCondition = countRegressionDetected
+        ? `observed ${observedUserMessageCount ?? "unknown"} < baseline ${baseline ?? "unknown"}`
+        : state.isAnswering
+          ? "controller is still answering"
+          : stagedPromptRemains
+            ? "staged composer remains without dual-source request absence proof"
+            : hasExactCurrentEnvelope
+              ? "exact controller envelope is not yet safe to adopt"
+              : "exact controller envelope not found";
+      const pendingSignature = [
+        observedUserMessageCount,
+        state.assistantMessageCount,
+        state.assistantTextSource ?? "unknown",
+        state.assistantTextFoundBy ?? "unknown",
+        requestMessageFound,
+        state.requestMessageFoundBy ?? "unknown",
+        evidence.accessibilityRequestIdFound,
+        state.isAnswering,
+        composerState.state,
+        composerState.attachmentCount,
+        composerState.sendButtonEnabled,
+      ].join(":");
+      const pendingObservation = () =>
+        this.#pendingObservation(input, evidence, pendingSignature, failedCondition);
       if (notSentCandidate) {
         const signature = `${observedUserMessageCount}:${state.assistantMessageCount}:${state.lastMessageRole}:${state.lastUserText ?? ""}:${composerState.state}:${composerState.attachmentCount}:${composerState.sendButtonEnabled}`;
         if (signature !== stableSignature) {
@@ -1379,6 +1504,7 @@ class CodexIabAdapter implements BrowserAdapter {
           stableSince = now;
         }
         if (hydrated && now - stableSince >= this.#options.stableMs) {
+          this.#clearPendingObservation(input);
           return { status: "definitely_not_sent", evidence };
         }
       } else {
@@ -1392,9 +1518,9 @@ class CodexIabAdapter implements BrowserAdapter {
       // pending turn and could authorize a repair send.
       if (stagedPromptRemains) {
         if (baselineLoaded && (requestMessageFound === true || state.isAnswering)) {
-          return { status: "pending", evidence };
+          return pendingObservation();
         }
-        if (now >= deadline) return { status: "pending", evidence };
+        if (now >= deadline) return pendingObservation();
         await delay(
           Math.min(this.#options.pollIntervalMs, Math.max(1, deadline - now)),
           input.signal,
@@ -1402,10 +1528,6 @@ class CodexIabAdapter implements BrowserAdapter {
         continue;
       }
 
-      const hasExactCurrentEnvelope = hasExactControllerEnvelopeIdentity(
-        state.assistantText,
-        expectedIdentity,
-      );
       const hasReliablePostClickUserTurn =
         baseline !== null &&
         baseline > 0 &&
@@ -1417,7 +1539,9 @@ class CodexIabAdapter implements BrowserAdapter {
 
       const countDegradedExactEnvelope =
         !baselineLoaded &&
-        state.assistantTextSource === "accessibility_exact_envelope" &&
+        (state.assistantTextSource === "accessibility_exact_envelope" ||
+          (state.assistantTextSource === "message_dom" &&
+            state.lastMessageRole === "assistant")) &&
         isProLabel(selectedModelLabel) &&
         hasExactCurrentEnvelope &&
         !state.isAnswering;
@@ -1440,11 +1564,11 @@ class CodexIabAdapter implements BrowserAdapter {
         ) {
           throw new CueLineError(
             "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
-            "The ChatGPT conversation changed after the exact accessibility response was read.",
+            "The ChatGPT conversation changed after the exact controller response was read.",
           );
         }
         if (checkpointState.isAnswering) {
-          return { status: "pending", evidence };
+          return pendingObservation();
         }
         const completed: PageChatState = {
           ...state,
@@ -1455,26 +1579,31 @@ class CodexIabAdapter implements BrowserAdapter {
           selectedModelLabel,
           completed,
         );
+        this.#clearPendingObservation(input);
         return {
           status: "response",
           turn,
-          responseSource: "count_degraded_accessibility_exact_envelope",
+          evidence,
+          responseSource:
+            state.assistantTextSource === "message_dom"
+              ? "count_degraded_message_dom_exact_envelope"
+              : "count_degraded_accessibility_exact_envelope",
         };
       }
 
       if (baselineLoaded && currentRequestCorrelated && !state.isAnswering) {
         const turn = await this.#readExistingTurn(input, false);
-        return turn === undefined
-          ? { status: "pending", evidence }
-          : { status: "response", turn };
+        if (turn === undefined) return pendingObservation();
+        this.#clearPendingObservation(input);
+        return { status: "response", turn, evidence };
       }
       if (baselineLoaded && (currentRequestCorrelated || state.isAnswering)) {
-        return { status: "pending", evidence };
+        return pendingObservation();
       }
       if (now >= deadline) {
         return lastEvidence === undefined
           ? { status: "pending" }
-          : { status: "pending", evidence: lastEvidence };
+          : pendingObservation();
       }
       await delay(
         Math.min(this.#options.pollIntervalMs, Math.max(1, deadline - now)),

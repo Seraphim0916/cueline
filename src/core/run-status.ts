@@ -84,6 +84,7 @@ export interface CueLineRunStatusSummary {
     lastAcceptedAction: "dispatch" | "wait" | "inspect" | "complete" | "blocked" | null;
     lastAcceptedRequestId: string | null;
     lastAcceptedJobKeys: string[];
+    pendingDiagnostic?: CueLineRunState["pendingObservationDiagnostic"];
     reconciliation?: {
       requiredReason: string | null;
       operatorConfirmation: "not_sent_confirmed" | "manual_send_confirmed" | null;
@@ -635,6 +636,7 @@ export function summarizeCueLineRunState(
       lastAcceptedAction: acceptedCommand.action,
       lastAcceptedRequestId: acceptedCommand.requestId,
       lastAcceptedJobKeys: acceptedCommand.jobKeys,
+      pendingDiagnostic: state.pendingObservationDiagnostic,
       ...(reconciliation === undefined ? {} : { reconciliation }),
       archive: {
         enabled: state.controllerConversationArchive?.enabled === true,

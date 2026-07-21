@@ -469,6 +469,11 @@ async function runStatusCommand(
       `controller_archive\tenabled=yes\tstatus=${status.controller.archive.status}\tcode=${status.controller.archive.code ?? "-"}\tproof=${status.controller.archive.proof ?? "-"}`,
     );
   }
+  if (status.controller.pendingDiagnostic != null) {
+    io.stdout(
+      `controller_pending_diagnostic\t${status.controller.pendingDiagnostic.code}\tcondition=${status.controller.pendingDiagnostic.failedCondition}\tstable_ms=${status.controller.pendingDiagnostic.stableForMs}\tthreshold_ms=${status.controller.pendingDiagnostic.thresholdMs}`,
+    );
+  }
   io.stdout(
     `jobs\ttotal=${status.jobs.total}\tpending=${counts.pending}\trunning=${counts.running}\tsucceeded=${counts.succeeded}\tfailed=${counts.failed}\ttimed_out=${counts.timed_out}\torphaned=${counts.orphaned}\tcancelled=${counts.cancelled}\tambiguous=${counts.ambiguous}`,
   );

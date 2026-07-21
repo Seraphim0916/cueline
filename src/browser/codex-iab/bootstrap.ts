@@ -14,6 +14,10 @@ export interface PageChatState {
   lastUserText: string | null;
   lastMessageRole: "assistant" | "user" | null;
   assistantTextSource?: "message_dom" | "accessibility_exact_envelope";
+  assistantTextFoundBy?: "last_message" | "exact_envelope_scan" | "accessibility_exact_envelope";
+  requestMessageFound?: boolean | null;
+  requestMessageFoundBy?: "last_text" | "request_id_scan" | "prompt_scan" | null;
+  requestMessageScanComplete?: boolean;
 }
 
 export interface PageComposerState {
@@ -163,16 +167,55 @@ export async function resolveIabBrowser(requested?: IabBrowser): Promise<IabBrow
 export async function readPageChatState(
   tab: IabTab,
   exactControllerIdentity?: ExpectedControllerIdentity,
+  expectedPrompt?: string,
 ): Promise<PageChatState> {
   const state = await tab.playwright.evaluate<
     PageChatState,
-    { allowCountDegradedModelEvidence: boolean }
+    {
+      allowCountDegradedModelEvidence: boolean;
+      exactControllerIdentity?: ExpectedControllerIdentity;
+      expectedPrompt?: string;
+    }
   >(
     (
-      { allowCountDegradedModelEvidence } = {
+      { allowCountDegradedModelEvidence, exactControllerIdentity, expectedPrompt } = {
         allowCountDegradedModelEvidence: false,
       },
     ) => {
+      const normalizeMessageText = (value: unknown): string =>
+        String(value ?? "")
+          .replace(/\u00a0/g, " ")
+          .replace(/\r\n?/g, "\n")
+          .replace(/[ \t]+\n/g, "\n")
+          .replace(/\n(?:[ \t]*\n)+/g, "\n")
+          .trim();
+      const visibleMessageText = (message: Element | undefined): string =>
+        message !== undefined && "innerText" in message
+          ? String(
+              (message as Element & { innerText?: string }).innerText ??
+                message.textContent ??
+                "",
+            )
+          : message?.textContent ?? "";
+      const hasExactIdentity = (text: string): boolean => {
+        if (exactControllerIdentity === undefined) return false;
+        let body: string | undefined;
+        for (const match of text.matchAll(/<CueLineControl>([\s\S]*?)<\/CueLineControl>/g)) {
+          body = match[1];
+        }
+        if (body === undefined) return false;
+        try {
+          const parsed = JSON.parse(body.trim()) as Record<string, unknown>;
+          return (
+            parsed.protocol === "cueline/0.1" &&
+            parsed.run_id === exactControllerIdentity.runId &&
+            parsed.round === exactControllerIdentity.round &&
+            parsed.request_id === exactControllerIdentity.requestId
+          );
+        } catch {
+          return false;
+        }
+      };
       const buttons = Array.from(document.querySelectorAll("button"));
       const isAnswering = buttons.some((button) => {
         const ariaLabel = button.getAttribute("aria-label")?.trim();
@@ -240,19 +283,17 @@ export async function readPageChatState(
       const userMessages = messages.filter(
         (message) => message.getAttribute("data-message-author-role") === "user",
       );
-      const last = assistantMessages.at(-1);
-      const visibleText =
-        last !== undefined && "innerText" in last
-          ? String((last as Element & { innerText?: string }).innerText ?? last.textContent ?? "")
-          : last?.textContent ?? "";
-      const assistantText = visibleText
-        .replace(/\u00a0/g, " ")
-        .trim();
+      const lastAssistant = assistantMessages.at(-1);
+      const exactAssistant = assistantMessages.findLast((message) =>
+        hasExactIdentity(normalizeMessageText(visibleMessageText(message))),
+      );
+      const selectedAssistant = exactAssistant ?? lastAssistant;
+      const assistantText = normalizeMessageText(visibleMessageText(selectedAssistant));
       const modelTaggedMessages = Array.from(
         document.querySelectorAll("[data-message-model-slug]"),
       );
       const assistantModelSlug =
-        last?.getAttribute("data-message-model-slug") ??
+        selectedAssistant?.getAttribute("data-message-model-slug") ??
         (allowCountDegradedModelEvidence
           ? modelTaggedMessages.at(-1)?.getAttribute("data-message-model-slug")
           : null) ??
@@ -267,7 +308,37 @@ export async function readPageChatState(
             )
           : lastUser?.textContent ?? "";
       const lastUserText =
-        lastUser === undefined ? null : lastUserVisibleText.replace(/\u00a0/g, " ").trim();
+        lastUser === undefined ? null : normalizeMessageText(lastUserVisibleText);
+      const normalizedExpectedPrompt = normalizeMessageText(expectedPrompt);
+      const lastUserMatches =
+        exactControllerIdentity !== undefined &&
+        lastUserText !== null &&
+        (lastUserText.includes(exactControllerIdentity.requestId) ||
+          (normalizedExpectedPrompt !== "" &&
+            normalizeMessageText(lastUserText) === normalizedExpectedPrompt));
+      const requestIdMatch =
+        exactControllerIdentity !== undefined &&
+        userMessages.some((message) =>
+          normalizeMessageText(visibleMessageText(message)).includes(
+            exactControllerIdentity.requestId,
+          ),
+        );
+      const promptMatch =
+        normalizedExpectedPrompt !== "" &&
+        userMessages.some(
+          (message) =>
+            normalizeMessageText(visibleMessageText(message)) === normalizedExpectedPrompt,
+        );
+      const requestMessageFoundBy: PageChatState["requestMessageFoundBy"] =
+        exactControllerIdentity === undefined && normalizedExpectedPrompt === ""
+          ? null
+          : lastUserMatches
+            ? "last_text"
+            : requestIdMatch
+              ? "request_id_scan"
+              : promptMatch
+                ? "prompt_scan"
+                : null;
       const lastRole = messages.at(-1)?.getAttribute("data-message-author-role");
       const lastMessageRole: PageChatState["lastMessageRole"] =
         lastRole === "assistant" || lastRole === "user" ? lastRole : null;
@@ -281,9 +352,22 @@ export async function readPageChatState(
         lastUserText,
         lastMessageRole,
         assistantTextSource: "message_dom" as const,
+        assistantTextFoundBy:
+          exactAssistant === undefined ? "last_message" : "exact_envelope_scan",
+        requestMessageFound:
+          exactControllerIdentity === undefined && normalizedExpectedPrompt === ""
+            ? null
+            : requestMessageFoundBy !== null,
+        requestMessageFoundBy,
+        requestMessageScanComplete:
+          exactControllerIdentity !== undefined || normalizedExpectedPrompt !== "",
       };
     },
-    { allowCountDegradedModelEvidence: exactControllerIdentity !== undefined },
+    {
+      allowCountDegradedModelEvidence: exactControllerIdentity !== undefined,
+      ...(exactControllerIdentity === undefined ? {} : { exactControllerIdentity }),
+      ...(expectedPrompt === undefined ? {} : { expectedPrompt }),
+    },
   );
 
   if (
@@ -307,7 +391,16 @@ export async function readPageChatState(
     assistantText: exactEnvelope,
     lastMessageRole: "assistant",
     assistantTextSource: "accessibility_exact_envelope",
+    assistantTextFoundBy: "accessibility_exact_envelope",
   };
+}
+
+export async function readAccessibilityRequestIdPresence(
+  tab: IabTab,
+  requestId: string,
+): Promise<boolean | null> {
+  const snapshot = await tab.playwright.domSnapshot();
+  return typeof snapshot === "string" ? snapshot.includes(requestId) : null;
 }
 
 export async function readPageComposerState(

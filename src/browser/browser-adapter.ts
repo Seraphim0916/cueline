@@ -21,13 +21,31 @@ export interface BrowserTurnInput {
   signal?: AbortSignal;
 }
 
+export type RecoveredResponseSource =
+  | "count_degraded_accessibility_exact_envelope"
+  | "count_degraded_message_dom_exact_envelope";
+
+export interface PendingObservationDiagnostic {
+  code: "CONTROLLER_OBSERVATION_PENDING_STABLE";
+  failedCondition: string;
+  stableForMs: number;
+  thresholdMs: number;
+  observedUserMessageCount: number | null;
+  baselineUserMessageCount: number;
+  requestMessageFound: boolean | null;
+  requestMessageFoundBy: "last_text" | "request_id_scan" | "prompt_scan" | null;
+  assistantTextFoundBy: "last_message" | "exact_envelope_scan" | "accessibility_exact_envelope" | null;
+  composerPromptState: ComposerPromptState | "empty" | null;
+  sourcesConsulted: string[];
+}
+
 export interface ControllerTurn {
   text: string;
   conversationUrl?: string;
   title?: string;
   model?: ControllerModelEvidence;
   /** Narrow provenance used to preserve a separate dispatch boundary. */
-  responseSource?: "count_degraded_accessibility_exact_envelope";
+  responseSource?: RecoveredResponseSource;
 }
 
 export interface BrowserSubmittedTurnEvidence {
@@ -35,8 +53,15 @@ export interface BrowserSubmittedTurnEvidence {
   selectedModelLabel: string | null;
   hydrated: boolean;
   baselineUserMessageCount: number;
+  observationBaselineUserMessageCount?: number | null;
   observedUserMessageCount: number | null;
+  countRegressionDetected?: boolean;
   requestMessageFound: boolean | null;
+  requestMessageFoundBy?: "last_text" | "request_id_scan" | "prompt_scan" | null;
+  requestMessageScanComplete?: boolean;
+  accessibilityRequestIdFound?: boolean | null;
+  pendingDiagnostic?: PendingObservationDiagnostic;
+  assistantTextFoundBy?: "last_message" | "exact_envelope_scan" | "accessibility_exact_envelope";
   isAnswering: boolean | null;
   /** Redacted composer evidence used to prove that the exact staged turn remains unsent. */
   composerPromptState?: ComposerPromptState | "empty";
@@ -48,8 +73,9 @@ export type BrowserSubmittedTurnObservation =
   | {
       status: "response";
       turn: ControllerTurn;
+      evidence?: BrowserSubmittedTurnEvidence;
       /** Narrow provenance used to preserve a separate dispatch boundary. */
-      responseSource?: "count_degraded_accessibility_exact_envelope";
+      responseSource?: RecoveredResponseSource;
     }
 | { status: "pending"; evidence?: BrowserSubmittedTurnEvidence }
 | { status: "definitely_not_sent"; evidence: BrowserSubmittedTurnEvidence };
