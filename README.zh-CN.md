@@ -22,11 +22,11 @@
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 的包装层。
 
-## 最新版本：0.4.8
+## 最新版本：0.6.0
 
-- 重启后的 recovery 不再把 hydration 导致的历史消息数上升当作当前 request 已发送的证据。CueLine 只有在精确关联当前 request 后才会解析最后一条 assistant 回复；接收现存回复后会停在 `ready`，下一轮必须另行执行一次 `continue`；681/681 测试通过。
+- 当 ChatGPT 长对话虚拟化导致可见消息数回退到发送前基线以下时，submitted-turn recovery 不再永久停在 `pending`。观测改为身份优先：扫描全部可见消息中的 request id 与精确 controller envelope，消息数仅作辅助证据；普通消息 DOM 中带精确 envelope 的已完成 Pro 回复可直接接收（需要 Pro 证据）。计数回退时禁止 `definitely_not_sent`；pending 稳定 10 分钟会输出结构化诊断。703/703 测试通过。
 
-完整内容请查看 [changelog](CHANGELOG.md#048---2026-07-20) 或版本化的 [v0.4.8 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.8)。
+完整内容请查看 [changelog](CHANGELOG.md#060---2026-07-21) 或版本化的 [v0.6.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.0)。
 
 ## 一次运行实际是怎么走的
 
@@ -67,15 +67,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.4.8
+npm install -g cueline@0.6.0
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.4.8 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.8) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.6.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.0) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.8/cueline-0.4.8.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.0/cueline-0.6.0.tgz
 cueline install
 cueline doctor
 ```
@@ -184,7 +184,7 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.4.8
+CueLine 0.6.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

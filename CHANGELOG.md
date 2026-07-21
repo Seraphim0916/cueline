@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.0 - 2026-07-21
+
+### Added
+
+- Structured pending-observation diagnostics. When a submitted-turn
+  observation stays pending with a stable signature for 10 minutes,
+  CueLine records why (failed condition, baselines, evidence sources) in
+  durable run state, surfaced as `controller.pendingDiagnostic` in JSON
+  `run status` and as `controller_pending_diagnostic` in text output.
+
+### Fixed
+
+- Submitted-turn recovery no longer deadlocks in `pending` when ChatGPT
+  long-conversation DOM virtualization makes the visible user-message count
+  regress below the pre-send baseline. Observation is now identity-first:
+  every visible user message is scanned for the request id and every
+  assistant message for the exact controller envelope; message counts are
+  advisory evidence only. A completed Pro reply present in the ordinary
+  message DOM with the exact run/round/request envelope is accepted through
+  the new `count_degraded_message_dom_exact_envelope` response source
+  (Pro evidence required; recovered dispatch stays deferred).
+- Count regression on the same conversation is recorded explicitly,
+  re-baselines the observation baseline, and forbids `definitely_not_sent`.
+  Outside regression, `definitely_not_sent` additionally requires both the
+  full-DOM and the accessibility-snapshot request-id scans to miss before
+  the one-shot not-sent retry can be authorized.
+
+### Verification
+
+- 703/703 tests pass; typecheck clean; `release:check` findings empty.
+
 ## 0.5.0 - 2026-07-21
 
 ### Fixed

@@ -22,11 +22,11 @@
 
 CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane을 감싼 래퍼가 아닙니다.
 
-## 최신 릴리스: 0.4.8
+## 최신 릴리스: 0.6.0
 
-- 재시작 후 recovery는 hydration으로 늘어난 과거 메시지 수를 현재 request가 전송되었다는 증거로 취급하지 않습니다. CueLine은 현재 request를 정확히 연관 지은 뒤에만 마지막 assistant 응답을 해석하며, 기존 응답을 수락한 뒤 `ready`에서 멈추므로 다음 라운드에는 별도의 `continue`가 필요합니다. 681/681 테스트를 통과했습니다.
+- ChatGPT 긴 대화의 가상화로 보이는 메시지 수가 전송 전 기준선 아래로 줄어들어도 submitted-turn recovery가 `pending`에 영구히 멈추지 않습니다. 관측은 identity-first로 바뀌어 보이는 모든 메시지에서 request id와 정확한 controller envelope을 스캔하며, 메시지 수는 보조 증거로만 사용합니다. 일반 메시지 DOM에 정확한 envelope이 있는 완료된 Pro 응답을 수락할 수 있습니다(Pro 증거 필요). 카운트 감소 시 `definitely_not_sent`를 금지하고, pending이 10분간 안정되면 구조화된 진단을 출력합니다. 703/703 테스트를 통과했습니다.
 
-전체 내용은 [changelog](CHANGELOG.md#048---2026-07-20) 또는 버전이 지정된 [v0.4.8 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.8)에서 확인할 수 있습니다.
+전체 내용은 [changelog](CHANGELOG.md#060---2026-07-21) 또는 버전이 지정된 [v0.6.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.0)에서 확인할 수 있습니다.
 
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
@@ -67,15 +67,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.4.8
+npm install -g cueline@0.6.0
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.4.8 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.4.8)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.6.0 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.0)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.4.8/cueline-0.4.8.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.0/cueline-0.6.0.tgz
 cueline install
 cueline doctor
 ```
@@ -182,7 +182,7 @@ CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에
 
 ```console
 $ cueline doctor
-CueLine 0.4.8
+CueLine 0.6.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
