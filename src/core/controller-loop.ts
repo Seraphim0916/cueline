@@ -629,11 +629,22 @@ async function driveControllerLoop(
     }
     const round = state.round + 1;
     const evidenceJobs = await controllerEvidenceJobs(store);
-    const notSentRetry =
+    const confirmedNotSentRetry =
       state.notSentRecovery?.status === "confirmed" &&
       state.notSentRecovery.retryRequestId === null
         ? state.notSentRecovery
         : undefined;
+    const notSentRetry =
+      confirmedNotSentRetry === undefined
+        ? undefined
+        : {
+            ...confirmedNotSentRetry,
+            ...(state.postFixRetryReauthorization?.status === "authorized" &&
+            state.postFixRetryReauthorization.requestId ===
+              confirmedNotSentRetry.abandonedRequestId
+              ? { postFixRetryReauthorized: true }
+              : {}),
+          };
     // A staged composer attachment is immutable and already embeds the abandoned
     // request_id, so that id stays the controller-visible protocol identity for the
     // retry; minting a fresh id could only diverge from what Pro will actually read.
@@ -838,6 +849,9 @@ async function reconcilePendingControllerTurn(
     ...(pending.manualSendConfirmed ? { manualSendConfirmed: true } : {}),
     ...(pending.composerPromptState === "attachment_ready"
       ? { attachmentPromptExpected: true }
+      : {}),
+    ...(pending.submissionState === "submitted"
+      ? { durableSubmittedCheckpoint: true }
       : {}),
     ...(pending.baselineUserMessageCount === null ||
     pending.baselineUserMessageCount === undefined

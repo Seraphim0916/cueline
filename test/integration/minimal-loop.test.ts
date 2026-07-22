@@ -8,6 +8,8 @@ import test from "node:test";
 
 import type {
   BrowserAdapter,
+  BrowserSubmissionComposerEvidence,
+  BrowserSubmissionTargetEvidence,
   BrowserTurnHooks,
   BrowserTurnInput,
   ControllerTurn,
@@ -3317,6 +3319,49 @@ test("persists submission checkpoints and failure diagnostics before observing a
   const runId = "run_submission_evidence";
   const stateHome = await home();
   const conversationUrl = "https://chatgpt.com/c/submission-evidence";
+  const composerEvidence = {
+    state: "inline_ready",
+    inlineTextLength: 42,
+    attachmentCount: 0,
+    pastedTextAttachmentPresent: false,
+    sendButtonEnabled: true,
+  } satisfies BrowserSubmissionComposerEvidence;
+  const sendTargetEvidence = {
+    tabId: "tab-submission-evidence",
+    targetKind: "locator",
+    coordinate: { x: 1200, y: 780 },
+    buttonRect: {
+      x: 1176,
+      y: 756,
+      width: 48,
+      height: 48,
+      top: 756,
+      right: 1224,
+      bottom: 804,
+      left: 1176,
+    },
+    viewport: { width: 1440, height: 900 },
+    devicePixelRatio: 2,
+    elementFromPoint: {
+      tagName: "svg",
+      role: null,
+      ariaLabel: null,
+      testId: null,
+      id: null,
+      className: "send-icon",
+    },
+    elementFromPointButtonAncestor: {
+      tagName: "button",
+      role: null,
+      ariaLabel: "Send prompt",
+      testId: "send-button",
+      id: null,
+      className: "composer-submit",
+    },
+    elementFromPointMatchesButton: true,
+    documentHasFocus: true,
+    documentVisibilityState: "visible",
+  } satisfies BrowserSubmissionTargetEvidence;
   const browser: BrowserAdapter = {
     async sendTurn(_input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<ControllerTurn> {
       await hooks?.onCheckpoint?.({
@@ -3325,6 +3370,8 @@ test("persists submission checkpoints and failure diagnostics before observing a
         conversationUrl,
         selectedModelLabel: "Pro",
         baselineAssistantMessageCount: 2,
+        composerEvidence,
+        sendTargetEvidence,
       });
       await hooks?.onCheckpoint?.({
         submissionState: "submitted",
@@ -3332,6 +3379,8 @@ test("persists submission checkpoints and failure diagnostics before observing a
         conversationUrl,
         selectedModelLabel: "Pro",
         baselineAssistantMessageCount: 2,
+        composerEvidence,
+        sendTargetEvidence,
       });
       throw new CueLineError(
         "IAB_READ_FAILED_AFTER_SUBMIT",
@@ -3371,6 +3420,8 @@ test("persists submission checkpoints and failure diagnostics before observing a
     selected_model_label: "Pro",
     composer_prompt_state: "inline_ready",
     baseline_assistant_message_count: 2,
+    composer_evidence: composerEvidence,
+    send_target_evidence: sendTargetEvidence,
   });
   const failed = events.at(-1);
   assert.equal(failed?.type, "run_failed");

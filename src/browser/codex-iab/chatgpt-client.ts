@@ -5,6 +5,8 @@ import type {
   BrowserConversationArchiveInput,
   BrowserMisdirectedTurnObservation,
   BrowserMisdirectedTurnObservationInput,
+  BrowserSubmissionComposerEvidence,
+  BrowserSubmissionTargetEvidence,
   BrowserSubmittedTurnEvidence,
   BrowserSubmittedTurnObservation,
   BrowserTurnHooks,
@@ -29,6 +31,7 @@ import {
   type IabLocator,
   type IabTab,
   type PageChatState,
+  type PageComposerState,
 } from "./bootstrap.js";
 import {
   ARCHIVE_MENUITEM_NAMES,
@@ -43,7 +46,7 @@ import {
   normalizedMessageText,
 } from "./recovery-evidence.js";
 import { captureConversationUrlAfterSubmit } from "./submission-url.js";
-import { findVisibleSendButtonCoordinates } from "./send-button.js";
+import { inspectVisibleSendButton } from "./send-button.js";
 import { acquireChatGptTab, isTabUnavailableError } from "./tab-discovery.js";
 import { validatedTimingOption } from "./timing-options.js";
 import type { ExpectedControllerIdentity } from "../../protocol/types.js";
@@ -85,16 +88,39 @@ interface TurnAttemptContext {
   baseline?: PageChatState;
   selectedModelLabel?: string;
   composerPromptState?: ComposerPromptState;
+  composerEvidence?: BrowserSubmissionComposerEvidence;
+  sendTargetEvidence?: BrowserSubmissionTargetEvidence;
 }
 
 type SendTarget =
-  | { kind: "locator"; locator: IabLocator }
-  | { kind: "coordinate"; x: number; y: number };
+  | {
+      kind: "locator";
+      locator: IabLocator;
+      evidence: BrowserSubmissionTargetEvidence;
+    }
+  | {
+      kind: "coordinate";
+      x: number;
+      y: number;
+      evidence: BrowserSubmissionTargetEvidence;
+    };
 
 type PostClickAcknowledgement =
   | { status: "submitted"; state: PageChatState }
   | { status: "definitely_not_sent"; state: PageChatState }
   | { status: "possibly_sent"; state: PageChatState };
+
+function submissionComposerEvidence(
+  state: PageComposerState,
+): BrowserSubmissionComposerEvidence {
+  return {
+    state: state.state,
+    inlineTextLength: state.inlineTextLength,
+    attachmentCount: state.attachmentCount,
+    pastedTextAttachmentPresent: state.pastedTextAttachmentPresent === true,
+    sendButtonEnabled: state.sendButtonEnabled,
+  };
+}
 
 function throwIfCancelled(signal: AbortSignal | undefined): void {
   if (signal?.aborted !== true) return;
@@ -448,6 +474,89 @@ class CodexIabAdapter implements BrowserAdapter {
     );
   }
 
+  async #waitForHistoricalPageReady(
+    tab: IabTab,
+    input: BrowserTurnInput,
+    baseline: PageChatState,
+    expectedConversationUrl?: string,
+  ): Promise<PageChatState> {
+    const expectedIdentity: ExpectedControllerIdentity = {
+      runId: input.runId,
+      round: input.round,
+      requestId: input.requestId,
+    };
+    const isKnownHistoricalConversation =
+      input.round > 1 &&
+      expectedConversationUrl !== undefined &&
+      isConversationUrl(expectedConversationUrl);
+    const historyCountsAreDegraded = (state: PageChatState): boolean =>
+      (state.userMessageCount ?? 0) === 0 && state.assistantMessageCount === 0;
+    if (!isKnownHistoricalConversation || !historyCountsAreDegraded(baseline)) {
+      return baseline;
+    }
+
+    const deadline =
+      Date.now() + Math.min(this.#options.timeoutMs, COMPOSER_HYDRATION_TIMEOUT_MS);
+    const operationTimeoutMs = Math.min(
+      SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.timeoutMs,
+    );
+    let state = baseline;
+    for (;;) {
+      throwIfCancelled(input.signal);
+      if (!historyCountsAreDegraded(state)) return state;
+      const now = Date.now();
+      if (now >= deadline) {
+        throw new CueLineError(
+          "CONTROLLER_PAGE_HISTORY_NOT_READY",
+          "The bound historical ChatGPT conversation still reported 0/0 messages; refusing any send action until the page state is readable.",
+          {
+            details: {
+              stage: "pre_submit",
+              submission_state: "definitely_not_sent",
+              request_id: input.requestId,
+              conversation_url: state.pageUrl,
+              observed_user_message_count: state.userMessageCount ?? 0,
+              observed_assistant_message_count: state.assistantMessageCount,
+            },
+          },
+        );
+      }
+      await delay(
+        Math.min(this.#options.pollIntervalMs, Math.max(1, deadline - now)),
+        input.signal,
+      );
+      state = await withBrowserOperationTimeout(
+        () => readPageChatState(tab, expectedIdentity, input.prompt),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_SUBMISSION_PRECLICK_READ_TIMEOUT",
+            `ChatGPT's pre-click history readiness check did not finish within ${operationTimeoutMs} ms; no send action was attempted.`,
+          ),
+      );
+      if (
+        expectedConversationUrl !== undefined &&
+        !sameChatGptConversationUrl(state.pageUrl, expectedConversationUrl)
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_RECONCILIATION_CONVERSATION_MISMATCH",
+          "The selected ChatGPT tab changed while waiting for pre-click history readiness; refusing submission.",
+          {
+            details: {
+              stage: "pre_submit",
+              submission_state: "definitely_not_sent",
+              request_id: input.requestId,
+              expected_conversation_url: expectedConversationUrl,
+              observed_conversation_url: state.pageUrl,
+            },
+          },
+        );
+      }
+    }
+  }
+
   async #waitForPostClickAcknowledgement(
     tab: IabTab,
     input: BrowserTurnInput,
@@ -520,13 +629,15 @@ class CodexIabAdapter implements BrowserAdapter {
       const assistantTurnAdded =
         state.assistantMessageCount > baseline.assistantMessageCount;
 
-      if (
-        requestMessageFound ||
-        createdConversation ||
-        userTurnAdded ||
-        answeringStarted ||
-        assistantTurnAdded
-      ) {
+      const submittedProof =
+        input.postFixRetryReauthorized === true
+          ? userTurnAdded || answeringStarted
+          : requestMessageFound ||
+            createdConversation ||
+            userTurnAdded ||
+            answeringStarted ||
+            assistantTurnAdded;
+      if (submittedProof) {
         return { status: "submitted", state };
       }
       if (!stagedPromptRemains) {
@@ -560,11 +671,52 @@ class CodexIabAdapter implements BrowserAdapter {
     }
   }
 
-  async #resolveSendTarget(tab: IabTab): Promise<SendTarget> {
+  async #resolveSendTarget(
+    tab: IabTab,
+    preferCoordinate = false,
+    requireCoordinate = false,
+  ): Promise<SendTarget> {
+    const inspected = await inspectVisibleSendButton(tab);
+    if (inspected === undefined) {
+      throw new CueLineError(
+        "CONTROLLER_SEND_TARGET_EVIDENCE_UNAVAILABLE",
+        "Could not capture the visible send button geometry and document state; refusing any send action.",
+      );
+    }
+    const targetEvidence = (
+      targetKind: BrowserSubmissionTargetEvidence["targetKind"],
+    ): BrowserSubmissionTargetEvidence => ({
+      ...inspected,
+      targetKind,
+    });
+    const coordinateIsSafe =
+      tab.cua?.click !== undefined && inspected.elementFromPointMatchesButton;
+    if (preferCoordinate || requireCoordinate) {
+      if (coordinateIsSafe) {
+        return {
+          kind: "coordinate",
+          ...inspected.coordinate,
+          evidence: targetEvidence("coordinate"),
+        };
+      }
+    }
+    if (requireCoordinate) {
+      throw new CueLineError(
+        "CONTROLLER_POST_FIX_RETRY_COORDINATE_REQUIRED",
+        "The one-shot post-fix retry requires one coordinate click whose center resolves to the inspected send button; no safe coordinate was available.",
+      );
+    }
     const locator = await findUniqueLocator(tab, "button", SEND_BUTTON_NAMES);
-    if (locator) return { kind: "locator", locator };
-    const coordinate = await findVisibleSendButtonCoordinates(tab);
-    if (coordinate) return { kind: "coordinate", ...coordinate };
+    if (locator) {
+      return { kind: "locator", locator, evidence: targetEvidence("locator") };
+    }
+    if (coordinateIsSafe) {
+      return {
+        kind: "coordinate",
+        ...inspected.coordinate,
+        evidence: targetEvidence("coordinate"),
+      };
+    }
     throw new CueLineError(
       "SEND_BUTTON_MISSING",
       "Could not find ChatGPT's send button.",
@@ -862,7 +1014,7 @@ class CodexIabAdapter implements BrowserAdapter {
     expectedPrompt: string,
     baselineAttachmentCount: number,
     signal?: AbortSignal,
-  ): Promise<ComposerPromptState> {
+  ): Promise<PageComposerState> {
     const deadline = Date.now() + Math.min(COMPOSER_READY_TIMEOUT_MS, this.#options.timeoutMs);
     const stableRequirement = Math.min(COMPOSER_READY_STABLE_MS, this.#options.stableMs);
     let stableSignature = "";
@@ -884,7 +1036,7 @@ class CodexIabAdapter implements BrowserAdapter {
           stableSince = Date.now();
         }
         if (Date.now() - stableSince >= stableRequirement && ready) {
-          return state.state === "inline_ready" ? "inline_ready" : "attachment_ready";
+          return state;
         }
       } else {
         stableSignature = "";
@@ -952,7 +1104,16 @@ class CodexIabAdapter implements BrowserAdapter {
       throw new CueLineError("COMPOSER_MISSING", "Could not find ChatGPT's message composer.");
     }
     context.selectedModelLabel = await this.#ensureProModel(tab, input.signal);
-    context.baseline = await readPageChatState(tab);
+    const expectedIdentity: ExpectedControllerIdentity = {
+      runId: input.runId,
+      round: input.round,
+      requestId: input.requestId,
+    };
+    context.baseline = await readPageChatState(
+      tab,
+      expectedIdentity,
+      input.prompt,
+    );
     const expectedConversationUrl =
       input.expectedConversationUrl ?? this.#conversationUrl;
     if (
@@ -973,16 +1134,34 @@ class CodexIabAdapter implements BrowserAdapter {
         },
       );
     }
+    context.baseline = await this.#waitForHistoricalPageReady(
+      tab,
+      input,
+      context.baseline,
+      expectedConversationUrl,
+    );
     if (input.notSentRecovery !== undefined) {
       const currentUrl = context.baseline.pageUrl;
       const userMessageCount = context.baseline.userMessageCount ?? 0;
+      const reauthorizedRequestAbsent =
+        input.postFixRetryReauthorized === true
+          ? context.baseline.requestMessageScanComplete === true &&
+            context.baseline.requestMessageFound !== true &&
+            context.baseline.isAnswering === false &&
+            (await readAccessibilityRequestIdPresence(tab, input.requestId)) === false
+          : true;
+      const userCountConflicts =
+        input.postFixRetryReauthorized === true
+          ? userMessageCount < input.notSentRecovery.baselineUserMessageCount
+          : userMessageCount !== input.notSentRecovery.baselineUserMessageCount;
       if (
         !sameChatGptConversationUrl(currentUrl, input.notSentRecovery.conversationUrl) ||
-        userMessageCount !== input.notSentRecovery.baselineUserMessageCount
+        userCountConflicts ||
+        !reauthorizedRequestAbsent
       ) {
         throw new CueLineError(
           "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT",
-          "The exact conversation no longer matches the operator-confirmed not-sent baseline; refusing retry click.",
+          "The exact conversation no longer matches the durable not-sent proof; refusing retry click.",
           {
             details: {
               stage: "pre_submit",
@@ -1038,12 +1217,17 @@ class CodexIabAdapter implements BrowserAdapter {
       ? 0
       : composerBaseline.attachmentCount;
     try {
-      context.composerPromptState = await this.#waitForComposerReady(
+      const readyComposer = await this.#waitForComposerReady(
         tab,
         input.prompt,
         stagedAttachmentBaseline,
         input.signal,
       );
+      context.composerPromptState =
+        readyComposer.state === "inline_ready"
+          ? "inline_ready"
+          : "attachment_ready";
+      context.composerEvidence = submissionComposerEvidence(readyComposer);
     } catch (error) {
       // The fill may already have converted the prompt into a composer
       // attachment even though the composer never settled. Without a durable
@@ -1093,7 +1277,12 @@ class CodexIabAdapter implements BrowserAdapter {
       this.#options.timeoutMs,
     );
     const sendTarget = await withBrowserOperationTimeout(
-      () => this.#resolveSendTarget(tab),
+      () =>
+        this.#resolveSendTarget(
+          tab,
+          context.composerPromptState === "attachment_ready",
+          input.postFixRetryReauthorized === true,
+        ),
       operationTimeoutMs,
       input.signal,
       () =>
@@ -1102,6 +1291,7 @@ class CodexIabAdapter implements BrowserAdapter {
           `ChatGPT's send target did not resolve within ${operationTimeoutMs} ms; no send click was attempted.`,
         ),
     );
+    context.sendTargetEvidence = sendTarget.evidence;
     await this.#emitCheckpoint(
       input,
       tab,
@@ -1223,6 +1413,12 @@ class CodexIabAdapter implements BrowserAdapter {
       // A staged checkpoint precedes any click attempt; recording a click state
       // there would fabricate submission evidence.
       ...(submissionState === "staged" ? {} : { clickAttemptState }),
+      ...(context.composerEvidence === undefined
+        ? {}
+        : { composerEvidence: context.composerEvidence }),
+      ...(context.sendTargetEvidence === undefined
+        ? {}
+        : { sendTargetEvidence: context.sendTargetEvidence }),
       ...(clickError instanceof Error
         ? {
             clickErrorName: clickError.name.slice(0, 128),
@@ -1492,6 +1688,8 @@ class CodexIabAdapter implements BrowserAdapter {
         isAnswering: state.isAnswering,
         composerPromptState: composerState.state,
         composerAttachmentCount: composerState.attachmentCount,
+        composerPastedTextAttachmentPresent:
+          composerState.pastedTextAttachmentPresent === true,
         composerSendButtonEnabled: composerState.sendButtonEnabled,
       };
       const stagedPromptRemains = legacyPreSubmissionRecovery
@@ -1502,12 +1700,20 @@ class CodexIabAdapter implements BrowserAdapter {
             composerState.sendButtonEnabled
           : composerState.state === "inline_ready" &&
             composerState.sendButtonEnabled;
+      const emptyComposerNotSentProof =
+        input.emptyComposerNotSentRecovery === true &&
+        composerState.state === "empty" &&
+        composerState.inlineTextLength === 0 &&
+        composerState.attachmentCount === 0 &&
+        composerState.sendButtonEnabled === false;
+      const composerProvesNoActiveSubmission =
+        stagedPromptRemains || emptyComposerNotSentProof;
       const notSentPreconditions =
         !countRegressionDetected &&
         state.requestMessageScanComplete === true &&
         requestMessageFound === false &&
         state.isAnswering === false &&
-        stagedPromptRemains;
+        composerProvesNoActiveSubmission;
       if (notSentPreconditions) {
         evidence.accessibilityRequestIdFound = await withBrowserOperationTimeout(
           () => readAccessibilityRequestIdPresence(tab, input.requestId),
@@ -1527,8 +1733,8 @@ class CodexIabAdapter implements BrowserAdapter {
         ? `observed ${observedUserMessageCount ?? "unknown"} < baseline ${baseline ?? "unknown"}`
         : state.isAnswering
           ? "controller is still answering"
-          : stagedPromptRemains
-            ? "staged composer remains without dual-source request absence proof"
+          : composerProvesNoActiveSubmission
+            ? "composer evidence remains without dual-source request absence proof"
             : hasExactCurrentEnvelope
               ? "exact controller envelope is not yet safe to adopt"
               : "exact controller envelope not found";
@@ -1566,7 +1772,7 @@ class CodexIabAdapter implements BrowserAdapter {
       // 0 baseline may hydrate into the full conversation history; parsing the
       // last assistant message here would misclassify that stale response as the
       // pending turn and could authorize a repair send.
-      if (stagedPromptRemains) {
+      if (composerProvesNoActiveSubmission) {
         if (baselineLoaded && (requestMessageFound === true || state.isAnswering)) {
           return pendingObservation();
         }
@@ -1941,9 +2147,13 @@ class CodexIabAdapter implements BrowserAdapter {
           input.signal,
         );
     if (completed === undefined) return undefined;
+    const durableSubmittedExactResponse =
+      input.durableSubmittedCheckpoint === true &&
+      hasExactControllerEnvelopeIdentity(completed.assistantText, expectedIdentity);
     if (
       input.notSentRecovery !== undefined &&
       input.manualSendConfirmed !== true &&
+      !durableSubmittedExactResponse &&
       (completed.userMessageCount ?? 0) >
         input.notSentRecovery.baselineUserMessageCount + 1
     ) {

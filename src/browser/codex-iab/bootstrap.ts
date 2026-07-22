@@ -24,6 +24,7 @@ export interface PageComposerState {
   state: ComposerPromptState | "empty";
   inlineTextLength: number;
   attachmentCount: number;
+  pastedTextAttachmentPresent?: boolean;
   sendButtonEnabled: boolean;
 }
 
@@ -501,6 +502,13 @@ export async function readPageComposerState(
         return typeof button.getClientRects !== "function" || button.getClientRects().length > 0;
       });
       const attachmentCount = attachmentElements.size;
+      const pastedTextAttachmentPresent = Array.from(
+        root.querySelectorAll('button[aria-label]'),
+      ).some(
+        (element) =>
+          normalize(element.getAttribute("aria-label")) ===
+          "Open pasted text attachment. Too long to show in text field",
+      );
       const state: PageComposerState["state"] =
         inlineText !== "" && inlineText === expected
           ? "inline_ready"
@@ -511,6 +519,7 @@ export async function readPageComposerState(
         state,
         inlineTextLength: inlineText.length,
         attachmentCount,
+        pastedTextAttachmentPresent,
         sendButtonEnabled,
       };
     },

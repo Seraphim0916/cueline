@@ -23,6 +23,7 @@ import {
   continueCueLineRun,
   loadCueLineRunState,
   loadCueLineRunStatus,
+  reauthorizeControllerPostFixRetry,
   reconcileCueLineRuntime,
   startCueLineRun,
   submitCueLineCallerJobResult,
@@ -382,6 +383,53 @@ async function createSubmissionStartedAttachmentWedge(
   });
   await store.snapshot();
   return { runId, requestId, conversationUrl, prompt, baselineUserMessageCount };
+}
+
+async function createRound134LiveNoopWedge(home: string): Promise<{
+  runId: string;
+  requestId: string;
+  conversationUrl: string;
+  prompt: string;
+}> {
+  const runId = "run_2707dc7332cd6d6f9c5c3d5cf21a33fd";
+  const requestId = "msg_71c4a00e01b7a719f831b92ef2f61411";
+  const conversationUrl = "https://chatgpt.com/c/6a5a679d-dd68-83ee-becb-7b7705ce886e";
+  const prompt = `Round 134 staged controller prompt ${requestId}`;
+  const promptHash = commandHash(prompt);
+  const store = await RunStore.create({
+    home,
+    runId,
+    initialState: { ...initialRunState(runId, prompt, "caller", 200), round: 133 },
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", { request: prompt, executor: "caller", max_rounds: 200 });
+  const liveEvents = [
+    [2459, "controller_turn_requested", { round: 134, request_id: requestId, prompt, prompt_hash: promptHash, submission_checkpoint_contract: "write_ahead_v1" }],
+    [2460, "controller_turn_prompt_staged", { round: 134, request_id: requestId, conversation_url: conversationUrl, selected_model_label: "Pro", composer_prompt_state: "attachment_ready", baseline_user_message_count: 0, baseline_assistant_message_count: 0 }],
+    [2461, "controller_turn_submission_started", { round: 134, request_id: requestId, submission_state: "submitting", conversation_url: conversationUrl, selected_model_label: "Pro", composer_prompt_state: "attachment_ready", baseline_user_message_count: 0, baseline_assistant_message_count: 0 }],
+    [2462, "run_failed", { code: "CONTROLLER_PROMPT_NOT_SENT", request_id: requestId, stage: "controller_turn", submission_state: "definitely_not_sent", conversation_url: conversationUrl }],
+    [2463, "controller_turn_not_sent_confirmed", { round: 134, request_id: requestId, prompt_hash: promptHash, conversation_url: conversationUrl, selected_model_label: "Pro", baseline_user_message_count: 0, observed_user_message_count: 0, composer_prompt_state: "attachment_ready", submission_state: "definitely_not_sent", confirmation_source: "fresh_read_only_observation" }],
+    [2464, "controller_turn_abandoned", { round: 134, request_id: requestId, reason: "operator_confirmed_not_sent", round_not_consumed: true, prompt_hash: promptHash, conversation_url: conversationUrl, selected_model_label: "Pro", baseline_user_message_count: 0, composer_prompt_state: "attachment_ready" }],
+    [2465, "run_resumed", { previous_status: "failed" }],
+    [2466, "controller_conversation_bound", { conversation_url: conversationUrl }],
+    [2467, "controller_turn_requested", { round: 134, request_id: requestId, prompt, prompt_hash: promptHash, retry_of_request_id: requestId, recovery_prompt_hash: promptHash, submission_checkpoint_contract: "write_ahead_v1" }],
+    [2468, "controller_turn_prompt_staged", { round: 134, request_id: requestId, conversation_url: conversationUrl, selected_model_label: "Pro", composer_prompt_state: "attachment_ready", baseline_user_message_count: 0, baseline_assistant_message_count: 0 }],
+    [2469, "controller_turn_submission_started", { round: 134, request_id: requestId, submission_state: "submitting", conversation_url: conversationUrl, selected_model_label: "Pro", composer_prompt_state: "attachment_ready", baseline_user_message_count: 0, baseline_assistant_message_count: 0 }],
+    [2470, "run_failed", { code: "CONTROLLER_PROMPT_NOT_SENT", request_id: requestId, stage: "controller_turn", submission_state: "definitely_not_sent", conversation_url: conversationUrl }],
+    [2471, "controller_turn_post_fix_retry_reauthorized", { round: 134, request_id: requestId, prompt_hash: promptHash, conversation_url: conversationUrl, failure_code: "CONTROLLER_PROMPT_NOT_SENT", submission_state: "definitely_not_sent", not_sent_recovery_status: "retry_pending", composer_prompt_state: "attachment_ready", composer_attachment_count: 1, composer_attachment_kind: "pasted_text", baseline_user_message_count: 0, observed_user_message_count: 0, selected_model_label: "Pro", confirmation_source: "fresh_read_only_observation", one_shot: true }],
+    [2472, "controller_turn_abandoned", { round: 134, request_id: requestId, reason: "post_fix_retry_reauthorized", round_not_consumed: true }],
+    [2473, "run_resumed", { previous_status: "failed" }],
+    [2474, "controller_conversation_bound", { conversation_url: conversationUrl }],
+    [2475, "controller_turn_requested", { round: 134, request_id: requestId, prompt, prompt_hash: promptHash, retry_of_request_id: requestId, recovery_prompt_hash: promptHash, post_fix_retry_reauthorized: true, submission_checkpoint_contract: "write_ahead_v1" }],
+    [2476, "controller_turn_prompt_staged", { round: 134, request_id: requestId, conversation_url: conversationUrl, selected_model_label: "Pro", composer_prompt_state: "attachment_ready", baseline_user_message_count: 0, baseline_assistant_message_count: 0 }],
+    [2477, "controller_turn_submission_started", { round: 134, request_id: requestId, submission_state: "submitting", conversation_url: conversationUrl, selected_model_label: "Pro", composer_prompt_state: "attachment_ready", baseline_user_message_count: 0, baseline_assistant_message_count: 0 }],
+    [2478, "run_failed", { code: "CONTROLLER_PROMPT_NOT_SENT", request_id: requestId, stage: "controller_turn", submission_state: "definitely_not_sent", conversation_url: conversationUrl }],
+  ] as const;
+  for (const [sourceSequence, type, payload] of liveEvents) {
+    await store.append(type, { ...payload, source_event_sequence: sourceSequence });
+  }
+  await store.snapshot();
+  return { runId, requestId, conversationUrl, prompt };
 }
 
 function submittedObservationBrowser(
@@ -2272,7 +2320,7 @@ test("stable pending observation persists diagnostics and surfaces them in run s
   assert.equal(status.controller.pendingDiagnostic?.failedCondition, diagnostic.failedCondition);
 });
 
-test("possibly-sent exact-envelope recovery preserves the round 94 dispatch boundary", async () => {
+test("submitted exact-envelope recovery preserves the round 94 dispatch boundary", async () => {
   const home = await temporaryHome();
   const runId = "run_round_94_possibly_sent_dispatch_boundary";
   const requestId = "msg_round_94_possibly_sent_dispatch_boundary";
@@ -2320,7 +2368,9 @@ test("possibly-sent exact-envelope recovery preserves the round 94 dispatch boun
     submission_state: "possibly_sent",
   });
   await store.snapshot();
-  assert.equal(store.state.pendingControllerTurns[0]?.submissionState, "possibly_sent");
+  assert.equal(store.state.pendingControllerTurns[0]?.submissionState, "submitted");
+  assert.equal(store.state.lastFailure?.submissionState, "possibly_sent");
+  assert.equal(store.state.lastFailure?.code, "CONTROLLER_RECONCILIATION_MISMATCH");
 
   const responseText = `<CueLineControl>${JSON.stringify({
     protocol: "cueline/0.1",
@@ -2520,6 +2570,271 @@ test("confirmControllerTurnNotSent accepts the evidence-gated submitted wedge sh
     requestId,
   );
   assert.equal(state.notSentRecovery?.retryRequestId, null);
+});
+
+test("live events 2459-2478 authorize one new recovery after the prior one-shot was consumed", async () => {
+  const home = await temporaryHome();
+  const fixture = await createRound134LiveNoopWedge(home);
+  let observeCalls = 0;
+  const browser: SubmittedObservationBrowser = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async observeSubmittedTurn(input): Promise<SubmittedTurnObservation> {
+      observeCalls += 1;
+      assert.equal(input.requestId, fixture.requestId);
+      assert.equal(
+        (input as BrowserTurnInput & { emptyComposerNotSentRecovery?: boolean })
+          .emptyComposerNotSentRecovery,
+        true,
+      );
+      return {
+        status: "definitely_not_sent",
+        evidence: {
+          conversationUrl: fixture.conversationUrl,
+          selectedModelLabel: "Pro",
+          hydrated: true,
+          baselineUserMessageCount: 0,
+          observationBaselineUserMessageCount: 153,
+          observedUserMessageCount: 153,
+          countRegressionDetected: false,
+          requestMessageFound: false,
+          requestMessageScanComplete: true,
+          accessibilityRequestIdFound: false,
+          isAnswering: false,
+          composerPromptState: "empty",
+          composerAttachmentCount: 0,
+          composerPastedTextAttachmentPresent: false,
+          composerSendButtonEnabled: false,
+        },
+      };
+    },
+    async submitTurn(): Promise<void> { throw new Error("reauthorization must stay read-only"); },
+    async observeTurn(): Promise<undefined> { return undefined; },
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("split submission must be used");
+    },
+  };
+  const authorization = await reauthorizeControllerPostFixRetry(fixture.runId, {
+    home,
+    browser,
+    requestId: fixture.requestId,
+    round: 134,
+    conversationUrl: fixture.conversationUrl,
+  });
+  assert.equal(authorization.outcome, "reauthorized");
+  assert.equal(observeCalls, 1);
+  let events = await readEvents(runPaths(home, fixture.runId).events);
+  assert.equal(events.filter((event) => event.type === "controller_turn_post_fix_retry_reauthorized").length, 2);
+  const repeated = await reauthorizeControllerPostFixRetry(fixture.runId, {
+    home, browser, requestId: fixture.requestId, round: 134, conversationUrl: fixture.conversationUrl,
+  });
+  assert.equal(repeated.outcome, "already_reauthorized");
+  assert.equal(observeCalls, 1);
+  await assert.rejects(
+    reauthorizeControllerPostFixRetry(fixture.runId, {
+      home,
+      browser,
+      requestId: fixture.requestId,
+      round: 134,
+      conversationUrl: "https://chatgpt.com/c/wrong-idempotent-conversation",
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_POST_FIX_RETRY_STATE_INVALID",
+  );
+  assert.equal(observeCalls, 1);
+
+  const store = await loadPersistedRunStore(home, fixture.runId);
+  await store.append("controller_turn_requested", {
+    round: 134,
+    request_id: fixture.requestId,
+    prompt: fixture.prompt,
+    prompt_hash: commandHash(fixture.prompt),
+    retry_of_request_id: fixture.requestId,
+    recovery_prompt_hash: commandHash(fixture.prompt),
+    post_fix_retry_reauthorized: true,
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.snapshot();
+  const state = await loadCueLineRunState(fixture.runId, { home });
+  assert.equal(state.postFixRetryReauthorization?.status, "consumed");
+  events = await readEvents(runPaths(home, fixture.runId).events);
+  const postFixRequested = events.filter((event) => event.type === "controller_turn_requested" && (event.payload as Record<string, unknown>).post_fix_retry_reauthorized === true);
+  assert.equal(postFixRequested.length, 2);
+  assert.equal((postFixRequested[1]!.payload as Record<string, unknown>).request_id, fixture.requestId);
+
+  await assert.rejects(
+    reauthorizeControllerPostFixRetry(fixture.runId, { home, browser, requestId: fixture.requestId, round: 134, conversationUrl: fixture.conversationUrl }),
+    (error: unknown) => error instanceof CueLineError && error.code === "CONTROLLER_POST_FIX_RETRY_EXHAUSTED",
+  );
+});
+
+test("round 134 replay accepts an exact Pro response after submitted proof despite stale not-sent recovery", async () => {
+  const home = await temporaryHome();
+  const fixture = await createRound134LiveNoopWedge(home);
+  const promptHash = commandHash(fixture.prompt);
+  const evidenceSpec: ControllerJobSpec = {
+    job_key: "round_134_existing_evidence",
+    lane: "default",
+    mode: "advise",
+    task: "Inspect evidence already completed before round 134",
+  };
+  const evidenceJobId = jobId(fixture.runId, evidenceSpec.job_key, evidenceSpec);
+  const store = await loadPersistedRunStore(home, fixture.runId);
+  await store.append("job_registered", {
+    job: {
+      jobId: evidenceJobId,
+      jobKey: evidenceSpec.job_key,
+      required: true,
+      spec: evidenceSpec,
+      status: "succeeded",
+      output: "existing evidence",
+      error: null,
+    },
+  });
+  const replayTail = [
+    ["controller_turn_post_fix_retry_reauthorized", {
+      round: 134,
+      request_id: fixture.requestId,
+      prompt_hash: promptHash,
+      conversation_url: fixture.conversationUrl,
+      failure_code: "CONTROLLER_PROMPT_NOT_SENT",
+      submission_state: "definitely_not_sent",
+      not_sent_recovery_status: "retry_pending",
+      composer_prompt_state: "empty",
+      composer_attachment_count: 0,
+      baseline_user_message_count: 0,
+      observed_user_message_count: 0,
+      selected_model_label: "Pro",
+      confirmation_source: "fresh_read_only_observation",
+      one_shot: true,
+    }],
+    ["controller_turn_abandoned", {
+      round: 134,
+      request_id: fixture.requestId,
+      reason: "post_fix_retry_reauthorized",
+      round_not_consumed: true,
+    }],
+    ["run_resumed", { previous_status: "failed" }],
+    ["controller_conversation_bound", { conversation_url: fixture.conversationUrl }],
+    ["controller_turn_requested", {
+      round: 134,
+      request_id: fixture.requestId,
+      prompt: fixture.prompt,
+      prompt_hash: promptHash,
+      retry_of_request_id: fixture.requestId,
+      recovery_prompt_hash: promptHash,
+      post_fix_retry_reauthorized: true,
+      submission_checkpoint_contract: "write_ahead_v1",
+    }],
+    ["controller_turn_prompt_staged", {
+      round: 134,
+      request_id: fixture.requestId,
+      conversation_url: fixture.conversationUrl,
+      selected_model_label: "Pro",
+      composer_prompt_state: "attachment_ready",
+      baseline_user_message_count: 150,
+      baseline_assistant_message_count: 3,
+    }],
+    ["controller_turn_submission_started", {
+      round: 134,
+      request_id: fixture.requestId,
+      submission_state: "submitting",
+      conversation_url: fixture.conversationUrl,
+      selected_model_label: "Pro",
+      composer_prompt_state: "attachment_ready",
+      baseline_user_message_count: 150,
+      baseline_assistant_message_count: 3,
+    }],
+    ["controller_turn_submitted", {
+      round: 134,
+      request_id: fixture.requestId,
+      submission_state: "submitted",
+      conversation_url: fixture.conversationUrl,
+      selected_model_label: "Pro",
+      composer_prompt_state: "attachment_ready",
+      baseline_user_message_count: 150,
+      baseline_assistant_message_count: 3,
+    }],
+    ["run_resumed", { previous_status: "running" }],
+    ["run_failed", {
+      code: "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT",
+      request_id: fixture.requestId,
+      stage: "reconciling",
+      submission_state: "possibly_sent",
+      conversation_url: fixture.conversationUrl,
+    }],
+  ] as const;
+  for (const [type, payload] of replayTail) await store.append(type, payload);
+  await store.snapshot();
+
+  const replayed = await loadCueLineRunState(fixture.runId, { home });
+  assert.equal(replayed.status, "failed");
+  assert.equal(replayed.pendingControllerTurns[0]?.submissionState, "submitted");
+  assert.equal(replayed.notSentRecovery?.status, "conflict");
+  const recoverableStatus = await loadCueLineRunStatus(fixture.runId, { home });
+  assert.equal(recoverableStatus.phase, "controller_response_pending");
+  assert.equal(recoverableStatus.continueAllowed, true);
+  assert.equal(recoverableStatus.safeNextAction, "observe");
+
+  const responseText = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: fixture.runId,
+    round: 134,
+    request_id: fixture.requestId,
+    action: "inspect",
+    job_ids: [evidenceJobId],
+  })}</CueLineControl>`;
+  let observeCalls = 0;
+  const browser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async observeTurn(input): Promise<ControllerTurn> {
+      observeCalls += 1;
+      assert.equal(input.requestId, fixture.requestId);
+      assert.equal(input.durableSubmittedCheckpoint, true);
+      assert.equal(input.notSentRecovery?.baselineUserMessageCount, 0);
+      return {
+        text: responseText,
+        conversationUrl: fixture.conversationUrl,
+        model: {
+          provider: "chatgpt",
+          selectedLabel: "Pro",
+          responseModelSlug: "gpt-5-6-pro",
+          source: "composer_and_response",
+        },
+      };
+    },
+    async submitTurn(): Promise<void> {
+      throw new Error("submitted response recovery must not submit round 135");
+    },
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("submitted response recovery must not send round 135");
+    },
+  };
+
+  const result = await continueCueLineRun({
+    runId: fixture.runId,
+    home,
+    browser,
+    conversationUrl: fixture.conversationUrl,
+    routingConfig,
+  });
+
+  assert.equal(result.status, "ready");
+  assert.equal(observeCalls, 1);
+  const recovered = await loadCueLineRunState(fixture.runId, { home });
+  assert.equal(recovered.pendingControllerTurns.length, 0);
+  assert.equal(recovered.notSentRecovery, null);
+  const events = await readEvents(runPaths(home, fixture.runId).events);
+  assert.equal(events.filter((event) => event.type === "controller_response_received").length, 1);
+  assert.equal(events.filter((event) => event.type === "controller_command_accepted").length, 1);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_turn_requested" &&
+        (event.payload as Record<string, unknown>).round === 135,
+    ).length,
+    0,
+  );
 });
 
 test("confirmControllerTurnMisdirected records read-only evidence and authorizes one retry", async () => {

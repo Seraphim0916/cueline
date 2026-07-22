@@ -28,6 +28,11 @@ test("buildCueLineRunTimeline renders not-sent-recovery events instead of the ge
       event(3, "controller_turn_retry_conflict", {
         code: "CONTROLLER_NOT_SENT_RESPONSE_CONFLICT",
       }),
+      event(4, "controller_turn_post_fix_retry_reauthorized", {
+        request_id: "msg_notsent",
+        round: 5,
+        submission_state: "definitely_not_sent",
+      }),
     ],
     "/tmp/cueline-home",
   );
@@ -47,9 +52,12 @@ test("buildCueLineRunTimeline renders not-sent-recovery events instead of the ge
     "Controller turn retry conflict detected: CONTROLLER_NOT_SENT_RESPONSE_CONFLICT.",
   );
   assert.equal(conflict.attributes.code, "CONTROLLER_NOT_SENT_RESPONSE_CONFLICT");
+  const postFix = bySequence.get(4)!;
+  assert.equal(postFix.type, "controller_turn_post_fix_retry_reauthorized");
+  assert.equal(postFix.summary, "Incident-scoped post-fix retry authorized once.");
 
   // Regression guard: neither may collapse back to the generic unknown-event.
-  for (const entry of [notSent, conflict]) {
+  for (const entry of [notSent, conflict, postFix]) {
     assert.notEqual(entry.type, "unknown_event");
     assert.notEqual(entry.summary, "Unknown event metadata omitted.");
   }

@@ -146,6 +146,7 @@ function fakeBrowser(options: {
   archiveButtonAvailable?: boolean;
   archiveMenuItemAvailable?: boolean;
   accessibilitySnapshots?: string[];
+  documentHasFocus?: boolean | null;
 }) {
   const composer = new FakeLocator();
   const hydratedComposer = new FakeLocator();
@@ -274,7 +275,37 @@ function fakeBrowser(options: {
         argument !== null &&
         "sendButtonNames" in argument
       ) {
-        return { x: 1024, y: 398 } as Result;
+        const sendButton = {
+          tagName: "button",
+          role: null,
+          ariaLabel: "Send prompt",
+          testId: "send-button",
+          id: null,
+          className: "composer-submit",
+        };
+        return {
+          coordinate: { x: 1024, y: 398 },
+          buttonRect: {
+            x: 1000,
+            y: 374,
+            width: 48,
+            height: 48,
+            top: 374,
+            right: 1048,
+            bottom: 422,
+            left: 1000,
+          },
+          viewport: { width: 1440, height: 900 },
+          devicePixelRatio: 2,
+          elementFromPoint: sendButton,
+          elementFromPointButtonAncestor: sendButton,
+          elementFromPointMatchesButton: true,
+          documentHasFocus:
+            options.documentHasFocus === undefined
+              ? true
+              : options.documentHasFocus,
+          documentVisibilityState: "visible",
+        } as Result;
       }
       const currentRead = stateRead;
       stateRead += 1;
@@ -316,6 +347,7 @@ function fakeBrowser(options: {
   };
 
   const tab: IabTab = {
+    id: "fake-chatgpt-tab",
     async goto(nextUrl) {
       url = nextUrl;
     },
@@ -781,6 +813,79 @@ test("normalizes contenteditable block newlines without erasing indentation", as
     } else {
       delete (globalThis as { document?: unknown }).document;
     }
+  }
+});
+
+test("composer probe records one Pasted text attachment as redacted identity evidence", async () => {
+  const attachmentParent = { textContent: "" };
+  const openPastedTextButton = {
+    textContent: "",
+    parentElement: attachmentParent,
+    getAttribute(name: string) {
+      if (name === "aria-label") {
+        return "Open pasted text attachment. Too long to show in text field";
+      }
+      return null;
+    },
+  };
+  const removeFileButton = {
+    textContent: "",
+    parentElement: attachmentParent,
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Remove file";
+      return null;
+    },
+  };
+  const sendButton = {
+    disabled: false,
+    hidden: false,
+    innerText: "Send prompt",
+    textContent: "Send prompt",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Send prompt";
+      if (name === "aria-disabled") return "false";
+      return null;
+    },
+    closest() { return null; },
+    getBoundingClientRect() { return { width: 20, height: 20 }; },
+    getClientRects() { return [{}]; },
+  };
+  const form = {
+    querySelectorAll(selector: string) {
+      return selector === "button"
+        ? [openPastedTextButton, removeFileButton, sendButton]
+        : [openPastedTextButton, removeFileButton, sendButton];
+    },
+  };
+  const composer = {
+    innerText: "",
+    textContent: "",
+    parentElement: null,
+    closest() { return form; },
+  };
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { querySelector() { return composer; } },
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result, Argument>(pageFunction: (argument: Argument) => Result | Promise<Result>, argument: Argument): Promise<Result> {
+        return pageFunction(argument);
+      },
+    },
+  } as unknown as IabTab;
+  try {
+    assert.equal(openPastedTextButton.parentElement, removeFileButton.parentElement);
+    assert.equal(openPastedTextButton.parentElement.textContent, "");
+    assert.equal(removeFileButton.parentElement.textContent, "");
+    const state = await readPageComposerState(tab, "controller prompt", ["Send prompt"]);
+    assert.equal(state.state, "attachment_ready");
+    assert.equal(state.attachmentCount, 1);
+    assert.equal(state.pastedTextAttachmentPresent, true);
+  } finally {
+    if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor);
+    else delete (globalThis as { document?: unknown }).document;
   }
 });
 
@@ -1333,6 +1438,7 @@ test("submitTurn returns after one durable submission without waiting for Pro", 
 test("submission checkpoints include prompt identity, user baseline, click phase, and DOM evidence", async () => {
   const fixture = fakeBrowser({
     initialUrl: "https://chatgpt.com/c/checkpoint-evidence",
+    documentHasFocus: null,
     states: [
       { isAnswering: false, assistantText: "previous", assistantMessageCount: 1 },
       { isAnswering: true, assistantText: "working", assistantMessageCount: 1 },
@@ -1374,6 +1480,49 @@ test("submission checkpoints include prompt identity, user baseline, click phase
   assert.equal(checkpoints[0]?.modelEvidenceSource, "composer");
   assert.equal(checkpoints[0]?.baselineUserMessageCount, 0);
   assert.equal(checkpoints[0]?.baselineAssistantMessageCount, 1);
+  assert.deepEqual(checkpoints[0]?.composerEvidence, {
+    state: "inline_ready",
+    inlineTextLength: prompt.length,
+    attachmentCount: 0,
+    pastedTextAttachmentPresent: false,
+    sendButtonEnabled: true,
+  });
+  assert.deepEqual(checkpoints[0]?.sendTargetEvidence, {
+    tabId: "fake-chatgpt-tab",
+    targetKind: "locator",
+    coordinate: { x: 1024, y: 398 },
+    buttonRect: {
+      x: 1000,
+      y: 374,
+      width: 48,
+      height: 48,
+      top: 374,
+      right: 1048,
+      bottom: 422,
+      left: 1000,
+    },
+    viewport: { width: 1440, height: 900 },
+    devicePixelRatio: 2,
+    elementFromPoint: {
+      tagName: "button",
+      role: null,
+      ariaLabel: "Send prompt",
+      testId: "send-button",
+      id: null,
+      className: "composer-submit",
+    },
+    elementFromPointButtonAncestor: {
+      tagName: "button",
+      role: null,
+      ariaLabel: "Send prompt",
+      testId: "send-button",
+      id: null,
+      className: "composer-submit",
+    },
+    elementFromPointMatchesButton: true,
+    documentHasFocus: null,
+    documentVisibilityState: "visible",
+  });
   assert.deepEqual(checkpoints[1]?.domEvidence, {
     pageUrl: "https://chatgpt.com/c/checkpoint-evidence",
     userMessageCount: 0,
@@ -1408,11 +1557,11 @@ test("a resolved click with an unchanged staged attachment is definitely not sen
       {
         pageUrl: conversationUrl,
         isAnswering: false,
-        assistantText: "",
-        userMessageCount: 0,
-        assistantMessageCount: 0,
-        lastUserText: null,
-        lastMessageRole: null,
+        assistantText: "round 86 response",
+        userMessageCount: 149,
+        assistantMessageCount: 3,
+        lastUserText: "round 86 request",
+        lastMessageRole: "assistant",
       },
     ],
   });
@@ -1449,6 +1598,70 @@ test("a resolved click with an unchanged staged attachment is definitely not sen
   assert.equal(fixture.sendButtons[0]?.clicks, 1);
   assert.equal(fixture.sendSubmissions(), 1);
   assert.deepEqual(checkpoints, ["staged", "submitting"]);
+});
+
+test("a known historical conversation with a degraded 0/0 baseline fails closed before one send action", async () => {
+  const conversationUrl = "https://chatgpt.com/c/history-not-ready";
+  const requestId = "msg_history_not_ready";
+  const prompt = `Controller request ${requestId}`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    hydratedComposer: true,
+    cuaAvailable: true,
+    composerStates: [
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: true,
+      },
+    ],
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "",
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+        lastUserText: null,
+        lastMessageRole: null,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 20,
+  });
+
+  await assert.rejects(
+    adapter.submitTurn!({
+      runId: "run_history_not_ready",
+      round: 134,
+      requestId,
+      prompt,
+      attachmentPromptExpected: true,
+      postFixRetryReauthorized: true,
+      notSentRecovery: {
+        abandonedRequestId: requestId,
+        promptHash: commandHash(prompt),
+        conversationUrl,
+        baselineUserMessageCount: 0,
+      },
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_PAGE_HISTORY_NOT_READY" &&
+      (error.details as Record<string, unknown>).submission_state ===
+        "definitely_not_sent",
+  );
+
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 0);
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
 });
 
 test("post-click acknowledgement emits submitted once when the exact user request appears", async () => {
@@ -1730,8 +1943,8 @@ test("submitTurn accepts an equivalent trailing-slash conversation URL", async (
   const fixture = fakeBrowser({
     initialUrl: conversationUrl,
     states: [
-      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
-      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "previous", assistantMessageCount: 1, userMessageCount: 1 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 1, userMessageCount: 2 },
     ],
     urlReadSequence: [conversationUrl, equivalentUrl],
   });
@@ -1775,7 +1988,7 @@ test("submitTurn refuses a post-click navigation away from an existing conversat
   const navigatedUrl = "https://chatgpt.com/c/unrelated-conversation-b";
   const fixture = fakeBrowser({
     initialUrl: conversationUrl,
-    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    states: [{ isAnswering: false, assistantText: "previous", assistantMessageCount: 1, userMessageCount: 1 }],
     urlReadSequence: [conversationUrl, navigatedUrl],
   });
   const adapter = createCodexIabAdapter({
@@ -2652,6 +2865,79 @@ test("submitted attachment observation treats hydrated history uplift as not sen
   assert.deepEqual(fixture.composer.fills, []);
 });
 
+test("post-fix retry fails closed without a coordinate and never falls back to locator click", async () => {
+  const conversationUrl = "https://chatgpt.com/c/post-fix-coordinate-required";
+  const requestId = "msg_71c4a00e01b7a719f831b92ef2f61411";
+  const prompt = `Controller request ${requestId}`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    cuaAvailable: false,
+    composerStates: [
+      { state: "attachment_ready", inlineTextLength: 0, attachmentCount: 1, sendButtonEnabled: true },
+      { state: "attachment_ready", inlineTextLength: 0, attachmentCount: 1, sendButtonEnabled: true },
+    ],
+    states: [{ isAnswering: false, assistantText: "previous", assistantMessageCount: 4, userMessageCount: 150, lastUserText: "round 133", lastMessageRole: "assistant" }],
+  });
+  const adapter = createCodexIabAdapter({ browser: fixture.browser, conversationUrl, pollIntervalMs: 1, stableMs: 0, timeoutMs: 100 });
+
+  await assert.rejects(
+    adapter.submitTurn!({
+      runId: "run_2707dc7332cd6d6f9c5c3d5cf21a33fd",
+      round: 134,
+      requestId,
+      prompt,
+      attachmentPromptExpected: true,
+      postFixRetryReauthorized: true,
+      notSentRecovery: { abandonedRequestId: requestId, promptHash: commandHash(prompt), conversationUrl, baselineUserMessageCount: 0 },
+    }),
+    (error: unknown) => error instanceof CueLineError && error.code === "CONTROLLER_POST_FIX_RETRY_COORDINATE_REQUIRED",
+  );
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("post-fix retry accepts only a new user turn or answering start as submitted proof", async () => {
+  const conversationUrl = "https://chatgpt.com/c/post-fix-proof-gate";
+  const requestId = "msg_71c4a00e01b7a719f831b92ef2f61411";
+  const prompt = `Controller request ${requestId}`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    cuaAvailable: true,
+    composerStates: [
+      { state: "attachment_ready", inlineTextLength: 0, attachmentCount: 1, sendButtonEnabled: true },
+      { state: "attachment_ready", inlineTextLength: 0, attachmentCount: 1, sendButtonEnabled: true },
+      { state: "attachment_ready", inlineTextLength: 0, attachmentCount: 1, sendButtonEnabled: true },
+    ],
+    states: [
+      { isAnswering: false, assistantText: "previous", assistantMessageCount: 4, userMessageCount: 150, lastUserText: "round 133", lastMessageRole: "assistant" },
+      { isAnswering: false, assistantText: "previous", assistantMessageCount: 4, userMessageCount: 150, lastUserText: prompt, lastMessageRole: "user" },
+    ],
+  });
+  const adapter = createCodexIabAdapter({ browser: fixture.browser, conversationUrl, pollIntervalMs: 1, stableMs: 0, timeoutMs: 100 });
+
+  await assert.rejects(
+    adapter.submitTurn!({
+      runId: "run_2707dc7332cd6d6f9c5c3d5cf21a33fd",
+      round: 134,
+      requestId,
+      prompt,
+      attachmentPromptExpected: true,
+      postFixRetryReauthorized: true,
+      notSentRecovery: { abandonedRequestId: requestId, promptHash: commandHash(prompt), conversationUrl, baselineUserMessageCount: 0 },
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      (error.code === "CONTROLLER_PROMPT_NOT_SENT" ||
+        error.code === "CONTROLLER_SUBMISSION_AMBIGUOUS"),
+  );
+  assert.equal(fixture.coordinateClicks(), 1);
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
 test("submitted inline observation treats hydrated history uplift as not sent while the exact prompt stays staged", async () => {
   const conversationUrl = "https://chatgpt.com/c/submitted-inline-hydration-uplift";
   const prompt = "round 87 inline prompt still staged";
@@ -3304,6 +3590,7 @@ test("reuses CueLine's own leftover attachment on an operator-confirmed not-sent
   const fixture = fakeBrowser({
     initialUrl: conversationUrl,
     initialModel: "Pro",
+    cuaAvailable: true,
     composerStates: [
       {
         state: "attachment_ready",
@@ -3355,6 +3642,7 @@ test("reuses CueLine's own leftover attachment on an operator-confirmed not-sent
     requestId,
     prompt,
     attachmentPromptExpected: true,
+    postFixRetryReauthorized: true,
     notSentRecovery: {
       abandonedRequestId,
       promptHash: commandHash(abandonedPrompt),
@@ -3364,7 +3652,8 @@ test("reuses CueLine's own leftover attachment on an operator-confirmed not-sent
   } as BrowserTurnInput);
 
   assert.equal(turn.text, "reused attachment response");
-  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 1);
   assert.equal(fixture.sendSubmissions(), 1);
   assert.deepEqual(fixture.composer.fills, []);
 });
@@ -3495,6 +3784,124 @@ test("treats the new user message as the confirmed retry during manual recovery"
   });
 
   assert.equal(turn.text, response);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("observeTurn prioritizes an exact submitted response over a stale not-sent baseline", async () => {
+  const conversationUrl = "https://chatgpt.com/c/post-fix-submitted-recovery";
+  const runId = "run_post_fix_submitted_recovery";
+  const requestId = "msg_post_fix_submitted_recovery";
+  const prompt = "round 134 attachment prompt";
+  const response = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 134,
+    request_id: requestId,
+    action: "inspect",
+    job_ids: ["job_existing"],
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: response,
+        assistantTextSource: "message_dom",
+        assistantModelSlug: "gpt-5-6-pro",
+        assistantMessageCount: 3,
+        userMessageCount: 150,
+        lastUserText: "Pasted text(44).txt",
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.observeTurn!({
+    runId,
+    round: 134,
+    requestId,
+    prompt,
+    attachmentPromptExpected: true,
+    postFixRetryReauthorized: true,
+    durableSubmittedCheckpoint: true,
+    baselineUserMessageCount: 150,
+    baselineAssistantMessageCount: 3,
+    notSentRecovery: {
+      abandonedRequestId: requestId,
+      promptHash: commandHash(prompt),
+      conversationUrl,
+      baselineUserMessageCount: 0,
+    },
+  });
+
+  assert.ok(turn);
+  assert.equal(turn.text, response);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("observeTurn keeps the not-sent conflict without permanent submitted proof", async () => {
+  const conversationUrl = "https://chatgpt.com/c/no-submitted-proof";
+  const runId = "run_no_submitted_proof";
+  const requestId = "msg_no_submitted_proof";
+  const prompt = "unproven retry prompt";
+  const response = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 134,
+    request_id: requestId,
+    action: "inspect",
+    job_ids: ["job_existing"],
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    states: [
+      {
+        isAnswering: false,
+        assistantText: response,
+        assistantTextSource: "message_dom",
+        assistantMessageCount: 3,
+        userMessageCount: 150,
+        lastMessageRole: "assistant",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  await assert.rejects(
+    adapter.observeTurn!({
+      runId,
+      round: 134,
+      requestId,
+      prompt,
+      postFixRetryReauthorized: true,
+      baselineUserMessageCount: 150,
+      baselineAssistantMessageCount: 3,
+      notSentRecovery: {
+        abandonedRequestId: requestId,
+        promptHash: commandHash(prompt),
+        conversationUrl,
+        baselineUserMessageCount: 0,
+      },
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT",
+  );
   assert.equal(fixture.sendSubmissions(), 0);
 });
 
@@ -3854,6 +4261,49 @@ test("uses the visible send coordinate only when no locator click was attempted"
     round: 1,
     requestId: "msg_coordinate_fallback",
     prompt: "Submit through the visible button",
+  });
+
+  assert.equal(fixture.sendButtons[0]?.clicks, 0);
+  assert.equal(fixture.coordinateClicks(), 1);
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.equal(turn.text, "complete");
+});
+
+test("prefers one visible send coordinate for an attachment-backed prompt", async () => {
+  const fixture = fakeBrowser({
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+    composerStates: [
+      {
+        state: "empty",
+        inlineTextLength: 0,
+        attachmentCount: 0,
+        sendButtonEnabled: false,
+      },
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: true,
+      },
+    ],
+    cuaAvailable: true,
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+
+  const turn = await adapter.sendTurn({
+    runId: "run_attachment_coordinate",
+    round: 134,
+    requestId: "msg_attachment_coordinate",
+    prompt: "Reuse the staged attachment and submit once",
   });
 
   assert.equal(fixture.sendButtons[0]?.clicks, 0);
@@ -4704,9 +5154,9 @@ test("reacquires the exact conversation once when the cached tab is gone", async
   const healthy = fakeBrowser({
     initialUrl: conversationUrl,
     states: [
-      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
-      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
-      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+      { isAnswering: false, assistantText: "previous", assistantMessageCount: 1, userMessageCount: 1 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 1, userMessageCount: 2 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 2, userMessageCount: 2 },
     ],
   });
   const staleTab: IabTab = {
@@ -4775,13 +5225,13 @@ test("reattaches and waits without resending when the tab disappears during subm
     failFirstClick: true,
     firstClickError: "Tab not found: 1. Existing tabs: none",
     failStateReadAt: 1,
-    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    states: [{ isAnswering: false, assistantText: "previous", assistantMessageCount: 1, userMessageCount: 1 }],
   });
   const recovered = fakeBrowser({
     initialUrl: conversationUrl,
     states: [
-      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
-      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 1, userMessageCount: 2 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 2, userMessageCount: 2 },
     ],
   });
   let selectedCalls = 0;
@@ -4864,11 +5314,11 @@ test("refuses recovery when submission cannot be proven after reattaching", asyn
     failFirstClick: true,
     firstClickError: "Tab not found: 1. Existing tabs: none",
     failStateReadAt: 1,
-    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    states: [{ isAnswering: false, assistantText: "previous", assistantMessageCount: 1, userMessageCount: 1 }],
   });
   const recovered = fakeBrowser({
     initialUrl: conversationUrl,
-    states: [{ isAnswering: false, assistantText: "", assistantMessageCount: 0 }],
+    states: [{ isAnswering: false, assistantText: "previous", assistantMessageCount: 1, userMessageCount: 1 }],
   });
   let selectedCalls = 0;
   let getCalls = 0;

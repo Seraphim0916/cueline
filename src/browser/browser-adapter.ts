@@ -12,6 +12,12 @@ export interface BrowserTurnInput {
   expectedConversationUrl?: string;
   /** Narrow read-only recovery for legacy failures before any submission method call. */
   legacyPreSubmissionRecovery?: boolean;
+  /** Read-only proof path for a durable not-sent failure whose old composer payload is gone. */
+  emptyComposerNotSentRecovery?: boolean;
+  /** Durable one-shot authorization: stage the exact prompt and perform one send action. */
+  postFixRetryReauthorized?: boolean;
+  /** Replay contains a permanent controller_turn_submitted event for this exact request. */
+  durableSubmittedCheckpoint?: boolean;
   notSentRecovery?: {
     abandonedRequestId: string;
     promptHash: string;
@@ -66,6 +72,8 @@ export interface BrowserSubmittedTurnEvidence {
   /** Redacted composer evidence used to prove that the exact staged turn remains unsent. */
   composerPromptState?: ComposerPromptState | "empty";
   composerAttachmentCount?: number;
+  /** Redacted identity evidence; no attachment content or filename is exposed. */
+  composerPastedTextAttachmentPresent?: boolean;
   composerSendButtonEnabled?: boolean;
 }
 
@@ -136,6 +144,47 @@ export interface BrowserSubmissionDomEvidence {
   isAnswering: boolean;
 }
 
+export interface BrowserSubmissionComposerEvidence {
+  state: ComposerPromptState | "empty";
+  inlineTextLength: number;
+  attachmentCount: number;
+  pastedTextAttachmentPresent: boolean;
+  sendButtonEnabled: boolean;
+}
+
+export interface BrowserSubmissionElementEvidence {
+  tagName: string;
+  role: string | null;
+  ariaLabel: string | null;
+  testId: string | null;
+  id: string | null;
+  className: string | null;
+}
+
+export interface BrowserSubmissionTargetEvidence {
+  tabId: string | null;
+  targetKind: "locator" | "coordinate";
+  coordinate: { x: number; y: number };
+  buttonRect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+  };
+  viewport: { width: number; height: number };
+  devicePixelRatio: number;
+  elementFromPoint: BrowserSubmissionElementEvidence | null;
+  elementFromPointButtonAncestor: BrowserSubmissionElementEvidence | null;
+  elementFromPointMatchesButton: boolean;
+  /** null means the IAB read-only DOM sandbox does not expose document.hasFocus(). */
+  documentHasFocus: boolean | null;
+  documentVisibilityState: string;
+}
+
 export interface BrowserTurnCheckpoint {
   /**
    * "staged" is a pre-click write-ahead of the composer state: the prompt is
@@ -158,6 +207,8 @@ export interface BrowserTurnCheckpoint {
   clickErrorName?: string;
   clickErrorMessage?: string;
   domEvidence?: BrowserSubmissionDomEvidence;
+  composerEvidence?: BrowserSubmissionComposerEvidence;
+  sendTargetEvidence?: BrowserSubmissionTargetEvidence;
 }
 
 export interface BrowserTurnHooks {

@@ -10,6 +10,7 @@ import {
   confirmControllerTurnMisdirected,
   confirmControllerTurnNotSent,
   confirmManualControllerSubmission,
+  reauthorizeControllerPostFixRetry,
 } from "./api-controller-handoff.js";
 import { verifyCueLineRun } from "./api-run-verification.js";
 import {
@@ -508,6 +509,7 @@ export {
   confirmManualControllerSubmission,
   confirmControllerTurnMisdirected,
   confirmControllerTurnNotSent,
+  reauthorizeControllerPostFixRetry,
   submitCueLineCallerJobResult,
 } from "./api-controller-handoff.js";
 export {

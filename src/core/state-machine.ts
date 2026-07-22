@@ -87,6 +87,13 @@ export interface PendingControllerTurn {
   manualSendConfirmed: boolean;
   retryOfRequestId?: string | null | undefined;
   submissionCheckpointContract?: "write_ahead_v1" | null;
+  postFixRetryReauthorized?: boolean;
+}
+
+export interface ControllerPostFixRetryReauthorizationState {
+  requestId: string;
+  round: number;
+  status: "authorized" | "consumed";
 }
 
 export interface ControllerNotSentRecoveryState {
@@ -183,6 +190,7 @@ export interface CueLineRunState {
   pendingControllerTurns: PendingControllerTurn[];
   abandonedControllerTurns: PendingControllerTurn[];
   notSentRecovery?: ControllerNotSentRecoveryState | null | undefined;
+  postFixRetryReauthorization?: ControllerPostFixRetryReauthorizationState | null;
   lastFailure: RunFailureEvidence | null;
   jobs: Record<string, StoredJob>;
   /** Job IDs explicitly requested by the most recently accepted inspect command. */
@@ -319,6 +327,7 @@ export function initialRunState(
     pendingControllerTurns: [],
     abandonedControllerTurns: [],
     notSentRecovery: null,
+    postFixRetryReauthorization: null,
     lastFailure: null,
     jobs: {},
     inspectionJobIds: [],
@@ -420,6 +429,8 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
             payload.submission_checkpoint_contract === "write_ahead_v1"
               ? "write_ahead_v1"
               : null,
+          postFixRetryReauthorized:
+            payload.post_fix_retry_reauthorized === true,
         },
       ],
       abandonedControllerTurns: (state.abandonedControllerTurns ?? []).filter(
@@ -435,6 +446,41 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
               conflictCode: null,
             }
           : state.notSentRecovery ?? null,
+      postFixRetryReauthorization:
+        payload.post_fix_retry_reauthorized === true &&
+        state.postFixRetryReauthorization?.requestId === payload.request_id &&
+        state.postFixRetryReauthorization.status === "authorized"
+          ? { ...state.postFixRetryReauthorization, status: "consumed" }
+          : state.postFixRetryReauthorization ?? null,
+    };
+  }
+  if (
+    event.type === "controller_turn_post_fix_retry_reauthorized" &&
+    typeof payload.request_id === "string" &&
+    typeof payload.round === "number"
+  ) {
+    const pending = (state.pendingControllerTurns ?? []).find(
+      (turn) => turn.requestId === payload.request_id && turn.round === payload.round,
+    );
+    if (
+      pending === undefined ||
+      state.notSentRecovery?.retryRequestId !== payload.request_id ||
+      state.notSentRecovery.status !== "retry_pending"
+    ) return state;
+    return {
+      ...state,
+      notSentRecovery: {
+        ...state.notSentRecovery,
+        status: "confirmed",
+        retryRequestId: null,
+        conflictCode: null,
+        confirmationSource: "fresh_observation",
+      },
+      postFixRetryReauthorization: {
+        requestId: payload.request_id,
+        round: payload.round,
+        status: "authorized",
+      },
     };
   }
   if (
@@ -1228,7 +1274,15 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           ? state.pendingControllerTurns ?? []
           : (state.pendingControllerTurns ?? []).map((turn) =>
               turn.requestId === failedRequestId
-                ? { ...turn, submissionState: failedSubmissionState }
+                ? {
+                    ...turn,
+                    // A later observation failure cannot erase permanent
+                    // controller_turn_submitted proof during event replay.
+                    submissionState:
+                      turn.submissionState === "submitted"
+                        ? "submitted"
+                        : failedSubmissionState,
+                  }
                 : turn,
             ),
       lastFailure: {

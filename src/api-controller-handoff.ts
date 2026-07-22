@@ -5,6 +5,7 @@ import type {
   CueLineCallerWorkClaimProof,
   ControllerMisdirectedConfirmation,
   ControllerNotSentConfirmation,
+  ControllerPostFixRetryReauthorization,
   CueLineRuntimeOptions,
   ManualControllerSubmissionConfirmation,
 } from "./api-contracts.js";
@@ -683,6 +684,301 @@ export async function confirmControllerTurnNotSent(
       conversationUrl,
       promptHash: turn.promptHash,
       outcome: existingRecovery === null ? "confirmed" : "already_confirmed",
+    };
+  } finally {
+    await lease.release();
+  }
+}
+
+/**
+ * Durable one-shot recovery after a permanently recorded send no-op. A fresh
+ * read-only observation must prove the exact request absent. The next matching
+ * controller_turn_requested consumes the grant; another grant requires a newer
+ * CONTROLLER_PROMPT_NOT_SENT failure after that consumption.
+ */
+export async function reauthorizeControllerPostFixRetry(
+  runId: string,
+  options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now" | "browser"> & {
+    requestId: string;
+    round: number;
+    conversationUrl: string;
+  },
+): Promise<ControllerPostFixRetryReauthorization> {
+  if (options.browser?.observeSubmittedTurn === undefined) {
+    throw new CueLineError(
+      "CONTROLLER_NOT_SENT_EVIDENCE_REQUIRED",
+      "Post-fix retry reauthorization requires a fresh read-only browser observation.",
+    );
+  }
+  const environment = options.environment ?? runtimeEnvironment();
+  const home = options.home ?? defaultCueLineHome(environment);
+  await loadPersistedRunStore(home, runId);
+  const lease = await RuntimeLease.claim({
+    home,
+    runId,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  try {
+    const store = await loadPersistedRunStore(home, runId);
+    store.bindRuntimeOwner(lease.ownerId);
+    const state = store.state;
+    const existing = state.postFixRetryReauthorization;
+    if (
+      existing?.requestId === options.requestId &&
+      existing.round === options.round &&
+      existing.status === "authorized"
+    ) {
+      const authorizedRecovery = state.notSentRecovery;
+      const authorizedStateMatches =
+        typeof state.conversationUrl === "string" &&
+        sameChatGptConversationUrl(state.conversationUrl, options.conversationUrl) &&
+        authorizedRecovery?.abandonedRequestId === options.requestId &&
+        authorizedRecovery.round === options.round &&
+        authorizedRecovery.status === "confirmed" &&
+        authorizedRecovery.retryRequestId === null &&
+        sameChatGptConversationUrl(
+          authorizedRecovery.conversationUrl,
+          options.conversationUrl,
+        );
+      const cancellation = await readCancellationObservation(home, runId);
+      if (
+        !authorizedStateMatches ||
+        cancellation.runRequested ||
+        cancellation.jobRequests.length > 0
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_POST_FIX_RETRY_STATE_INVALID",
+          "The existing one-shot authorization no longer matches the exact bound recovery state.",
+        );
+      }
+      return {
+        runId,
+        requestId: options.requestId,
+        conversationUrl: options.conversationUrl,
+        promptHash: state.notSentRecovery?.promptHash ?? "",
+        outcome: "already_reauthorized",
+      };
+    }
+    if (
+      existing?.requestId === options.requestId &&
+      existing.round === options.round &&
+      existing.status === "consumed"
+    ) {
+      const existingEvents = await readAuthoritativeRunEvents(home, runId);
+      let latestAuthorizationIndex = -1;
+      let latestNotSentFailureIndex = -1;
+      for (const [index, event] of existingEvents.entries()) {
+        const payload = eventPayload(event);
+        if (
+          event.type === "controller_turn_post_fix_retry_reauthorized" &&
+          payload.request_id === options.requestId &&
+          payload.round === options.round
+        ) {
+          latestAuthorizationIndex = index;
+        }
+        if (
+          event.type === "run_failed" &&
+          payload.request_id === options.requestId &&
+          payload.code === "CONTROLLER_PROMPT_NOT_SENT" &&
+          payload.submission_state === "definitely_not_sent"
+        ) {
+          latestNotSentFailureIndex = index;
+        }
+      }
+      if (latestNotSentFailureIndex <= latestAuthorizationIndex) {
+        throw new CueLineError(
+          "CONTROLLER_POST_FIX_RETRY_EXHAUSTED",
+          "The prior one-shot recovery was consumed and no newer permanently proven not-sent failure authorizes another grant.",
+        );
+      }
+    }
+    const pending = (state.pendingControllerTurns ?? []).find(
+      (turn) => turn.requestId === options.requestId && turn.round === options.round,
+    );
+    const recovery = state.notSentRecovery;
+    if (
+      (state.pendingControllerTurns ?? []).length !== 1 ||
+      pending === undefined ||
+      pending.retryOfRequestId !== options.requestId ||
+      pending.composerPromptState !== "attachment_ready" ||
+      typeof pending.baselineUserMessageCount !== "number" ||
+      pending.manualSendConfirmed ||
+      state.lastFailure?.code !== "CONTROLLER_PROMPT_NOT_SENT" ||
+      state.lastFailure.requestId !== options.requestId ||
+      state.lastFailure.submissionState !== "definitely_not_sent" ||
+      recovery?.status !== "retry_pending" ||
+      recovery.retryRequestId !== options.requestId ||
+      recovery.abandonedRequestId !== options.requestId ||
+      recovery.round !== options.round ||
+      recovery.composerPromptState !== "attachment_ready" ||
+      typeof state.conversationUrl !== "string" ||
+      !sameChatGptConversationUrl(state.conversationUrl, options.conversationUrl) ||
+      typeof pending.conversationUrl !== "string" ||
+      !sameChatGptConversationUrl(pending.conversationUrl, options.conversationUrl) ||
+      !sameChatGptConversationUrl(recovery.conversationUrl, options.conversationUrl) ||
+      (existing !== null &&
+        existing !== undefined &&
+        (existing.requestId !== options.requestId || existing.round !== options.round))
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_POST_FIX_RETRY_STATE_INVALID",
+        "The persisted run does not exactly match a recoverable, permanently failed controller turn.",
+      );
+    }
+    const cancellation = await readCancellationObservation(home, runId);
+    if (cancellation.runRequested || cancellation.jobRequests.length > 0) {
+      throw new CueLineError(
+        "CONTROLLER_POST_FIX_RETRY_STATE_INVALID",
+        "Post-fix retry reauthorization is forbidden while cancellation is pending.",
+      );
+    }
+    const events = await readAuthoritativeRunEvents(home, runId);
+    const findLastMatchingIndex = (
+      predicate: (event: AuthoritativeRunEvent) => boolean,
+      beforeExclusive = events.length,
+    ): number => {
+      for (let index = beforeExclusive - 1; index >= 0; index -= 1) {
+        if (predicate(events[index]!)) return index;
+      }
+      return -1;
+    };
+    const matchesTurn = (event: AuthoritativeRunEvent): boolean => {
+      const payload = eventPayload(event);
+      return payload.request_id === options.requestId &&
+        (payload.round === undefined || payload.round === options.round);
+    };
+    const lastAuthorizationIndex = findLastMatchingIndex(
+      (event) =>
+        event.type === "controller_turn_post_fix_retry_reauthorized" &&
+        matchesTurn(event),
+    );
+    const lastRequestedIndex = findLastMatchingIndex(
+      (event) => event.type === "controller_turn_requested" && matchesTurn(event),
+    );
+    const lastStartedIndex = findLastMatchingIndex(
+      (event) => event.type === "controller_turn_submission_started" && matchesTurn(event),
+    );
+    const lastFailedIndex = findLastMatchingIndex((event) => {
+      const payload = eventPayload(event);
+      return event.type === "run_failed" &&
+        payload.request_id === options.requestId &&
+        payload.code === "CONTROLLER_PROMPT_NOT_SENT" &&
+        payload.submission_state === "definitely_not_sent";
+    });
+    const hasSubmittedOrResponse = events.some((event) => {
+      return (event.type === "controller_turn_submitted" ||
+        event.type === "controller_response_received") &&
+        matchesTurn(event);
+    });
+    const hasNewFailureCycle =
+      lastRequestedIndex > lastAuthorizationIndex &&
+      lastStartedIndex > lastRequestedIndex &&
+      lastFailedIndex > lastStartedIndex;
+    if (!hasNewFailureCycle || hasSubmittedOrResponse) {
+      if (
+        existing?.requestId === options.requestId &&
+        existing.round === options.round &&
+        existing.status === "consumed"
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_POST_FIX_RETRY_EXHAUSTED",
+          "The prior one-shot recovery was consumed and no newer permanently proven not-sent failure authorizes another grant.",
+        );
+      }
+      throw new CueLineError(
+        "CONTROLLER_POST_FIX_RETRY_EVENT_MISMATCH",
+        "Permanent events do not contain an unsubmitted request/start/not-sent failure cycle newer than the previous authorization.",
+      );
+    }
+    const observation = await options.browser.observeSubmittedTurn({
+      runId,
+      round: pending.round,
+      requestId: pending.requestId,
+      prompt: pending.prompt,
+      expectedConversationUrl: options.conversationUrl,
+      ...(typeof pending.baselineUserMessageCount === "number"
+        ? { baselineUserMessageCount: pending.baselineUserMessageCount }
+        : {}),
+      ...(typeof pending.baselineAssistantMessageCount === "number"
+        ? { baselineAssistantMessageCount: pending.baselineAssistantMessageCount }
+        : {}),
+      attachmentPromptExpected: true,
+      emptyComposerNotSentRecovery: true,
+    });
+    const evidence = observation.status === "definitely_not_sent"
+      ? observation.evidence
+      : undefined;
+    const stagedAttachmentProven =
+      evidence?.composerPromptState === "attachment_ready" &&
+      evidence.composerAttachmentCount === 1 &&
+      evidence.composerPastedTextAttachmentPresent === true &&
+      evidence.composerSendButtonEnabled === true;
+    const emptyComposerProven =
+      evidence?.composerPromptState === "empty" &&
+      evidence.composerAttachmentCount === 0 &&
+      evidence.composerPastedTextAttachmentPresent !== true &&
+      evidence.composerSendButtonEnabled === false;
+    if (
+      evidence === undefined ||
+      !sameChatGptConversationUrl(evidence.conversationUrl, options.conversationUrl) ||
+      evidence.selectedModelLabel === null ||
+      !/^Pro(?:\s|$)/i.test(evidence.selectedModelLabel) ||
+      evidence.hydrated !== true ||
+      evidence.requestMessageFound !== false ||
+      evidence.requestMessageScanComplete !== true ||
+      evidence.accessibilityRequestIdFound !== false ||
+      evidence.countRegressionDetected === true ||
+      evidence.isAnswering !== false ||
+      typeof evidence.observedUserMessageCount !== "number" ||
+      evidence.observedUserMessageCount < pending.baselineUserMessageCount ||
+      (!stagedAttachmentProven && !emptyComposerProven)
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_EVIDENCE_INSUFFICIENT",
+        "Fresh evidence did not prove the exact idle Pro conversation, dual-source request absence, and either the exact staged attachment or an empty composer safe to restage.",
+      );
+    }
+    const authorizationGeneration =
+      events.filter(
+        (event) =>
+          event.type === "controller_turn_post_fix_retry_reauthorized" &&
+          matchesTurn(event),
+      ).length + 1;
+    await store.append("controller_turn_post_fix_retry_reauthorized", {
+      round: options.round,
+      request_id: options.requestId,
+      prompt_hash: pending.promptHash,
+      conversation_url: options.conversationUrl,
+      failure_code: "CONTROLLER_PROMPT_NOT_SENT",
+      submission_state: "definitely_not_sent",
+      not_sent_recovery_status: "retry_pending",
+      composer_prompt_state: evidence.composerPromptState,
+      composer_attachment_count: evidence.composerAttachmentCount,
+      composer_attachment_kind: stagedAttachmentProven ? "pasted_text" : "none",
+      restage_required: emptyComposerProven,
+      baseline_user_message_count: pending.baselineUserMessageCount,
+      observed_user_message_count: evidence.observedUserMessageCount,
+      request_message_scan_complete: evidence.requestMessageScanComplete,
+      accessibility_request_id_found: evidence.accessibilityRequestIdFound,
+      count_regression_detected: evidence.countRegressionDetected ?? false,
+      selected_model_label: evidence.selectedModelLabel,
+      confirmation_source: "fresh_read_only_observation",
+      authorization_generation: authorizationGeneration,
+      one_shot: true,
+    });
+    await store.append("controller_turn_abandoned", {
+      round: options.round,
+      request_id: options.requestId,
+      reason: "post_fix_retry_reauthorized",
+      round_not_consumed: true,
+    });
+    await store.snapshot();
+    return {
+      runId,
+      requestId: options.requestId,
+      conversationUrl: options.conversationUrl,
+      promptHash: pending.promptHash,
+      outcome: "reauthorized",
     };
   } finally {
     await lease.release();

@@ -267,12 +267,54 @@ function hasRecoverableSubmittedTurn(state: CueLineRunState): boolean {
   );
 }
 
+function hasDurableSubmittedConflictRecovery(
+  state: CueLineRunState,
+  runtime: RuntimeLeaseObservation,
+  cancellation: CancellationObservation,
+): boolean {
+  const recovery = state.notSentRecovery;
+  if (
+    recovery?.status !== "conflict" ||
+    state.pendingControllerTurns.length !== 1 ||
+    state.executor !== "caller" ||
+    state.pendingCommandExecution !== null ||
+    activeJobCount(state) !== 0 ||
+    cancellation.runRequested ||
+    (runtime.ownership !== "missing" && runtime.ownership !== "released")
+  ) {
+    return false;
+  }
+  const turn = state.pendingControllerTurns[0]!;
+  const conversationUrl = turn.conversationUrl ?? state.conversationUrl;
+  return (
+    turn.round === state.round &&
+    turn.submissionState === "submitted" &&
+    turn.manualSendConfirmed === false &&
+    turn.postFixRetryReauthorized === true &&
+    turn.retryOfRequestId === recovery.abandonedRequestId &&
+    recovery.retryRequestId === turn.requestId &&
+    state.postFixRetryReauthorization?.requestId === turn.requestId &&
+    state.postFixRetryReauthorization.status === "consumed" &&
+    turn.submissionCheckpointContract === "write_ahead_v1" &&
+    Number.isSafeInteger(turn.baselineUserMessageCount) &&
+    (turn.baselineUserMessageCount ?? -1) >= 0 &&
+    /^[0-9a-f]{64}$/.test(turn.promptHash) &&
+    turn.selectedModelLabel !== null &&
+    /^Pro(?:\s|$)/i.test(turn.selectedModelLabel) &&
+    isExactChatGptConversationUrl(conversationUrl)
+  );
+}
+
 function safeNextActionFor(
   state: CueLineRunState,
   runtime: RuntimeLeaseObservation,
   cancellation: CancellationObservation,
 ): CueLineSafeNextAction {
-  if (state.notSentRecovery?.status === "conflict") return "manual_review";
+  if (state.notSentRecovery?.status === "conflict") {
+    return hasDurableSubmittedConflictRecovery(state, runtime, cancellation)
+      ? "observe"
+      : "manual_review";
+  }
   if (
     state.notSentRecovery?.status === "confirmed" &&
     state.notSentRecovery.retryRequestId === null &&
@@ -342,7 +384,11 @@ export function cueLineRunPhase(
   runtime: RuntimeLeaseObservation,
   cancellation: CancellationObservation = { runRequested: false, jobRequests: [] },
 ): CueLineRunPhase {
-  if (state.notSentRecovery?.status === "conflict") return "reconciliation_required";
+  if (state.notSentRecovery?.status === "conflict") {
+    return hasDurableSubmittedConflictRecovery(state, runtime, cancellation)
+      ? "controller_response_pending"
+      : "reconciliation_required";
+  }
   if (
     state.notSentRecovery?.status === "confirmed" &&
     state.notSentRecovery.retryRequestId === null &&

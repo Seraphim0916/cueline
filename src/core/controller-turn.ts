@@ -448,6 +448,7 @@ export async function requestControllerCommand(
     baselineUserMessageCount: number | null;
     selectedModelLabel: string;
     composerPromptState?: "inline_ready" | "attachment_ready" | null;
+    postFixRetryReauthorized?: boolean;
   },
 ): Promise<ControllerCommand | undefined> {
   let lastError: CueLineError | undefined;
@@ -514,6 +515,9 @@ export async function requestControllerCommand(
               ...(notSentRetry.composerPromptState === "attachment_ready"
                 ? { attachmentPromptExpected: true }
                 : {}),
+              ...(notSentRetry.postFixRetryReauthorized === true
+                ? { postFixRetryReauthorized: true }
+                : {}),
             }
           : {}),
         ...(attempt === 0 ? {} : { repairAttempt: attempt }),
@@ -531,6 +535,9 @@ export async function requestControllerCommand(
             ? {
                 retry_of_request_id: notSentRetry.abandonedRequestId,
                 recovery_prompt_hash: notSentRetry.promptHash,
+                ...(notSentRetry.postFixRetryReauthorized === true
+                  ? { post_fix_retry_reauthorized: true }
+                  : {}),
               }
             : {}),
           ...(browser.submissionCheckpointContract === "write_ahead_v1"
@@ -597,6 +604,12 @@ export async function requestControllerCommand(
               ...(checkpoint.domEvidence === undefined
                 ? {}
                 : { dom_evidence: checkpoint.domEvidence }),
+              ...(checkpoint.composerEvidence === undefined
+                ? {}
+                : { composer_evidence: checkpoint.composerEvidence }),
+              ...(checkpoint.sendTargetEvidence === undefined
+                ? {}
+                : { send_target_evidence: checkpoint.sendTargetEvidence }),
             },
           );
         },

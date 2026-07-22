@@ -38,6 +38,7 @@ const KNOWN_EVENT_TYPES = new Set([
   "controller_turn_manual_submission_confirmed",
   "controller_turn_misdirected_confirmed",
   "controller_turn_not_sent_confirmed",
+  "controller_turn_post_fix_retry_reauthorized",
   "controller_turn_prompt_staged",
   "controller_turn_requested",
   "controller_turn_retry_conflict",
@@ -227,6 +228,8 @@ function summary(type: string, attributes: Record<string, string | number | bool
       return "Controller turn requested.";
     case "controller_turn_not_sent_confirmed":
       return "Controller turn confirmed not sent; ready to retry.";
+    case "controller_turn_post_fix_retry_reauthorized":
+      return "Incident-scoped post-fix retry authorized once.";
     case "controller_turn_prompt_staged":
       return "Controller prompt staged in the composer before any send click.";
     case "controller_turn_retry_conflict":

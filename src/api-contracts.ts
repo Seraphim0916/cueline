@@ -113,6 +113,14 @@ export interface ControllerNotSentConfirmation {
   outcome: "confirmed" | "already_confirmed";
 }
 
+export interface ControllerPostFixRetryReauthorization {
+  runId: string;
+  requestId: string;
+  conversationUrl: string;
+  promptHash: string;
+  outcome: "reauthorized" | "already_reauthorized";
+}
+
 export interface ControllerMisdirectedConfirmation {
   runId: string;
   requestId: string;
