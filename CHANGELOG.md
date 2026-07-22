@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+## 0.6.1 - 2026-07-22
+
+### Fixed
+
+- Known historical ChatGPT conversations now wait for readable message history
+  before staging or sending. A degraded `0/0` history times out as definitely
+  not sent, with no composer fill and no Send action.
+- Pre-click submission checkpoints now permanently record redacted composer
+  state plus the actual tab, target kind, coordinate, button geometry,
+  viewport, device pixel ratio, `elementFromPoint`, focus, and visibility
+  evidence. Each attempt still permits at most one Send action.
+- Attachment-backed Send no-ops now use a reusable, durable one-shot recovery
+  gate. A new grant requires a newer permanent definitely-not-sent failure and
+  fresh read-only Pro evidence from the exact conversation. An empty composer
+  may safely restage the same round, request, and prompt hash; the next matching
+  request consumes the grant before its single submission action.
+- Pasted-text identity now scans the dedicated
+  `Open pasted text attachment. Too long to show in text field` button
+  independently from attachment counting. Sibling Open and Remove controls
+  therefore prove one pasted-text attachment without counting it twice.
+- Permanent `controller_turn_submitted` proof is now monotonic across later
+  read-only observation failures. For the exact consumed post-fix retry, an
+  exact Pro run/round/request envelope takes precedence over stale not-sent
+  count evidence, returns the run to read-only observation, and clears the
+  obsolete recovery marker when the command is accepted. Unsubmitted exact
+  envelopes still fail closed.
+
+### Verification
+
+- 715/715 tests pass. Regression coverage replays source events 2430-2432 and
+  2459-2478, proves each authorization is consumed once, permits another grant
+  only after a newer permanent no-op, preserves the original request identity
+  when restaging an empty composer, and restricts submitted proof to a new user
+  turn or answering start. The round 134 tail now also proves an exact existing
+  `inspect` response is accepted without any round 135 submission, while the
+  same envelope without permanent submitted proof remains frozen.
+
 ## 0.6.0 - 2026-07-21
 
 ### Added

@@ -22,11 +22,11 @@
 
 CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane을 감싼 래퍼가 아닙니다.
 
-## 최신 릴리스: 0.6.0
+## 최신 릴리스: 0.6.1
 
-- ChatGPT 긴 대화의 가상화로 보이는 메시지 수가 전송 전 기준선 아래로 줄어들어도 submitted-turn recovery가 `pending`에 영구히 멈추지 않습니다. 관측은 identity-first로 바뀌어 보이는 모든 메시지에서 request id와 정확한 controller envelope을 스캔하며, 메시지 수는 보조 증거로만 사용합니다. 일반 메시지 DOM에 정확한 envelope이 있는 완료된 Pro 응답을 수락할 수 있습니다(Pro 증거 필요). 카운트 감소 시 `definitely_not_sent`를 금지하고, pending이 10분간 안정되면 구조화된 진단을 출력합니다. 703/703 테스트를 통과했습니다.
+- ChatGPT 기록의 메시지 수를 읽을 수 없으면 전송은 클릭 전에 fail-closed되며, 정확한 클릭 대상을 영구 기록하고 한 번의 시도마다 Send 동작을 하나만 허용합니다. 영구 one-shot recovery는 동일한 round와 request identity를 재사용합니다. 영구 submitted 증거가 있으면 완전히 일치하는 Pro 응답이 오래된 not-sent 증거보다 우선되어 중복 전송이나 새 round 없이 수락됩니다. 715/715 테스트를 통과했습니다.
 
-전체 내용은 [changelog](CHANGELOG.md#060---2026-07-21) 또는 버전이 지정된 [v0.6.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.0)에서 확인할 수 있습니다.
+전체 내용은 [changelog](CHANGELOG.md#061---2026-07-22) 또는 버전이 지정된 [v0.6.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.1)에서 확인할 수 있습니다.
 
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
@@ -67,15 +67,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.6.0
+npm install -g cueline@0.6.1
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.6.0 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.0)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.6.1 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.1)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.0/cueline-0.6.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.1/cueline-0.6.1.tgz
 cueline install
 cueline doctor
 ```
@@ -182,7 +182,7 @@ CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에
 
 ```console
 $ cueline doctor
-CueLine 0.6.0
+CueLine 0.6.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

@@ -22,19 +22,16 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.6.0
+## Latest release: 0.6.1
 
-- Submitted-turn recovery no longer stalls in `pending` when ChatGPT
-  long-conversation virtualization makes the visible message count regress
-  below the pre-send baseline. Observation is now identity-first: every
-  visible message is scanned for the request id and the exact controller
-  envelope, message counts are advisory evidence only, and a completed Pro
-  reply in the ordinary message DOM with the exact envelope is accepted
-  (Pro evidence required). Count regression forbids `definitely_not_sent`,
-  and a stable pending observation emits a structured diagnostic after
-  10 minutes; 703/703 tests pass.
+- ChatGPT submission now fails closed before the click when historical message
+  counts are unreadable, records the exact pre-click target, and permits only
+  one Send action per attempt. A durable one-shot recovery reuses the same
+  round and request identity. Once permanent submitted proof exists, an exact
+  Pro response wins over stale not-sent evidence without a duplicate send or
+  a new round; 715/715 tests pass.
 
-Read the complete [changelog](CHANGELOG.md#060---2026-07-21) or the versioned [v0.6.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.0).
+Read the complete [changelog](CHANGELOG.md#061---2026-07-22) or the versioned [v0.6.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.1).
 
 ## How a run actually goes
 
@@ -77,15 +74,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.6.0
+npm install -g cueline@0.6.1
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.6.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.0), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.6.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.1), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.0/cueline-0.6.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.1/cueline-0.6.1.tgz
 cueline install
 cueline doctor
 ```
@@ -218,7 +215,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.6.0
+CueLine 0.6.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
