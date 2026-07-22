@@ -6137,3 +6137,181 @@ test("controller evidence budget applies after JSON safety escaping", async () =
 
   assert.equal(result.finalDeliveryText, "ENCODED_BUDGET_OK");
 });
+
+test("a staged attachment pre-click failure seeds a write-ahead recovery that reuses the attachment on retry", async () => {
+  const runId = "run_staged_attachment_auto_retry";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/staged-attachment-auto-retry";
+  let abandonedRequestId = "";
+  let abandonedPrompt = "";
+  const firstBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input, hooks): Promise<ControllerTurn> {
+      abandonedRequestId = input.requestId;
+      abandonedPrompt = input.prompt;
+      await hooks?.onCheckpoint?.({
+        submissionState: "staged",
+        composerPromptState: "attachment_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineUserMessageCount: 3,
+        baselineAssistantMessageCount: 1,
+      });
+      throw new CueLineError(
+        "CONTROLLER_SUBMISSION_PRECLICK_TIMEOUT",
+        "ChatGPT's send target did not resolve; no send click was attempted.",
+        {
+          details: {
+            stage: "pre_submit",
+            submission_state: "definitely_not_sent",
+            request_id: input.requestId,
+          },
+        },
+      );
+    },
+  };
+  await assert.rejects(
+    runControllerLoop({
+      request: "Retry the staged attachment without re-uploading",
+      runId,
+      home: stateHome,
+      browser: firstBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_SUBMISSION_PRECLICK_TIMEOUT",
+  );
+
+  const retriedBrowser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "complete",
+      final_delivery_text: "STAGED_RETRY_COMPLETE",
+    }), conversationUrl),
+  ]);
+  const result = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    conversationUrl,
+    browser: retriedBrowser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "STAGED_RETRY_COMPLETE");
+  assert.equal(retriedBrowser.calls.length, 1);
+  // The staged attachment embeds the abandoned request_id, so the retry keeps
+  // that exact identity and reuses the attachment: no re-upload, no new round.
+  assert.equal(retriedBrowser.calls[0]?.requestId, abandonedRequestId);
+  assert.equal(retriedBrowser.calls[0]?.round, 1);
+  assert.equal(retriedBrowser.calls[0]?.prompt, abandonedPrompt);
+  assert.equal(retriedBrowser.calls[0]?.attachmentPromptExpected, true);
+  assert.equal(
+    retriedBrowser.calls[0]?.notSentRecovery?.abandonedRequestId,
+    abandonedRequestId,
+  );
+  assert.equal(
+    retriedBrowser.calls[0]?.notSentRecovery?.promptHash,
+    commandHash(abandonedPrompt),
+  );
+  assert.equal(
+    retriedBrowser.calls[0]?.notSentRecovery?.baselineUserMessageCount,
+    3,
+  );
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    events.some((event) => event.type === "controller_turn_prompt_staged"),
+    true,
+  );
+  const autoConfirmed = events.find(
+    (event) =>
+      event.type === "controller_turn_not_sent_confirmed" &&
+      (event.payload as Record<string, unknown>).request_id === abandonedRequestId,
+  );
+  assert.equal(
+    (autoConfirmed?.payload as Record<string, unknown> | undefined)
+      ?.confirmation_source,
+    "write_ahead_permanent_record",
+  );
+  assert.equal(
+    (autoConfirmed?.payload as Record<string, unknown> | undefined)
+      ?.operator_confirmation,
+    false,
+  );
+});
+
+test("a staged attachment failure without Pro model evidence never seeds a write-ahead recovery", async () => {
+  const runId = "run_staged_attachment_no_pro";
+  const stateHome = await home();
+  const conversationUrl = "https://chatgpt.com/c/staged-attachment-no-pro";
+  let abandonedRequestId = "";
+  const firstBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input, hooks): Promise<ControllerTurn> {
+      abandonedRequestId = input.requestId;
+      await hooks?.onCheckpoint?.({
+        submissionState: "staged",
+        composerPromptState: "attachment_ready",
+        conversationUrl,
+        selectedModelLabel: "GPT-5 Thinking",
+        baselineUserMessageCount: 3,
+        baselineAssistantMessageCount: 1,
+      });
+      throw new CueLineError(
+        "CONTROLLER_SUBMISSION_PRECLICK_TIMEOUT",
+        "ChatGPT's send target did not resolve; no send click was attempted.",
+        {
+          details: {
+            stage: "pre_submit",
+            submission_state: "definitely_not_sent",
+            request_id: input.requestId,
+          },
+        },
+      );
+    },
+  };
+  await assert.rejects(
+    runControllerLoop({
+      request: "Refuse identity reuse without Pro evidence",
+      runId,
+      home: stateHome,
+      browser: firstBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_SUBMISSION_PRECLICK_TIMEOUT",
+  );
+
+  const retriedBrowser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "complete",
+      final_delivery_text: "PLAIN_RETRY_COMPLETE",
+    }), conversationUrl),
+  ]);
+  const result = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    conversationUrl,
+    browser: retriedBrowser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(retriedBrowser.calls.length, 1);
+  // Without the full staged identity the retry must not claim the leftover
+  // attachment: no recovery contract is handed to the adapter, so its
+  // attachment-mixing guard stays in charge. (The request id itself is a
+  // deterministic content hash and legitimately repeats for the same round.)
+  assert.equal(retriedBrowser.calls[0]?.notSentRecovery, undefined);
+  assert.equal(retriedBrowser.calls[0]?.attachmentPromptExpected, undefined);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    events.some((event) => event.type === "controller_turn_not_sent_confirmed"),
+    false,
+  );
+});

@@ -1448,7 +1448,7 @@ test("a resolved click with an unchanged staged attachment is definitely not sen
 
   assert.equal(fixture.sendButtons[0]?.clicks, 1);
   assert.equal(fixture.sendSubmissions(), 1);
-  assert.deepEqual(checkpoints, ["submitting"]);
+  assert.deepEqual(checkpoints, ["staged", "submitting"]);
 });
 
 test("post-click acknowledgement emits submitted once when the exact user request appears", async () => {
@@ -1528,7 +1528,7 @@ test("post-click acknowledgement accepts a removed attachment only when submissi
     { async onCheckpoint(checkpoint) { checkpoints.push(checkpoint.submissionState); } },
   );
 
-  assert.deepEqual(checkpoints, ["submitting", "submitted"]);
+  assert.deepEqual(checkpoints, ["staged", "submitting", "submitted"]);
 });
 
 test("a removed attachment without request or answering evidence stays possibly sent", async () => {
@@ -1567,7 +1567,7 @@ test("a removed attachment without request or answering evidence stays possibly 
   );
 
   assert.equal(fixture.sendButtons[0]?.clicks, 1);
-  assert.deepEqual(checkpoints, ["submitting", "possibly_sent"]);
+  assert.deepEqual(checkpoints, ["staged", "submitting", "possibly_sent"]);
 });
 
 test("operator-confirmed not-sent retry fails closed when the abandoned user message appears before retry click", async () => {
@@ -3158,9 +3158,57 @@ test("recognizes a long prompt converted to an attachment and clicks send exactl
   assert.equal(fixture.sendButtons[0]?.clicks, 1);
   assert.equal(fixture.sendSubmissions(), 1);
   assert.deepEqual(checkpoints, [
+    "staged:attachment_ready",
     "submitting:attachment_ready",
     "submitted:attachment_ready",
   ]);
+});
+
+test("an unsettled composer with an observed converted attachment still records the staged state", async () => {
+  const fixture = fakeBrowser({
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: false,
+      },
+    ],
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 20,
+  });
+  const checkpoints: string[] = [];
+
+  await assert.rejects(
+    adapter.sendTurn(
+      {
+        runId: "run_staged_unsettled",
+        round: 1,
+        requestId: "msg_staged_unsettled",
+        prompt: "x".repeat(44_679),
+      },
+      {
+        async onCheckpoint(checkpoint) {
+          checkpoints.push(`${checkpoint.submissionState}:${checkpoint.composerPromptState}`);
+        },
+      },
+    ),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "CONTROLLER_PROMPT_NOT_READY",
+  );
+
+  // The send button never enabled, so no click was possible — but the durable
+  // staged record must survive so a retry can prove the attachment identity.
+  assert.deepEqual(checkpoints, ["staged:attachment_ready"]);
+  assert.equal(fixture.sendButtons[0]?.clicks ?? 0, 0);
 });
 
 test("refuses an empty composer even when the send button is enabled", async () => {
@@ -3893,7 +3941,7 @@ test("a stalled pre-click browser read fails early as definitely not sent", asyn
     clearTimeout(guardTimer);
   }
 
-  assert.deepEqual(checkpoints, ["submitting"]);
+  assert.deepEqual(checkpoints, ["staged", "submitting"]);
   assert.equal(fixture.sendButtons[0]?.clicks, 0);
   assert.equal(fixture.sendSubmissions(), 0);
 });
