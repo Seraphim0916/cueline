@@ -16,6 +16,10 @@
 
 **CueLine hands the wheel to an open ChatGPT web conversation: it plans the run and calls each next step, while CueLine checks every text command and the current Codex does the permitted local work.**
 
+**Why it exists.** Letting an AI act on your machine usually means handing it unchecked shell access. CueLine removes that trade-off: the web side can only emit text, CueLine validates every command against fail-closed bounds and authorization before anything runs, and each action is recorded.
+
+**In one example.** Open a ChatGPT conversation and ask it to run your test suite or refactor a module. It issues one command per round; CueLine checks each one, enforces resource limits, and only approved work runs locally — no blind `rm -rf`, no runaway loops, and a full run history you can inspect.
+
 The web page never touches your machine and has no local tools. It only emits one text command per round. CueLine decides whether that command is well-formed and belongs to this run. By default, it persists caller jobs for the current Codex: `advise` is a coordination-only handoff, while `work` requires a durable claim and start before any mutation. An explicitly double-authorized process executor can instead run registered local workers. CueLine keeps bounded controller evidence and the full local record.
 
 <img alt="CueLine architecture: a ChatGPT web conversation issues one text command per round, CueLine validates and records it, and the current Codex performs the permitted local work." src="docs/assets/cueline-architecture-en.svg" width="100%">

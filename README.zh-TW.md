@@ -16,6 +16,10 @@
 
 **CueLine 把方向盤交給一個已經開著的 ChatGPT 網頁對話：由它規劃整趟執行、喊出每一步；CueLine 檢查每一道文字指令，現在這個 Codex 才在本機執行獲准的工作。**
 
+**它為何存在。** 讓 AI 在你的機器上動手，通常等於把不受限的 shell 權限交出去。CueLine 拿掉這個取捨：網頁那端只能吐文字，CueLine 在任何東西執行前，先用 fail-closed 界線與授權檢查每一道指令，且每個動作都留下紀錄。
+
+**用一個例子說。** 開一個 ChatGPT 對話，叫它跑你的測試或重構某個模組。它每一輪發出一道指令；CueLine 逐一檢查、強制資源上限，只有獲准的工作才在本機執行——不會有盲目的 `rm -rf`、不會有失控迴圈，還有可供稽核的完整執行紀錄。
+
 那個網頁碰不到你的機器，也沒有本機工具。它每一輪只吐出文字控制指令。CueLine 預設把 caller 工作保存成待辦：`advise` 是協調式交接；`work` 則必須先建立持久 claim 並正式 start，才能開始修改。只有雙重明確授權 `process` executor 時，才會啟動已註冊的本機工作行程。
 
 <img alt="CueLine 架構：ChatGPT 網頁對話每輪發出一道文字指令，CueLine 驗證並記錄，目前的 Codex 執行獲准的本機工作。" src="docs/assets/cueline-architecture-zh-TW.svg" width="100%">

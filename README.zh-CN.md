@@ -16,6 +16,10 @@
 
 **CueLine 把方向盘交给一个已经打开的 ChatGPT 网页会话：由它规划运行、发出每一步文本指令；CueLine 负责校验，当前 Codex 才在本机执行获准的工作。**
 
+**它为何存在。** 让 AI 在你的机器上动手，通常等于交出不受限的 shell 权限。CueLine 拿掉这个取舍：网页那端只能发文本，CueLine 在任何东西执行前，先用 fail-closed 边界与授权校验每一条指令，且每个动作都留有记录。
+
+**用一个例子说。** 打开一个 ChatGPT 会话，让它跑你的测试或重构某个模块。它每一轮发出一条指令；CueLine 逐一校验、强制资源上限，只有获准的工作才在本机执行——不会有盲目的 `rm -rf`、不会有失控循环，还有可供审计的完整运行记录。
+
 那个网页碰不到你的机器，也没有本地工具。它每一轮只发出一条文本控制指令。CueLine 默认把 caller 作业持久化：`advise` 是协调式交接；`work` 必须先获得持久 claim 并正式 start。只有双重显式授权 `process` executor，才会启动已注册的本地 worker。
 
 <img alt="CueLine 架构：ChatGPT 网页会话每轮发出一条文本指令，CueLine 校验并记录，当前 Codex 执行获准的本地工作。" src="docs/assets/cueline-architecture-zh-CN.svg" width="100%">
