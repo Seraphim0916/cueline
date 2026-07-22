@@ -603,7 +603,9 @@ export function summarizeCueLineRunState(
       ? {
           requiredReason: failureRelevant ? state.lastFailure?.code ?? null : null,
           operatorConfirmation:
-            recoveryRelevant && recovery?.confirmationSource !== "fresh_observation"
+            recoveryRelevant &&
+            (recovery?.confirmationSource === "operator" ||
+              recovery?.confirmationSource === undefined)
               ? ("not_sent_confirmed" as const)
               : manualConfirmationRelevant
                 ? ("manual_send_confirmed" as const)

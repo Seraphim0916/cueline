@@ -99,7 +99,7 @@ export interface ControllerNotSentRecoveryState {
   status: "confirmed" | "retry_pending" | "conflict";
   retryRequestId: string | null;
   conflictCode: string | null;
-  confirmationSource?: "operator" | "fresh_observation";
+  confirmationSource?: "operator" | "fresh_observation" | "write_ahead_record";
   /**
    * The abandoned attempt's staged composer shape. "attachment_ready" proves the
    * prompt was already converted into a composer attachment before the crash, so
@@ -469,6 +469,49 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     };
   }
   if (
+    event.type === "controller_turn_prompt_staged" &&
+    typeof payload.request_id === "string"
+  ) {
+    // Write-ahead of the composer state only: the staged prompt (possibly
+    // converted into an attachment) is now durable, but no click was attempted,
+    // so the turn must remain "requested" and provably unsent.
+    return {
+      ...state,
+      pendingControllerTurns: (state.pendingControllerTurns ?? []).map((turn) =>
+        turn.requestId !== payload.request_id
+          ? turn
+          : {
+              ...turn,
+              conversationUrl: preserveCanonicalConversationUrl(
+                turn.conversationUrl ?? state.conversationUrl,
+                payload.conversation_url,
+              ),
+              selectedModelLabel:
+                typeof payload.selected_model_label === "string"
+                  ? payload.selected_model_label
+                  : turn.selectedModelLabel,
+              baselineUserMessageCount:
+                typeof payload.baseline_user_message_count === "number"
+                  ? payload.baseline_user_message_count
+                  : turn.baselineUserMessageCount,
+              baselineAssistantMessageCount:
+                typeof payload.baseline_assistant_message_count === "number"
+                  ? payload.baseline_assistant_message_count
+                  : turn.baselineAssistantMessageCount,
+              baselineLastUserMessageHash:
+                typeof payload.baseline_last_user_message_hash === "string"
+                  ? payload.baseline_last_user_message_hash
+                  : turn.baselineLastUserMessageHash,
+              composerPromptState:
+                payload.composer_prompt_state === "inline_ready" ||
+                payload.composer_prompt_state === "attachment_ready"
+                  ? payload.composer_prompt_state
+                  : turn.composerPromptState,
+            },
+      ),
+    };
+  }
+  if (
     (event.type === "controller_turn_submission_started" ||
       event.type === "controller_turn_submitted") &&
     typeof payload.request_id === "string"
@@ -572,7 +615,9 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
               confirmationSource:
                 payload.confirmation_source === "fresh_read_only_observation"
                   ? "fresh_observation"
-                  : "operator",
+                  : payload.confirmation_source === "write_ahead_permanent_record"
+                    ? "write_ahead_record"
+                    : "operator",
             }
           : payload.reason === "operator_confirmed_not_sent" &&
         abandoned !== undefined &&
@@ -632,7 +677,9 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           payload.confirmation_source === "fresh_read_only_observation" ||
           payload.confirmation_source === "misdirected_read_only_observation"
             ? "fresh_observation"
-            : "operator",
+            : payload.confirmation_source === "write_ahead_permanent_record"
+              ? "write_ahead_record"
+              : "operator",
         // Prefer the event's own record; replay of streams written before this field
         // existed falls back to the abandoned pending turn, whose staged shape came
         // from the permanent controller_turn_submission_started record.

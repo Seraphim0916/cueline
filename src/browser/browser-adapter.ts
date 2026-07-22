@@ -137,7 +137,12 @@ export interface BrowserSubmissionDomEvidence {
 }
 
 export interface BrowserTurnCheckpoint {
-  submissionState: ControllerSubmissionState;
+  /**
+   * "staged" is a pre-click write-ahead of the composer state: the prompt is
+   * provably present (possibly converted into an attachment) but no send click
+   * has been attempted, so the turn's submission state must stay "requested".
+   */
+  submissionState: ControllerSubmissionState | "staged";
   composerPromptState: ComposerPromptState;
   conversationUrl?: string;
   selectedModelLabel: string;

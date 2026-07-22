@@ -1034,12 +1034,60 @@ class CodexIabAdapter implements BrowserAdapter {
       await composer.fill(input.prompt, {});
     }
     throwIfCancelled(input.signal);
-    context.composerPromptState = await this.#waitForComposerReady(
-      tab,
-      input.prompt,
-      reusesConfirmedAttachmentPrompt ? 0 : composerBaseline.attachmentCount,
-      input.signal,
-    );
+    const stagedAttachmentBaseline = reusesConfirmedAttachmentPrompt
+      ? 0
+      : composerBaseline.attachmentCount;
+    try {
+      context.composerPromptState = await this.#waitForComposerReady(
+        tab,
+        input.prompt,
+        stagedAttachmentBaseline,
+        input.signal,
+      );
+    } catch (error) {
+      // The fill may already have converted the prompt into a composer
+      // attachment even though the composer never settled. Without a durable
+      // staged record that attachment is unprovable on retry and the
+      // attachment-mixing guard above would refuse every future attempt.
+      const details =
+        error instanceof CueLineError &&
+        error.code === "CONTROLLER_PROMPT_NOT_READY" &&
+        typeof error.details === "object" &&
+        error.details !== null
+          ? (error.details as { composer_state?: unknown; attachment_count?: unknown })
+          : undefined;
+      if (
+        details !== undefined &&
+        details.composer_state === "attachment_ready" &&
+        typeof details.attachment_count === "number" &&
+        details.attachment_count > stagedAttachmentBaseline
+      ) {
+        context.composerPromptState = "attachment_ready";
+        await this.#emitCheckpoint(
+          input,
+          tab,
+          context,
+          hooks,
+          "staged",
+          "attempting",
+          context.baseline.pageUrl,
+          context.baseline,
+        );
+      }
+      throw error;
+    }
+    if (context.composerPromptState === "attachment_ready") {
+      await this.#emitCheckpoint(
+        input,
+        tab,
+        context,
+        hooks,
+        "staged",
+        "attempting",
+        context.baseline.pageUrl,
+        context.baseline,
+      );
+    }
     const operationTimeoutMs = Math.min(
       SUBMISSION_ACTION_TIMEOUT_MS,
       this.#options.timeoutMs,
@@ -1140,7 +1188,7 @@ class CodexIabAdapter implements BrowserAdapter {
     tab: IabTab,
     context: TurnAttemptContext,
     hooks: BrowserTurnHooks | undefined,
-    submissionState: "submitting" | "possibly_sent" | "submitted",
+    submissionState: "staged" | "submitting" | "possibly_sent" | "submitted",
     clickAttemptState: "attempting" | "accepted" | "error",
     capturedConversationUrl?: string,
     observedState?: PageChatState | null,
@@ -1172,7 +1220,9 @@ class CodexIabAdapter implements BrowserAdapter {
       baselineUserMessageCount: context.baseline.userMessageCount ?? 0,
       baselineAssistantMessageCount: context.baseline.assistantMessageCount,
       baselineLastUserMessageHash,
-      clickAttemptState,
+      // A staged checkpoint precedes any click attempt; recording a click state
+      // there would fabricate submission evidence.
+      ...(submissionState === "staged" ? {} : { clickAttemptState }),
       ...(clickError instanceof Error
         ? {
             clickErrorName: clickError.name.slice(0, 128),

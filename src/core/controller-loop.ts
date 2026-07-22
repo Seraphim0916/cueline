@@ -43,6 +43,7 @@ import type {
   CueLineResult,
   JobSupervisorLike,
 } from "./controller-types.js";
+import { isExactChatGptConversationUrl } from "./conversation-url.js";
 import { asCueLineError, CueLineError } from "./errors.js";
 import { commandHash, messageId, runId as createRunId } from "./ids.js";
 import { validatedTimerDelay } from "./timing.js";
@@ -707,11 +708,55 @@ async function reconcilePendingControllerTurn(
     isControllerTurnProvenUnsent(store.state, pendingTurns[0]);
   if (provenUnsent) {
     const pending = pendingTurns[0]!;
+    const stagedConversationUrl =
+      pending.conversationUrl ?? store.state.conversationUrl;
+    // A write_ahead_v1 turn still "requested" proves no send click was ever
+    // attempted, and a durable attachment_ready staged record proves the
+    // composer attachment is this exact prompt. Only that full identity (Pro
+    // model, 64-hex prompt hash, exact conversation URL, staged baseline count,
+    // not already the authorized retry) may seed a durable not-sent recovery so
+    // the retry reuses the staged attachment; without it the blind resend would
+    // hit the attachment-mixing guard on every future attempt.
+    const canConfirmStagedAttachmentNotSent =
+      pending.composerPromptState === "attachment_ready" &&
+      (pending.retryOfRequestId === undefined ||
+        pending.retryOfRequestId === null) &&
+      !pending.manualSendConfirmed &&
+      pending.selectedModelLabel !== null &&
+      /^Pro(?:\s|$)/i.test(pending.selectedModelLabel) &&
+      /^[0-9a-f]{64}$/.test(pending.promptHash) &&
+      typeof pending.baselineUserMessageCount === "number" &&
+      isExactChatGptConversationUrl(stagedConversationUrl) &&
+      store.state.notSentRecovery?.abandonedRequestId !== pending.requestId;
+    if (canConfirmStagedAttachmentNotSent) {
+      await store.append("controller_turn_not_sent_confirmed", {
+        round: pending.round,
+        request_id: pending.requestId,
+        prompt_hash: pending.promptHash,
+        conversation_url: stagedConversationUrl,
+        selected_model_label: pending.selectedModelLabel,
+        baseline_user_message_count: pending.baselineUserMessageCount,
+        composer_prompt_state: "attachment_ready",
+        submission_state: "definitely_not_sent",
+        confirmation_source: "write_ahead_permanent_record",
+        operator_confirmation: false,
+      });
+    }
     await store.append("controller_turn_abandoned", {
       round: pending.round,
       request_id: pending.requestId,
       reason: "definitely_not_sent_retry",
       round_not_consumed: true,
+      ...(canConfirmStagedAttachmentNotSent
+        ? {
+            prompt_hash: pending.promptHash,
+            conversation_url: stagedConversationUrl,
+            selected_model_label: pending.selectedModelLabel,
+            baseline_user_message_count: pending.baselineUserMessageCount,
+            composer_prompt_state: "attachment_ready",
+            confirmation_source: "write_ahead_permanent_record",
+          }
+        : {}),
     });
     return "continue";
   }

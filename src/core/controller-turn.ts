@@ -553,7 +553,9 @@ export async function requestControllerCommand(
           await store.append(
             checkpoint.submissionState === "submitted"
               ? "controller_turn_submitted"
-              : "controller_turn_submission_started",
+              : checkpoint.submissionState === "staged"
+                ? "controller_turn_prompt_staged"
+                : "controller_turn_submission_started",
             {
               round: expected.round,
               request_id: expected.requestId,
