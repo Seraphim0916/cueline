@@ -7,15 +7,18 @@ import type {
   StartCueLineRunOptions,
 } from "./api-contracts.js";
 import {
+  authorizeControllerDeliveryTimeoutRetry,
   confirmControllerTurnMisdirected,
   confirmControllerTurnNotSent,
   confirmManualControllerSubmission,
   reauthorizeControllerPostFixRetry,
+  recordControllerDeliveryTimeoutAttestation,
 } from "./api-controller-handoff.js";
 import { verifyCueLineRun } from "./api-run-verification.js";
 import {
   claimCueLineCallerJob,
   heartbeatCueLineCallerJob,
+  recordCueLineCallerJobProgress,
   reconcileExpiredCallerWorkClaims,
   releaseCueLineCallerJob,
   startCueLineCallerJob,
@@ -53,6 +56,16 @@ import {
 import type { CueLineRunState } from "./core/state-machine.js";
 import { JobStatusStore } from "./jobs/status.js";
 import { JobSupervisor } from "./jobs/supervisor.js";
+import {
+  buildGoalbraidDecisionPrompt,
+  assertGoalbraidDecisionRunBinding,
+  goalbraidDecisionResponsePath,
+  loadGoalbraidDecisionRequest,
+  publishGoalbraidDecisionResponse,
+  type ContinueGoalbraidDecisionOptions,
+  type GoalbraidDecisionBridgeResult,
+  type RunGoalbraidDecisionOptions,
+} from "./integrations/goalbraid.js";
 import type { ControllerJobSpec } from "./protocol/types.js";
 import { executableAvailability } from "./router/availability.js";
 import { loadRoutingConfig, parseRoutingConfig } from "./router/config-loader.js";
@@ -505,19 +518,94 @@ export async function continueCueLineRun(
   });
 }
 
+async function finishGoalbraidDecision(
+  requestPath: string,
+  result: CueLineResult,
+  runtime: Pick<CueLineRuntimeOptions, "home" | "environment" | "now">,
+): Promise<GoalbraidDecisionBridgeResult> {
+  const request = await loadGoalbraidDecisionRequest(requestPath);
+  const responsePath = goalbraidDecisionResponsePath(requestPath, request.request_id);
+  assertGoalbraidDecisionRunBinding(request, result);
+  if (result.status === "awaiting_caller" || result.status === "awaiting_caller_work") {
+    throw new CueLineError(
+      "GOALBRAID_DECISION_DISPATCH_REJECTED",
+      "The Goalbraid decision consultation attempted to dispatch local work; no response was published.",
+    );
+  }
+  if (result.status !== "complete") {
+    return {
+      requestId: request.request_id,
+      responsePath,
+      published: false,
+      outcome: result.status,
+      cueline: result,
+    };
+  }
+  const verification = await verifyCueLineRun(result.runId, runtime);
+  const publication = await publishGoalbraidDecisionResponse(
+    requestPath,
+    result,
+    verification,
+    runtime.now === undefined ? {} : { now: runtime.now },
+  );
+  return {
+    requestId: request.request_id,
+    responsePath: publication.responsePath,
+    published: true,
+    outcome: publication.outcome,
+    cueline: result,
+  };
+}
+
+/** Start one browser-backed, advice-only CueLine consultation for Goalbraid. */
+export async function runGoalbraidDecision(
+  options: RunGoalbraidDecisionOptions,
+): Promise<GoalbraidDecisionBridgeResult> {
+  const { requestPath, runId, ...runtime } = options;
+  const request = await loadGoalbraidDecisionRequest(requestPath);
+  const result = await runCueLine({
+    ...runtime,
+    request: buildGoalbraidDecisionPrompt(request),
+    executor: "caller",
+    ...(runId === undefined ? {} : { runId }),
+  });
+  return finishGoalbraidDecision(requestPath, result, runtime);
+}
+
+/** Observe/continue the exact CueLine run and publish only verified terminal advice. */
+export async function continueGoalbraidDecision(
+  options: ContinueGoalbraidDecisionOptions,
+): Promise<GoalbraidDecisionBridgeResult> {
+  const { requestPath, runId, ...runtime } = options;
+  await loadGoalbraidDecisionRequest(requestPath);
+  const result = await continueCueLineRun({ ...runtime, runId, executor: "caller" });
+  return finishGoalbraidDecision(requestPath, result, runtime);
+}
+
 export {
+  authorizeControllerDeliveryTimeoutRetry,
   confirmManualControllerSubmission,
   confirmControllerTurnMisdirected,
   confirmControllerTurnNotSent,
   reauthorizeControllerPostFixRetry,
+  recordControllerDeliveryTimeoutAttestation,
   submitCueLineCallerJobResult,
 } from "./api-controller-handoff.js";
 export {
   claimCueLineCallerJob,
   heartbeatCueLineCallerJob,
+  recordCueLineCallerJobProgress,
   releaseCueLineCallerJob,
   startCueLineCallerJob,
 };
+export {
+  DEFAULT_CALLER_WORK_HEARTBEAT_INTERVAL_MS,
+  DEFAULT_CALLER_WORK_MAX_EXECUTION_MS,
+  DEFAULT_CALLER_WORK_PROGRESS_TIMEOUT_MS,
+  startCueLineCallerWorkLease,
+  type CueLineCallerWorkLease,
+  type CueLineCallerWorkLeaseOptions,
+} from "./api-caller-work-lease.js";
 export {
   cancelCueLineJob,
   cancelCueLineRun,
@@ -575,8 +663,20 @@ export {
   loadCueLineRunGraph,
 } from "./observation/run-graph.js";
 export { CUELINE_VERSION } from "./version.js";
+export {
+  buildGoalbraidDecisionPrompt,
+  assertGoalbraidDecisionRunBinding,
+  goalbraidDecisionResponsePath,
+  loadGoalbraidDecisionRequest,
+  parseGoalbraidDecisionDelivery,
+  publishGoalbraidDecisionResponse,
+  GOALBRAID_DECISION_REQUEST_SCHEMA,
+  GOALBRAID_DECISION_RESPONSE_SCHEMA,
+} from "./integrations/goalbraid.js";
 export type {
   ContinueCueLineRunOptions,
+  ControllerDeliveryTimeoutAttestationResult,
+  ControllerDeliveryTimeoutRetryAuthorization,
   CueLineCallerJobResultInput,
   CueLineCallerJobSubmissionOptions,
   CueLineCallerJobSubmissionResult,
@@ -585,6 +685,8 @@ export type {
   CueLineCallerWorkClaimResult,
   CueLineCallerWorkMutationOptions,
   CueLineCallerWorkMutationResult,
+  CueLineCallerWorkProgressInput,
+  CueLineCallerWorkProgressKind,
   CueLineJobCancellationResult,
   CueLineRunListEntry,
   CueLineRunCancellationResult,
@@ -597,6 +699,14 @@ export type {
   ManualControllerSubmissionConfirmation,
   StartCueLineRunOptions,
 } from "./api-contracts.js";
+export type {
+  ContinueGoalbraidDecisionOptions,
+  GoalbraidDecisionBridgeResult,
+  GoalbraidDecisionPublication,
+  GoalbraidDecisionRequest,
+  GoalbraidDecisionResponse,
+  RunGoalbraidDecisionOptions,
+} from "./integrations/goalbraid.js";
 export type {
   CueLineDiagnosticSeverity,
   CueLineRunDiagnosis,

@@ -30,6 +30,7 @@ export type CueLineObservedJobStatus = (typeof OBSERVED_JOB_STATUSES)[number];
 export type CueLineRunPhase =
   | "starting"
   | "prompt_not_sent"
+  | "controller_delivery_failed"
   | "controller_response_pending"
   | "jobs_running"
   | "controller_decision_pending"
@@ -53,6 +54,8 @@ export type CueLineRunPhase =
 export type CueLineSafeNextAction =
   | "observe"
   | "recover_submitted_turn"
+  | "authorize_delivery_retry"
+  | "retry_delivery_timeout"
   | "retry"
   | "reconcile"
   | "inspect_jobs_then_continue"
@@ -85,6 +88,16 @@ export interface CueLineRunStatusSummary {
     lastAcceptedRequestId: string | null;
     lastAcceptedJobKeys: string[];
     pendingDiagnostic?: CueLineRunState["pendingObservationDiagnostic"];
+    deliveryTimeout?: {
+      requestId: string;
+      round: number;
+      code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT";
+      evidenceHash: string;
+      retryActionAvailable: boolean;
+      status: NonNullable<
+        CueLineRunState["controllerDeliveryTimeoutRecovery"]
+      >["status"];
+    };
     reconciliation?: {
       requiredReason: string | null;
       operatorConfirmation: "not_sent_confirmed" | "manual_send_confirmed" | null;
@@ -267,6 +280,22 @@ function hasRecoverableSubmittedTurn(state: CueLineRunState): boolean {
   );
 }
 
+function relevantDeliveryTimeoutRecovery(
+  state: CueLineRunState,
+): NonNullable<CueLineRunState["controllerDeliveryTimeoutRecovery"]> | null {
+  const recovery = state.controllerDeliveryTimeoutRecovery ?? null;
+  if (recovery === null) return null;
+  return state.pendingControllerTurns.some(
+    (turn) =>
+      turn.requestId === recovery.requestId &&
+      turn.round === recovery.round &&
+      turn.promptHash === recovery.promptHash &&
+      turn.submissionState === "submitted",
+  )
+    ? recovery
+    : null;
+}
+
 function hasDurableSubmittedConflictRecovery(
   state: CueLineRunState,
   runtime: RuntimeLeaseObservation,
@@ -358,6 +387,13 @@ function safeNextActionFor(
   if (runtime.ownership === "stale" || runtime.ownership === "invalid") {
     return "inspect_runtime";
   }
+  const deliveryTimeoutRecovery = relevantDeliveryTimeoutRecovery(state);
+  if (deliveryTimeoutRecovery?.status === "observed") {
+    return "authorize_delivery_retry";
+  }
+  if (deliveryTimeoutRecovery?.status === "authorized") {
+    return "retry_delivery_timeout";
+  }
   if (hasRetryableUnsentTurn(state)) return "retry";
   if (state.pendingControllerTurns.length > 0) {
     const turn = state.pendingControllerTurns[0];
@@ -405,6 +441,13 @@ export function cueLineRunPhase(
   if (state.status === "blocked") return "blocked";
   if (state.status === "cancelled") return "cancelled";
   if (cancellation.runRequested) return "cancellation_pending";
+  const deliveryTimeoutRecovery = relevantDeliveryTimeoutRecovery(state);
+  if (
+    deliveryTimeoutRecovery?.status === "observed" ||
+    deliveryTimeoutRecovery?.status === "authorized"
+  ) {
+    return "controller_delivery_failed";
+  }
   if (state.status === "failed" && runtime.ownership === "active") return "runtime_active";
   // A turn stuck in submissionState "submitting" has NO controller_turn_submitted record:
   // nothing proves a response is coming, so presenting it as controller_response_pending
@@ -664,6 +707,7 @@ export function summarizeCueLineRunState(
           resendBlockedReason: recoveryRelevant ? recovery?.conflictCode ?? null : null,
         }
       : undefined;
+  const deliveryTimeout = relevantDeliveryTimeoutRecovery(state);
   return {
     runId: state.runId,
     status: state.status,
@@ -685,6 +729,19 @@ export function summarizeCueLineRunState(
       lastAcceptedRequestId: acceptedCommand.requestId,
       lastAcceptedJobKeys: acceptedCommand.jobKeys,
       pendingDiagnostic: state.pendingObservationDiagnostic,
+      ...(deliveryTimeout === null
+        ? {}
+        : {
+            deliveryTimeout: {
+              requestId: deliveryTimeout.requestId,
+              round: deliveryTimeout.round,
+              code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT" as const,
+              evidenceHash: deliveryTimeout.evidenceHash,
+              retryActionAvailable:
+                deliveryTimeout.retryActionAvailable,
+              status: deliveryTimeout.status,
+            },
+          }),
       ...(reconciliation === undefined ? {} : { reconciliation }),
       archive: {
         enabled: state.controllerConversationArchive?.enabled === true,

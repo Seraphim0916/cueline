@@ -4,6 +4,11 @@ import type {
   BrowserSubmittedTurnEvidence,
   ControllerTurn,
 } from "../browser/browser-adapter.js";
+import {
+  CHATGPT_DELIVERY_TIMEOUT_CODE,
+  CHATGPT_DELIVERY_TIMEOUT_MESSAGE,
+  deliveryTimeoutEvidenceHash,
+} from "../browser/delivery-timeout.js";
 import { JobStatusStore } from "../jobs/status.js";
 import {
   CancellationWatcher,
@@ -43,7 +48,10 @@ import type {
   CueLineResult,
   JobSupervisorLike,
 } from "./controller-types.js";
-import { isExactChatGptConversationUrl } from "./conversation-url.js";
+import {
+  isExactChatGptConversationUrl,
+  sameChatGptConversationUrl,
+} from "./conversation-url.js";
 import { asCueLineError, CueLineError } from "./errors.js";
 import { commandHash, messageId, runId as createRunId } from "./ids.js";
 import { validatedTimerDelay } from "./timing.js";
@@ -938,12 +946,146 @@ async function reconcilePendingControllerTurn(
       );
       return "awaiting_controller";
     }
-    turn = submittedObservation.turn;
-    deferRecoveredDispatch =
-      submittedObservation.responseSource ===
-        "count_degraded_accessibility_exact_envelope" ||
-      submittedObservation.responseSource ===
-        "count_degraded_message_dom_exact_envelope";
+    if (submittedObservation.status === "delivery_failed") {
+      const evidence = submittedObservation.evidence;
+      if (
+        !isDeliveryTimeoutObservation(
+          pending,
+          expectedConversationUrl,
+          evidence,
+        )
+      ) {
+        return "awaiting_controller";
+      }
+      const evidenceHash = deliveryTimeoutEvidenceHash(evidence);
+      const existingRecovery = store.state.controllerDeliveryTimeoutRecovery;
+      if (
+        existingRecovery?.requestId !== pending.requestId ||
+        existingRecovery.round !== pending.round ||
+        existingRecovery.evidenceHash !== evidenceHash
+      ) {
+        await recordDeliveryTimeoutObservation(
+          store,
+          pending,
+          evidence,
+          evidenceHash,
+        );
+      }
+      const recovery = store.state.controllerDeliveryTimeoutRecovery;
+      if (
+        recovery?.requestId !== pending.requestId ||
+        recovery.round !== pending.round ||
+        recovery.evidenceHash !== evidenceHash ||
+        recovery.status !== "authorized"
+      ) {
+        return "awaiting_controller";
+      }
+      if (
+        evidence.deliveryFailure?.retryActionAvailable !== true ||
+        options.browser.retryDeliveryTimeout === undefined
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_DELIVERY_TIMEOUT_RETRY_UNAVAILABLE",
+          "The exact authorized delivery timeout does not expose a safe Retry action through this browser adapter.",
+          {
+            details: {
+              request_id: pending.requestId,
+              round: pending.round,
+              evidence_hash: evidenceHash,
+            },
+          },
+        );
+      }
+      const retryResult = await options.browser.retryDeliveryTimeout(
+        {
+          ...recoveryInput,
+          expectedConversationUrl,
+          deliveryFailureEvidenceHash: evidenceHash,
+        },
+        {
+          async onBeforeRetryClick(checkpoint) {
+            if (
+              checkpoint.evidenceHash !== evidenceHash ||
+              deliveryTimeoutEvidenceHash(checkpoint.evidence) !== evidenceHash
+            ) {
+              throw new CueLineError(
+                "CONTROLLER_DELIVERY_TIMEOUT_EVIDENCE_MISMATCH",
+                "The browser checkpoint no longer matches the authorized delivery-timeout evidence.",
+              );
+            }
+            await store.append("controller_delivery_timeout_retry_started", {
+              round: pending.round,
+              request_id: pending.requestId,
+              prompt_hash: pending.promptHash,
+              conversation_url: expectedConversationUrl,
+              evidence_hash: evidenceHash,
+              one_shot: true,
+              authorization_consumed_before_click: true,
+              target: {
+                kind: checkpoint.targetEvidence.targetKind,
+                coordinate: checkpoint.targetEvidence.coordinate,
+                button_rect: checkpoint.targetEvidence.buttonRect,
+                element_from_point_matches_button:
+                  checkpoint.targetEvidence.elementFromPointMatchesButton,
+                document_has_focus:
+                  checkpoint.targetEvidence.documentHasFocus,
+                document_visibility_state:
+                  checkpoint.targetEvidence.documentVisibilityState,
+              },
+            });
+          },
+        },
+      );
+      if (
+        retryResult.status === "response" ||
+        retryResult.status === "response_started" ||
+        retryResult.status === "not_clicked"
+      ) {
+        await store.append("controller_delivery_timeout_retry_skipped", {
+          round: pending.round,
+          request_id: pending.requestId,
+          prompt_hash: pending.promptHash,
+          conversation_url: expectedConversationUrl,
+          evidence_hash: evidenceHash,
+          reason:
+            retryResult.status === "response"
+              ? "response_available_before_click"
+              : retryResult.status === "response_started"
+                ? "response_started_before_click"
+                : retryResult.reason,
+          authorization_consumed: retryResult.authorizationConsumed,
+          retry_clicked: false,
+        });
+        if (
+          retryResult.status === "response_started" ||
+          retryResult.status === "not_clicked"
+        ) {
+          return "awaiting_controller";
+        }
+        turn = retryResult.turn;
+      } else {
+        await store.append("controller_delivery_timeout_retry_submitted", {
+          round: pending.round,
+          request_id: pending.requestId,
+          prompt_hash: pending.promptHash,
+          conversation_url: expectedConversationUrl,
+          evidence_hash: evidenceHash,
+          retry_status: retryResult.status,
+          click_kind: "atomic_scoped_dom",
+          same_round: true,
+          same_request_identity: true,
+          composer_reused: false,
+        });
+        return "awaiting_controller";
+      }
+    } else {
+      turn = submittedObservation.turn;
+      deferRecoveredDispatch =
+        submittedObservation.responseSource ===
+          "count_degraded_accessibility_exact_envelope" ||
+        submittedObservation.responseSource ===
+          "count_degraded_message_dom_exact_envelope";
+    }
   } else {
     turn = options.browser.observeTurn
       ? await options.browser.observeTurn(recoveryInput)
@@ -1186,6 +1328,73 @@ async function recordFreshSubmittedTurnNotSent(
       operator_confirmation: false,
     });
   }
+}
+
+function isDeliveryTimeoutObservation(
+  pending: CueLineRunState["pendingControllerTurns"][number],
+  expectedConversationUrl: string,
+  evidence: BrowserSubmittedTurnEvidence,
+): boolean {
+  const correlatedSubmittedTurn =
+    evidence.requestMessageFound === true ||
+    evidence.observedUserMessageCount === evidence.baselineUserMessageCount + 1;
+  return (
+    isSubmittedTurnRecoveryCandidate(pending, expectedConversationUrl) &&
+    sameChatGptConversationUrl(
+      evidence.conversationUrl,
+      expectedConversationUrl,
+    ) &&
+    /^Pro(?:\s|$)/i.test(evidence.selectedModelLabel ?? "") &&
+    evidence.hydrated === true &&
+    evidence.baselineUserMessageCount === pending.baselineUserMessageCount &&
+    evidence.countRegressionDetected !== true &&
+    correlatedSubmittedTurn &&
+    evidence.isAnswering === false &&
+    evidence.lastMessageRole === "assistant" &&
+    evidence.deliveryFailure?.code === CHATGPT_DELIVERY_TIMEOUT_CODE &&
+    evidence.deliveryFailure.message === CHATGPT_DELIVERY_TIMEOUT_MESSAGE &&
+    /^[0-9a-f]{64}$/.test(evidence.deliveryFailure.assistantTextHash) &&
+    evidence.composerPromptState === "empty" &&
+    evidence.composerAttachmentCount === 0 &&
+    evidence.composerPastedTextAttachmentPresent !== true &&
+    evidence.composerSendButtonEnabled === false
+  );
+}
+
+async function recordDeliveryTimeoutObservation(
+  store: RunStore<CueLineRunState>,
+  pending: CueLineRunState["pendingControllerTurns"][number],
+  evidence: BrowserSubmittedTurnEvidence,
+  evidenceHash: string,
+): Promise<void> {
+  await store.append("controller_delivery_timeout_observed", {
+    round: pending.round,
+    request_id: pending.requestId,
+    prompt_hash: pending.promptHash,
+    conversation_url: evidence.conversationUrl,
+    failure_code: CHATGPT_DELIVERY_TIMEOUT_CODE,
+    failure_message: CHATGPT_DELIVERY_TIMEOUT_MESSAGE,
+    assistant_text_hash: evidence.deliveryFailure!.assistantTextHash,
+    evidence_hash: evidenceHash,
+    evidence_source: "fresh_read_only_dom",
+    selected_model_label: evidence.selectedModelLabel,
+    baseline_user_message_count: evidence.baselineUserMessageCount,
+    observed_user_message_count: evidence.observedUserMessageCount,
+    assistant_message_count: evidence.assistantMessageCount ?? null,
+    request_message_found: evidence.requestMessageFound,
+    request_message_found_by: evidence.requestMessageFoundBy ?? null,
+    request_message_scan_complete:
+      evidence.requestMessageScanComplete === true,
+    is_answering: false,
+    last_message_role: "assistant",
+    composer_prompt_state: "empty",
+    composer_attachment_count: 0,
+    composer_pasted_text_attachment_present: false,
+    composer_send_button_enabled: false,
+    retry_action_available:
+      evidence.deliveryFailure!.retryActionAvailable === true,
+    automatic_retry_forbidden: true,
+  });
 }
 
 async function createControllerRunStore(

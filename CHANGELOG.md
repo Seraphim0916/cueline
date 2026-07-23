@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added
+
+- Added a public, no-dispatch Goalbraid decision bridge. It validates Python-compatible canonical request digests, constrains Pro output to Goalbraid's closed runnable set, requires a fully verified CueLine run, and publishes one immutable advisory response without importing or invoking Omnilane.
+- Added an executor-owned caller-work lease keeper. It starts the exact fenced claim, renews it on a non-overlapping 60-second client-side timer, exposes an abort signal, separates the one-hour no-progress review deadline from the five-minute claim TTL, and enforces a 24-hour absolute limit without moving liveness into the LLM or MCP server.
+- Added stateless `cueline_heartbeat_caller_job` and `cueline_record_caller_job_progress` MCP tools. Progress accepts only completed tool/checkpoint/verification kinds with lowercase SHA-256 evidence identities; any earlier hash on the same claim is deduplicated and cannot extend the deadline.
+- A progress stall or absolute limit now attempts a durable `caller_work_review_required` transition before exposing the lease abort. The old job becomes `ambiguous` and cannot be revived; Pro must explicitly dispatch a fresh job in the same run.
+- Progress replay now persists the complete accepted evidence-hash history in derived claim state, so `A → B → A` remains rejected by the reducer itself. Lease reconstruction uses the original durable start and latest durable progress anchors, so restarting the executor cannot reset either deadline.
+- Quiesced any in-flight durable renewal before a lease abort becomes observable, kept terminal submission inside the active lease scope, and delayed MCP caller binding until the first successful caller operation.
+
+### Fixed
+
+- The public Goalbraid response publisher now reloads the exact request file and enforces the request prompt, run ID, caller executor, and disabled process-execution binding itself. Direct callers can no longer bypass the high-level bridge's advice-only authority checks.
+- ChatGPT `Message delivery timed out. Please try again.` turns are now a durable, explicit delivery-failure state instead of permanent controller pending or malformed controller output. Detection is read-only and records the exact run/round/request, conversation, redacted composer state, fixed failure code, assistant-text hash, and evidence hash.
+- Delivery-timeout recovery never fills the composer or resends. A separate operator command authorizes one evidence-bound Retry action; CueLine revalidates the same submitted turn, empty composer, zero attachments, disabled Send button, and one scoped Retry target, then consumes the grant while preserving the original round and request identity. After that durable checkpoint, one synchronous page task revalidates the complete DOM guard and pre-inspected target before invoking only that existing assistant Retry control. A response or target change that wins before the page task is permanently recorded as a skipped Retry with no click.
+
+### Verification
+
+- 725/725 tests pass, including four publisher-level negative cases for a mismatched request, mismatched run ID, process executor, and enabled process execution; every case proves that no response file is created.
+- 737/737 tests pass with `--test-concurrency=1`; the focused caller-work and MCP suites pass 37/37. Typecheck, documentation, plugin, CLI-contract, and diff checks pass. The built public API reports 60-second heartbeat, one-hour progress-review, and 24-hour absolute-limit defaults; the real installed `cueline mcp serve` surface lists nine tools including heartbeat and progress. A final independent read-only review directly replayed `A → B → A`, checked both restart deadlines, and returned `PASS` with no blocker in the scoped paths.
+- 751/751 tests pass for the delivery-timeout recovery, including the actual atomic page evaluator, no-click assistant/target changes, and a second same-identity continuation after a consumed skip. Typecheck, documentation, plugin, CLI-contract, and diff checks pass. A final scoped Omnilane review confirmed the core atomic guard/consume ordering but returned `FAIL` on those two then-missing test proofs; both cited gaps were added and pass locally. That review process ended at its timeout after emitting the verdict, so no post-fix independent `PASS` is claimed.
+
 ## 0.6.1 - 2026-07-22
 
 ### Fixed

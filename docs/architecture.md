@@ -19,6 +19,10 @@ The ChatGPT web page is the top-level controller. It decides whether the run sho
 
 CueLine is standalone. Its runtime does not import Omnilane or GPT Relay, and it does not read either project's state or configuration.
 
+### Goalbraid advisory integration
+
+`src/integrations/goalbraid.ts` is an explicit file-handoff adapter, not a runtime import of Goalbraid or Omnilane. It validates a Goalbraid request's canonical digest and closed runnable set, builds a no-dispatch Pro consultation, and publishes one immutable response only after CueLine's own integrity report is `verified`. The response can advise a legal selection or `human_required`; it cannot invoke Omnilane or mark a Goalbraid goal complete. Missing or invalid evidence publishes nothing.
+
 ## Components
 
 ### Browser adapter
@@ -50,7 +54,7 @@ The default limits are 12 controller rounds and two repair attempts per pending 
 
 ### Execution modes, routing, and runners
 
-`caller` is the default for both `startCueLineRun` and `runCueLine`. A controller turn first returns `awaiting_controller` after its one durable submission; each continuation observes the same URL/request once and never resends. A controller `dispatch` creates durable pending jobs but is not execution. `advise` returns `awaiting_caller` and remains coordination-only. `work` requires an absolute workdir, returns `awaiting_caller_work`, and may mutate only after `claimCueLineCallerJob` and `startCueLineCallerJob` succeed. The claim binds run/job/task hash/workdir/caller/fencing token; an unstarted expired claim can be released and reclaimed, while continuation settles an expired started claim as terminal `ambiguous`. A result-submission intent precedes the terminal status so crash recovery can distinguish a durable completed result from lost ownership. ChatGPT only issued the text command—it did not use local tools.
+`caller` is the default for both `startCueLineRun` and `runCueLine`. A controller turn first returns `awaiting_controller` after its one durable submission; each continuation observes the same URL/request once and never resends. A controller `dispatch` creates durable pending jobs but is not execution. `advise` returns `awaiting_caller` and remains coordination-only. `work` requires an absolute workdir, returns `awaiting_caller_work`, and may mutate only after `claimCueLineCallerJob` and `startCueLineCallerJob` succeed. The claim binds run/job/task hash/workdir/caller/fencing token. Its default five-minute TTL and 60-second executor heartbeat prove ownership only. Separate `caller_work_progress` events accept new SHA-256 identities for completed tool, persistence, or verification evidence; the claim-derived state preserves the complete accepted-hash history so earlier hashes cannot be replayed through the reducer. The first durable start and latest durable progress anchor the one-hour progress and 24-hour absolute deadlines across lease reconstruction. A progress stall or absolute limit persists a review-required transition when possible, makes the started job terminal `ambiguous`, aborts the local lease, and requires a fresh Pro dispatch rather than reviving the old claim. An unstarted expired claim can be released and reclaimed, while continuation settles an expired started claim as terminal `ambiguous`. A result-submission intent precedes the terminal status so crash recovery can distinguish a durable completed result from lost ownership. ChatGPT only issued the text command—it did not use local tools.
 
 `process` is opt-in twice: run creation requires `executor: "process"` and `allowProcessExecution: true`, and each non-terminal continuation must explicitly repeat the second authorization. `src/router/` chooses an enabled, available candidate before any process starts. The bundled route invokes `codex exec --ignore-user-config`, preventing hidden workers from loading user-configured MCP servers. `src/runners/` requires an explicitly registered `argv[0]`, uses `spawn` with `shell: false`, and never performs post-spawn fallback. `src/jobs/` coordinates foreground/background execution and persists resolved runner, PID, phase, last progress time, and safely observed model/provider metadata. Process execution defaults to two concurrent jobs globally and two per lane; an accepted batch containing any `work` job is serial. Owned process groups are settled on success, cancellation, and timeout so descendants are not left behind.
 
@@ -68,7 +72,7 @@ The controller can request local work, but a request is not equivalent to proces
 - config-derived registered executable allow-list
 - no shell interpolation
 - deterministic job identity and duplicate-dispatch suppression
-- caller work immutable claim/start/heartbeat/result fencing
+- caller work immutable claim/start/heartbeat/progress/review/result fencing
 - double authorization before process execution
 - no nested CueLine routing (`CUELINE_DEPTH`)
 - no retry after a worker has started
@@ -82,6 +86,8 @@ These gates reduce accidental execution ambiguity; they do not make an allowed w
 3. ChatGPT returns a command; only the control envelope is machine-executed.
 4. On `complete`, CueLine returns `final_delivery_text` to Codex.
 5. On `blocked`, CueLine preserves the controller's reason and optional delivery text.
+
+An exact ChatGPT delivery-timeout assistant state is not controller output and is not a not-sent prompt. CueLine binds it to the already submitted run/round/request, appends a redacted evidence event, and pauses in `controller_delivery_failed`. A Retry action requires a separate one-shot operator authorization tied to that evidence hash. The browser revalidates the same conversation, user-turn baseline, empty composer, zero attachments, disabled Send button, and one scoped Retry target; the authorization is durably consumed before any click. After that checkpoint, one synchronous page task revalidates the complete DOM guard and the pre-inspected target before invoking only that existing assistant Retry control. No new controller request or round is created. A response, conversation change, composer change, or target change before the page task produces a durable `controller_delivery_timeout_retry_skipped` event with no click and is reconciled read-only instead.
 
 CueLine does not intentionally inspect or export cookies, tokens, environment secrets, or browser session material. The IAB uses the user's already authenticated page.
 

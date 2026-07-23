@@ -5,14 +5,19 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  DEFAULT_CALLER_WORK_HEARTBEAT_INTERVAL_MS,
+  DEFAULT_CALLER_WORK_MAX_EXECUTION_MS,
+  DEFAULT_CALLER_WORK_PROGRESS_TIMEOUT_MS,
   claimCueLineCallerJob,
   continueCueLineRun,
   heartbeatCueLineCallerJob,
   loadCueLineRunState,
   loadCueLineRunStatus,
+  recordCueLineCallerJobProgress,
   releaseCueLineCallerJob,
   runCueLine,
   startCueLineCallerJob,
+  startCueLineCallerWorkLease,
   submitCueLineCallerJobResult,
 } from "../../src/api.js";
 import type { BrowserTurnInput, ControllerTurn } from "../../src/browser/browser-adapter.js";
@@ -348,6 +353,56 @@ test("caller work reducer rejects forged and out-of-order claim transitions", as
     }),
   );
   assert.equal(started.jobs[job.jobId]?.status, "running");
+
+  const progressAHash = "a".repeat(64);
+  const progressBHash = "b".repeat(64);
+  const progressA = reduceRunState(
+    started,
+    event("caller_work_progress", {
+      job_id: job.jobId,
+      claim_id: validClaim.claimId,
+      caller_id: validClaim.callerId,
+      fencing_token: validClaim.fencingToken,
+      progress_at: "2026-07-15T00:00:02.000Z",
+      progress_kind: "tool_completed",
+      progress_evidence_hash: progressAHash,
+      expires_at: "2026-07-15T00:05:02.000Z",
+    }),
+  );
+  const progressB = reduceRunState(
+    progressA,
+    event("caller_work_progress", {
+      job_id: job.jobId,
+      claim_id: validClaim.claimId,
+      caller_id: validClaim.callerId,
+      fencing_token: validClaim.fencingToken,
+      progress_at: "2026-07-15T00:00:03.000Z",
+      progress_kind: "verification_completed",
+      progress_evidence_hash: progressBHash,
+      expires_at: "2026-07-15T00:05:03.000Z",
+    }),
+  );
+  const replayedProgressA = reduceRunState(
+    progressB,
+    event("caller_work_progress", {
+      job_id: job.jobId,
+      claim_id: validClaim.claimId,
+      caller_id: validClaim.callerId,
+      fencing_token: validClaim.fencingToken,
+      progress_at: "2026-07-15T00:00:04.000Z",
+      progress_kind: "tool_completed",
+      progress_evidence_hash: progressAHash,
+      expires_at: "2026-07-15T00:05:04.000Z",
+    }),
+  );
+  assert.equal(
+    replayedProgressA.jobs[job.jobId]?.callerWork?.claim?.lastProgressAt,
+    "2026-07-15T00:00:03.000Z",
+  );
+  assert.deepEqual(
+    replayedProgressA.jobs[job.jobId]?.callerWork?.claim?.progressEvidenceHashes,
+    [progressAHash, progressBHash],
+  );
 
   const releasedAfterStart = reduceRunState(
     started,
@@ -836,4 +891,440 @@ test("caller work proof is fenced across start heartbeat release and terminal re
     events.filter((event) => event.type === "caller_work_result_submitted").length,
     1,
   );
+});
+
+test("caller work records only new durable progress evidence", async () => {
+  const runId = "run_caller_progress_checkpoint";
+  const { home, job } = await fixture(runId);
+  let current = new Date("2026-07-22T00:00:00.000Z");
+  const now = () => current;
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-progress-owner",
+    now,
+  });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+
+  current = new Date("2026-07-22T00:01:00.000Z");
+  const evidenceHash = "a".repeat(64);
+  const recorded = await recordCueLineCallerJobProgress(
+    runId,
+    job.jobId,
+    proof(claim),
+    { kind: "tool_completed", evidenceHash },
+    { home, now },
+  );
+  assert.equal(recorded.outcome, "progress_recorded");
+  assert.equal(recorded.progressAt, current.toISOString());
+  assert.equal(recorded.progressKind, "tool_completed");
+  assert.equal(recorded.progressEvidenceHash, evidenceHash);
+
+  current = new Date("2026-07-22T00:02:00.000Z");
+  const duplicate = await recordCueLineCallerJobProgress(
+    runId,
+    job.jobId,
+    proof(claim),
+    { kind: "verification_completed", evidenceHash },
+    { home, now },
+  );
+  assert.equal(duplicate.outcome, "progress_already_recorded");
+  assert.equal(duplicate.progressAt, recorded.progressAt);
+  assert.equal(duplicate.heartbeatAt, recorded.heartbeatAt);
+
+  current = new Date("2026-07-22T00:03:00.000Z");
+  const newerHash = "b".repeat(64);
+  const newer = await recordCueLineCallerJobProgress(
+    runId,
+    job.jobId,
+    proof(claim),
+    { kind: "verification_completed", evidenceHash: newerHash },
+    { home, now },
+  );
+  assert.equal(newer.outcome, "progress_recorded");
+
+  current = new Date("2026-07-22T00:04:00.000Z");
+  const replayedOlder = await recordCueLineCallerJobProgress(
+    runId,
+    job.jobId,
+    proof(claim),
+    { kind: "tool_completed", evidenceHash },
+    { home, now },
+  );
+  assert.equal(replayedOlder.outcome, "progress_already_recorded");
+  assert.equal(replayedOlder.progressAt, recorded.progressAt);
+
+  await heartbeatCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(
+    state.jobs[job.jobId]?.callerWork?.claim?.lastProgressAt,
+    newer.progressAt,
+  );
+  assert.equal(
+    state.jobs[job.jobId]?.callerWork?.claim?.lastProgressEvidenceHash,
+    newerHash,
+  );
+  assert.deepEqual(
+    state.jobs[job.jobId]?.callerWork?.claim?.progressEvidenceHashes,
+    [evidenceHash, newerHash],
+  );
+  const status = await new JobStatusStore(home).read(job.jobId);
+  assert.equal(status?.lastProgressAt, newer.progressAt);
+  assert.equal(status?.phase, "verification_completed");
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.filter((entry) => entry.type === "caller_work_progress").length, 2);
+});
+
+test("caller work rejects invalid progress evidence without durable mutation", async () => {
+  const runId = "run_caller_progress_invalid";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-progress-invalid-owner",
+  });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home });
+
+  await assert.rejects(
+    recordCueLineCallerJobProgress(
+      runId,
+      job.jobId,
+      proof(claim),
+      { kind: "tool_completed", evidenceHash: "not-a-sha256" },
+      { home },
+    ),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "CALLER_WORK_PROGRESS_INVALID",
+  );
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.filter((entry) => entry.type === "caller_work_progress").length, 0);
+});
+
+test("caller work lease defaults separate liveness, progress review, and hard stop", () => {
+  assert.equal(DEFAULT_CALLER_WORK_HEARTBEAT_INTERVAL_MS, 60_000);
+  assert.equal(DEFAULT_CALLER_WORK_PROGRESS_TIMEOUT_MS, 3_600_000);
+  assert.equal(DEFAULT_CALLER_WORK_MAX_EXECUTION_MS, 86_400_000);
+});
+
+test("restarting an active lease cannot reset its durable progress deadline", async () => {
+  const runId = "run_caller_executor_progress_restart";
+  const { home, job } = await fixture(runId);
+  let current = new Date("2026-07-22T00:00:00.000Z");
+  const now = () => current;
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-progress-restart-owner",
+    ttlMs: 5_000,
+    now,
+  });
+  const firstLease = await startCueLineCallerWorkLease(claim, {
+    home,
+    now,
+    heartbeatIntervalMs: 1_000,
+    progressTimeoutMs: 1_000,
+    maxExecutionMs: 5_000,
+  });
+  await firstLease.stop();
+
+  current = new Date("2026-07-22T00:00:01.100Z");
+  const recovered = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: claim.callerId,
+    now,
+  });
+  assert.equal(recovered.startedAt, "2026-07-22T00:00:00.000Z");
+  assert.equal(recovered.lastProgressAt, "2026-07-22T00:00:00.000Z");
+  await assert.rejects(
+    startCueLineCallerWorkLease(recovered, {
+      home,
+      now,
+      heartbeatIntervalMs: 1_000,
+      progressTimeoutMs: 1_000,
+      maxExecutionMs: 5_000,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CALLER_WORK_PROGRESS_REVIEW_REQUIRED",
+  );
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.jobs[job.jobId]?.status, "ambiguous");
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(
+    events.filter((entry) => entry.type === "caller_work_heartbeat").length,
+    0,
+  );
+});
+
+test("restarting an active lease cannot reset its durable absolute deadline", async () => {
+  const runId = "run_caller_executor_max_restart";
+  const { home, job } = await fixture(runId);
+  let current = new Date("2026-07-22T00:00:00.000Z");
+  const now = () => current;
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-max-restart-owner",
+    ttlMs: 5_000,
+    now,
+  });
+  const firstLease = await startCueLineCallerWorkLease(claim, {
+    home,
+    now,
+    heartbeatIntervalMs: 1_000,
+    progressTimeoutMs: 5_000,
+    maxExecutionMs: 1_000,
+  });
+  await firstLease.stop();
+
+  current = new Date("2026-07-22T00:00:01.100Z");
+  await assert.rejects(
+    startCueLineCallerWorkLease(claim, {
+      home,
+      now,
+      heartbeatIntervalMs: 1_000,
+      progressTimeoutMs: 5_000,
+      maxExecutionMs: 1_000,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CALLER_WORK_MAX_EXECUTION_EXCEEDED",
+  );
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.jobs[job.jobId]?.status, "ambiguous");
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(
+    events.filter((entry) => entry.type === "caller_work_heartbeat").length,
+    0,
+  );
+});
+
+test("executor-owned caller work lease heartbeats automatically and stops cleanly", async () => {
+  const runId = "run_caller_executor_lease";
+  const { home, job } = await fixture(runId);
+  let observedMs = Date.parse("2026-07-22T00:00:00.000Z");
+  const now = () => {
+    observedMs += 1_000;
+    return new Date(observedMs);
+  };
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-executor-lease-owner",
+    ttlMs: 60_000,
+    now,
+  });
+  const lease = await startCueLineCallerWorkLease(claim, {
+    home,
+    now,
+    heartbeatIntervalMs: 10,
+    progressTimeoutMs: 1_000,
+    maxExecutionMs: 2_000,
+  });
+
+  const deadline = Date.now() + 1_000;
+  let heartbeatCount = 0;
+  while (Date.now() < deadline) {
+    const events = await readEvents(runPaths(home, runId).events);
+    heartbeatCount = events.filter((entry) => entry.type === "caller_work_heartbeat").length;
+    if (heartbeatCount >= 2) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(heartbeatCount >= 2, "expected the executor lease to renew automatically");
+  assert.equal(lease.signal.aborted, false);
+  lease.assertHealthy();
+
+  await lease.stop();
+  const stoppedCount = (await readEvents(runPaths(home, runId).events)).filter(
+    (entry) => entry.type === "caller_work_heartbeat",
+  ).length;
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const finalCount = (await readEvents(runPaths(home, runId).events)).filter(
+    (entry) => entry.type === "caller_work_heartbeat",
+  ).length;
+  assert.equal(finalCount, stoppedCount);
+});
+
+test("executor-owned caller work lease stops at its hard execution limit", async () => {
+  const runId = "run_caller_executor_lease_limit";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-executor-lease-limit-owner",
+  });
+  const lease = await startCueLineCallerWorkLease(claim, {
+    home,
+    heartbeatIntervalMs: 10,
+    progressTimeoutMs: 1_000,
+    maxExecutionMs: 40,
+  });
+
+  await new Promise<void>((resolve) => {
+    if (lease.signal.aborted) resolve();
+    else lease.signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+  assert.equal(lease.signal.aborted, true);
+  assert.throws(
+    () => lease.assertHealthy(),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "CALLER_WORK_MAX_EXECUTION_EXCEEDED",
+  );
+  const hardLimitState = await loadCueLineRunState(runId, { home });
+  assert.equal(hardLimitState.jobs[job.jobId]?.status, "ambiguous");
+  const hardLimitEvents = await readEvents(runPaths(home, runId).events);
+  assert.equal(
+    hardLimitEvents.some(
+      (entry) =>
+        entry.type === "caller_work_review_required" &&
+        (entry.payload as Record<string, unknown>).reason_code ===
+          "max_execution_elapsed",
+    ),
+    true,
+  );
+  const heartbeatCountAtAbort = (await readEvents(runPaths(home, runId).events)).filter(
+    (entry) => entry.type === "caller_work_heartbeat",
+  ).length;
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const heartbeatCountAfterAbort = (await readEvents(runPaths(home, runId).events)).filter(
+    (entry) => entry.type === "caller_work_heartbeat",
+  ).length;
+  assert.equal(heartbeatCountAfterAbort, heartbeatCountAtAbort);
+  await lease.stop();
+});
+
+test("executor-owned heartbeats do not count as work progress", async () => {
+  const runId = "run_caller_executor_progress_review";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-executor-progress-review-owner",
+    ttlMs: 1_000,
+  });
+  const lease = await startCueLineCallerWorkLease(claim, {
+    home,
+    heartbeatIntervalMs: 10,
+    progressTimeoutMs: 60,
+    maxExecutionMs: 1_000,
+  });
+
+  await new Promise<void>((resolve) => {
+    if (lease.signal.aborted) resolve();
+    else lease.signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+  assert.throws(
+    () => lease.assertHealthy(),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CALLER_WORK_PROGRESS_REVIEW_REQUIRED",
+  );
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.ok(events.some((entry) => entry.type === "caller_work_heartbeat"));
+  assert.equal(events.some((entry) => entry.type === "caller_work_progress"), false);
+  assert.equal(
+    events.some(
+      (entry) =>
+        entry.type === "caller_work_review_required" &&
+        (entry.payload as Record<string, unknown>).reason_code === "progress_stalled",
+    ),
+    true,
+  );
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.jobs[job.jobId]?.status, "ambiguous");
+  await lease.stop();
+});
+
+test("new executor progress resets review timing but duplicate evidence does not", async () => {
+  const runId = "run_caller_executor_progress_reset";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-executor-progress-reset-owner",
+    ttlMs: 1_000,
+  });
+  const lease = await startCueLineCallerWorkLease(claim, {
+    home,
+    heartbeatIntervalMs: 20,
+    progressTimeoutMs: 300,
+    maxExecutionMs: 2_000,
+  });
+  const evidenceHash = "b".repeat(64);
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const recorded = await lease.recordProgress({
+    kind: "checkpoint_persisted",
+    evidenceHash,
+  });
+  assert.equal(recorded.outcome, "progress_recorded");
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(lease.signal.aborted, false);
+  const duplicate = await lease.recordProgress({
+    kind: "checkpoint_persisted",
+    evidenceHash,
+  });
+  assert.equal(duplicate.outcome, "progress_already_recorded");
+
+  await new Promise<void>((resolve) => {
+    if (lease.signal.aborted) resolve();
+    else lease.signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+  assert.throws(
+    () => lease.assertHealthy(),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CALLER_WORK_PROGRESS_REVIEW_REQUIRED",
+  );
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.filter((entry) => entry.type === "caller_work_progress").length, 1);
+  await lease.stop();
+});
+
+test("executor-owned lease stays active through terminal submission after the initial TTL", async () => {
+  const runId = "run_caller_executor_lease_submit";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-executor-lease-submit-owner",
+    ttlMs: 1_000,
+  });
+  const lease = await startCueLineCallerWorkLease(claim, {
+    home,
+    heartbeatIntervalMs: 100,
+    progressTimeoutMs: 5_000,
+    maxExecutionMs: 5_000,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  await lease.heartbeatNow();
+  lease.assertHealthy();
+  let submitted;
+  try {
+    submitted = await submitCueLineCallerJobResult(
+      runId,
+      job.jobId,
+      { status: "succeeded", stdout: "LEASE_SUBMISSION_OK" },
+      { home, claim: proof(claim) },
+    );
+  } finally {
+    await lease.stop();
+  }
+  assert.equal(submitted.outcome, "submitted");
+});
+
+test("executor-owned caller work lease rejects an unsafe heartbeat cadence before start", async () => {
+  const runId = "run_caller_executor_lease_invalid_cadence";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-executor-lease-invalid-cadence",
+    ttlMs: 1_000,
+  });
+
+  await assert.rejects(
+    startCueLineCallerWorkLease(claim, {
+      home,
+      heartbeatIntervalMs: 1_000,
+      maxExecutionMs: 10_000,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CALLER_WORK_HEARTBEAT_INTERVAL_INVALID",
+  );
+  const status = await loadCueLineRunStatus(runId, { home });
+  assert.equal(status.phase, "caller_work_claimed");
+  assert.equal(status.safeNextAction, "start_caller_work");
 });

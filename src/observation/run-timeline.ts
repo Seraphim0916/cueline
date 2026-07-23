@@ -17,6 +17,8 @@ const KNOWN_EVENT_TYPES = new Set([
   "caller_work_claim_released",
   "caller_work_claimed",
   "caller_work_heartbeat",
+  "caller_work_progress",
+  "caller_work_review_required",
   "caller_work_result_submission_started",
   "caller_work_result_submitted",
   "caller_work_started",
@@ -28,6 +30,12 @@ const KNOWN_EVENT_TYPES = new Set([
   "controller_conversation_archive_started",
   "controller_conversation_archived",
   "controller_conversation_bound",
+  "controller_delivery_timeout_observed",
+  "controller_delivery_timeout_operator_attested",
+  "controller_delivery_timeout_retry_authorized",
+  "controller_delivery_timeout_retry_skipped",
+  "controller_delivery_timeout_retry_started",
+  "controller_delivery_timeout_retry_submitted",
   "controller_repair_requested",
   "controller_response_evidence_rejected",
   "controller_response_received",
@@ -226,6 +234,18 @@ function summary(type: string, attributes: Record<string, string | number | bool
       return "Run created.";
     case "controller_turn_requested":
       return "Controller turn requested.";
+    case "controller_delivery_timeout_observed":
+      return "ChatGPT delivery timeout observed and permanently recorded.";
+    case "controller_delivery_timeout_operator_attested":
+      return "Operator-attested historical delivery-timeout evidence recorded.";
+    case "controller_delivery_timeout_retry_authorized":
+      return "Operator authorized one Retry click for the exact timed-out turn.";
+    case "controller_delivery_timeout_retry_skipped":
+      return "A response won the race before Retry; the existing Retry action was not clicked.";
+    case "controller_delivery_timeout_retry_started":
+      return "One-shot Retry authorization consumed before the click.";
+    case "controller_delivery_timeout_retry_submitted":
+      return "Existing ChatGPT Retry action clicked once; awaiting read-only observation.";
     case "controller_turn_not_sent_confirmed":
       return "Controller turn confirmed not sent; ready to retry.";
     case "controller_turn_post_fix_retry_reauthorized":

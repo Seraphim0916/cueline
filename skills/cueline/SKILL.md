@@ -19,6 +19,39 @@ Use CueLine to put the current ChatGPT web conversation in charge of planning an
 
 If live IAB, authentication, build output, or a required runner is missing, report that exact prerequisite. Do not claim a live run from fake or read-only evidence.
 
+## Goalbraid bounded decision mode
+
+When Goalbraid returns `driver.stop_reason: awaiting_controller`, CueLine is not the
+top-level completion authority. It is one advisory sidecar at a closed turning point.
+Use only the exact absolute `driver.controller_handoff.request_path` returned by that
+Goalbraid invocation.
+
+After importing the current public API and constructing the exact IAB `browser` as below:
+
+```js
+let bridge = await runGoalbraidDecision({ requestPath, browser });
+if (bridge.outcome === "awaiting_controller") {
+  bridge = await continueGoalbraidDecision({
+    requestPath,
+    runId: bridge.cueline.runId,
+    browser,
+  });
+}
+```
+
+Repeat only the read-only continuation on the same run after bounded waits while Pro is
+answering. Never resend, interrupt Pro, open another conversation, or call ordinary
+`runCueLine` for the same Goalbraid request. The integration prompt forbids `dispatch`,
+`wait`, and `inspect`; an attempted caller handoff raises
+`GOALBRAID_DECISION_DISPATCH_REJECTED` and publishes nothing.
+
+Only a CueLine terminal `complete` plus `verifyCueLineRun(...).outcome === "verified"`
+can publish the immutable advisory response. `blocked`, `cancelled`, degraded evidence,
+malformed JSON, stale digest, or an out-of-set selection publishes nothing. In this mode,
+do not return `finalDeliveryText` as the user's final answer. After `bridge.published ===
+true`, return control to the Goalbraid skill and rerun the exact bounded Goalbraid command.
+Goalbraid alone may invoke Omnilane and transition the project goal to `completed`.
+
 ## Start a run
 
 Drive CueLine from Codex's Node runtime so the injected IAB object remains available. First run `cueline api path` in the local shell. In the Node REPL, assign its exact one-line output to `cuelineApiPath`; do not guess an npm prefix or repository location. Import the built public API; do not import Omnilane or GPT Relay.
@@ -30,13 +63,15 @@ const { pathToFileURL } = await import("node:url");
 var cuelineModuleUrl = `${pathToFileURL(cuelineApiPath).href}?v=${encodeURIComponent(expectedCueLineVersion)}`;
 const {
   CUELINE_VERSION,
+  authorizeControllerDeliveryTimeoutRetry,
   claimCueLineCallerJob,
   createCodexIabAdapter,
+  continueGoalbraidDecision,
   continueCueLineRun,
-  heartbeatCueLineCallerJob,
   releaseCueLineCallerJob,
   runCueLine,
-  startCueLineCallerJob,
+  runGoalbraidDecision,
+  startCueLineCallerWorkLease,
   startCueLineRun,
   submitCueLineCallerJobResult,
 } = await import(cuelineModuleUrl);
@@ -90,7 +125,7 @@ When the result is `awaiting_controller`, CueLine has submitted the exact reques
 
 When the result is `awaiting_caller`, execute every pending `advise` task exactly as written using the current Codex's local tools. Advice has no execution claim: coordinate one session, because two sessions could perform the same inspection and only the first submitted terminal evidence wins.
 
-When the result is `awaiting_caller_work`, do not modify anything yet. Read each exact task and absolute `workdir`, then acquire a durable claim with a stable caller identity. Execute only in the returned `resolvedWorkdir`: CueLine pins that canonical directory identity and rechecks it at start, so a replaced directory or retargeted symlink cannot redirect authorized work. A repeated call by that same caller returns the same active claim, which safely recovers an API response lost to a restart. Call `startCueLineCallerJob` immediately before the first local mutation, heartbeat long-running work before expiry, and submit the terminal result with the exact claim proof. A claim may be released only before start. Once started, a lost or expired claim becomes `ambiguous` and must never be automatically retried. Any submitted non-success result after start is also normalized to `ambiguous`; CueLine writes a result-submission intent before the terminal status so a crash between those writes can be recovered without misclassifying completed work.
+When the result is `awaiting_caller_work`, do not modify anything yet. Read each exact task and absolute `workdir`, then acquire a durable claim with a stable caller identity. Execute only in the returned `resolvedWorkdir`: CueLine pins that canonical directory identity and rechecks it at start, so a replaced directory or retargeted symlink cannot redirect authorized work. A repeated call by that same caller returns the same active claim, which safely recovers an API response lost to a restart. Call `startCueLineCallerWorkLease` immediately before the first local mutation. Its executor-owned timer renews the exact claim every 60 seconds against the default five-minute TTL. Heartbeat is liveness only. After every executor-observed completed tool call, durable checkpoint, or completed verification, call `lease.recordProgress` with the matching kind and a lowercase SHA-256 of bounded evidence. Never derive progress from LLM prose, elapsed time, a tool start, or an unchanged/replayed checkpoint. A new evidence hash resets the one-hour progress deadline; any hash previously used by that claim does not. The first durable start, latest durable progress, and accepted-hash history survive executor restarts, so never assume a new lease gets a fresh deadline. Twenty-four hours is the absolute limit even with progress. A progress stall or absolute limit attempts to persist `caller_work_review_required`, makes the old job `ambiguous`, quiesces durable renewals, and aborts `lease.signal`. Honor the signal and stop the lease. Do not reuse or revive that claim, and do not automatically retry its mutations. Inspect the durable status; once the job is `ambiguous`, continue the same run so Pro can review evidence and explicitly dispatch a fresh job. If the review write failed and status still says running, do not renew or continue work; let the five-minute claim expire and use normal continuation reconciliation. A claim may be released only before start. Any submitted non-success result after start is also normalized to `ambiguous`; CueLine writes a result-submission intent before the terminal status so a crash between those writes can be recovered without misclassifying completed work.
 
 Every result sent back to Pro must name the exact absolute local paths inspected or changed, include the relevant code excerpt or exact error/code identifiers, and distinguish verified facts from unknowns. End the evidence by asking whether Pro needs any additional local code, paths, or runtime evidence; Pro cannot discover them itself. Submit terminal evidence, then continue the same run:
 
@@ -123,17 +158,25 @@ const claimProof = {
   fencingToken: claim.fencingToken,
 };
 
-// No local mutation is allowed before this durable start succeeds.
-await startCueLineCallerJob(result.runId, job.jobId, claimProof);
-const evidence = await EXECUTE_EXACT_LOCAL_WORK(job.spec.task, claim.resolvedWorkdir, {
-  heartbeat: () => heartbeatCueLineCallerJob(result.runId, job.jobId, claimProof),
-});
-await submitCueLineCallerJobResult(
-  result.runId,
-  job.jobId,
-  { status: "succeeded", stdout: evidence },
-  { claim: claimProof },
-);
+// No local mutation is allowed before this durable start + lease succeeds.
+const lease = await startCueLineCallerWorkLease(claim);
+let evidence;
+try {
+  evidence = await EXECUTE_EXACT_LOCAL_WORK(job.spec.task, claim.resolvedWorkdir, {
+    signal: lease.signal,
+    // The executor supplies only completed, bounded evidence and its SHA-256.
+    onCompletedProgress: (progress) => lease.recordProgress(progress),
+  });
+  lease.assertHealthy();
+  await submitCueLineCallerJobResult(
+    result.runId,
+    job.jobId,
+    { status: "succeeded", stdout: evidence },
+    { claim: claimProof },
+  );
+} finally {
+  await lease.stop();
+}
 ```
 
 Submit real terminal evidence only. A duplicate submit returns `already_terminal`; do not invent or replace the first result. Continue through controller-observation and caller pauses until the controller returns `complete`, `blocked`, or `cancelled`. CueLine rejects both `complete` and `blocked` while any required or optional job is still pending/running; settle, inspect, or cancel every job first.
@@ -149,6 +192,7 @@ cueline run status EXISTING_RUN_ID --json
 This check is mandatory before every continuation and after every outer tool/wait timeout. Read these fields literally:
 
 - `phase: controller_response_pending`, `controller.pendingTurns === 1`, `runtime.ownership: missing`, and `safeNextAction: observe` means one normally submitted exact turn awaits a read-only observation. `controller.responseAccepted` is false even if `lastAcceptedAction` describes an earlier round. Continue the same run after a bounded backoff; never resend. `safeNextAction: reconcile` is reserved for ambiguous, manually submitted, or multiple pending turns and requires the exact recovery evidence below.
+- `phase: controller_delivery_failed` means ChatGPT rendered `Message delivery timed out. Please try again.` for the exact submitted turn. CueLine permanently records the read-only DOM evidence and never clicks `Retry` or resends automatically. `safeNextAction: authorize_delivery_retry` requires explicit operator approval of the shown request, round, conversation, and evidence hash. After approval, `safeNextAction: retry_delivery_timeout` permits one continuation to revalidate the unchanged empty composer and pre-inspect only the existing scoped `Retry` action. The authorization is consumed before any click; one synchronous page task then revalidates the complete DOM guard and that target before invoking it once. If a valid response appears or starts, or the target changes first, append `controller_delivery_timeout_retry_skipped`, reconcile read-only, and do not click `Retry`.
 - `controller.responseAccepted: true` means no newer controller turn is pending and a response was accepted. Read `lastAcceptedAction` and `lastAcceptedJobKeys` before describing what CueLine is doing. Never call that accepted round “still waiting for the web response.”
 - `phase: jobs_running` with `runtime.ownership: active` means the original local loop is running jobs. Observe it; do not call `continueCueLineRun`.
 - `executor: caller`, `phase: caller_jobs_pending`, `runtime.ownership: missing`, and `safeNextAction: execute_caller_jobs` is a healthy handoff. Execute the listed local `advise` jobs and submit their results; do not call it orphaned or waiting for ChatGPT.
@@ -175,6 +219,19 @@ const result = await continueCueLineRun({
 Preserve the same `CUELINE_HOME` and browser conversation. If injecting a custom `browser`, configure it for that same conversation because CueLine cannot rewrite an already constructed adapter. Do not copy credentials or runtime state from another host. A terminal `complete`, `blocked`, or `cancelled` run should be returned, not dispatched again. CLI `run status` is a metadata-only handoff surface and intentionally omits task bodies, caller identities, task hashes, workdirs, and runtime owner IDs; claim caller work to receive its exact task and workdir. Use `loadCueLineRunStatus(runId, { home, environment })` for trusted local cross-session truth and `loadCueLineRunState` only for deeper read-only recovery inspection.
 
 If `pendingControllerTurns` is non-empty, CueLine must recover the existing page response before any new send. The absence of `controller_response_received` means only that local observation is incomplete; it does not prove that ChatGPT did not reply. Recovery is read-only and requires the exact conversation URL, completed assistant response, current-request correlation, and Pro evidence. Correlation may be the exact visible current user prompt or request ID, an exact current controller envelope, or a reliable one-user-turn post-click increase from a nonzero durable baseline. When an exact envelope comes from the verified assistant response, a virtualized stale or missing last visible user message cannot veto it; without that envelope, normal visible-prompt matching remains mandatory. A hydrated historical count uplift is not correlation. If the exact inline prompt or attachment remains staged while the current request is absent and Pro is idle, that composer evidence wins: never parse the historical last assistant response. A malformed assistant envelope may reach repair only after independent current-request correlation. For a prompt automatically converted to an attachment and manually sent, use the formal operator-confirmation path below; visible text need not equal the full persisted prompt. Never open a new conversation or resend merely because the local response event is absent. The only automatic retry exception is one sole pending request whose request-correlated failure evidence proves `definitely_not_sent`; CueLine records and abandons that attempt, returns immediately, and waits for a separate explicit continuation before any retry.
+
+For a ChatGPT delivery timeout, do not use the not-sent path: the user turn already exists. After the operator explicitly approves the exact status evidence, authorize only that evidence identity:
+
+```bash
+cueline run authorize-delivery-retry RUN_ID \
+  --request-id REQUEST_ID \
+  --round ROUND \
+  --conversation-url https://chatgpt.com/c/EXACT_CONVERSATION \
+  --evidence-hash EVIDENCE_SHA256 \
+  --json
+```
+
+This command only appends the one-shot authorization; it does not drive the browser. The next `continueCueLineRun` first performs another read-only observation and pre-inspects the one scoped Retry target. After durable authorization consumption, one synchronous page task invokes the existing assistant `Retry` only if the same failure evidence, identity, empty composer, zero attachments, disabled Send button, and pre-inspected target still match. It never fills the composer, creates a new request, or increments the round. A consumed grant cannot click again automatically; a response or target change that wins before the page task is recorded as skipped and reconciled without a click.
 
 For a manually submitted attachment, record confirmation without editing `events.jsonl`:
 
@@ -227,7 +284,7 @@ When multiple legacy turns are pending, stop on `MULTIPLE_CONTROLLER_TURNS_PENDI
 
 `defaultTimeoutMs` and controller `timeout_ms` limit one job. For explicit `process` execution, `runTimeoutMs` limits that owned controller-loop invocation and cancels its owned jobs before returning `RUN_TIMEOUT`. Caller execution is deliberately split across ownerless pauses, so `runTimeoutMs` limits each `runCueLine`/`continueCueLineRun` advancement in which it is supplied; Pro thinking time and caller handoff time between calls are not counted. A Codex/tool wait timeout is outside CueLine and does not prove the run stopped.
 
-The CLI never drives the browser. `doctor`, `routing`, `jobs`, `runs`, `run status`, `run verify`, `api path`, and `config path` are read-only. Use `cueline runs --json` to recover an unknown run ID without exposing controller text, conversation URLs, job tasks, or worker output. Use `cueline run verify RUN_ID --json` when durable evidence may be corrupt; it returns stable findings without run content and never repairs files. `install`/`uninstall` change only the package-owned skill link. `run reconcile`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, and `job cancel` append audit evidence or change durable local run/job state. Check `cueline help` for every positional argument and option before invoking a state-changing command.
+The CLI never drives the browser. `doctor`, `routing`, `jobs`, `runs`, `run status`, `run verify`, `api path`, and `config path` are read-only. Use `cueline runs --json` to recover an unknown run ID without exposing controller text, conversation URLs, job tasks, or worker output. Use `cueline run verify RUN_ID --json` when durable evidence may be corrupt; it returns stable findings without run content and never repairs files. `install`/`uninstall` change only the package-owned skill link. `run reconcile`, `run authorize-delivery-retry`, `run takeover`, `run reconcile-runtime`, `run cancel`/`run stop`, and `job cancel` append audit evidence or change durable local run/job state. Check `cueline help` for every positional argument and option before invoking a state-changing command.
 
 After an outer timeout, run `cueline run status RUN_ID --json`. Ownerless `controller_response_pending`, `caller_jobs_pending`, and caller-work claim phases survive the wait intentionally. Continue observing an active process owner, or use `cueline run cancel RUN_ID` (`run stop` is an alias). Use `cueline job cancel RUN_ID JOB_ID` for one job. Use `cueline run reconcile-runtime RUN_ID` to settle a dead process owner only after CueLine verifies that no recorded process/process group survives. Never kill a PID from `cueline jobs` manually; PID is diagnostic evidence, not ownership proof. Process status exposes resolved runner, model/provider when safely observed, PID, phase, and last progress time. A cancelled `advise` job is `cancelled`; interrupted process or started caller `work` is `ambiguous`. If `cueline jobs` reports `observedStatus: conflict`, the authoritative run event wins over a late status-file write; do not trust the late result.
 

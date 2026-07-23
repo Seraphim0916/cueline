@@ -3,6 +3,9 @@ import type {
   BrowserConversationArchiveEvidence,
   BrowserConversationArchiveHooks,
   BrowserConversationArchiveInput,
+  BrowserDeliveryRetryHooks,
+  BrowserDeliveryRetryInput,
+  BrowserDeliveryRetryResult,
   BrowserMisdirectedTurnObservation,
   BrowserMisdirectedTurnObservationInput,
   BrowserSubmissionComposerEvidence,
@@ -16,6 +19,11 @@ import type {
   ControllerTurn,
   PendingObservationDiagnostic,
 } from "../browser-adapter.js";
+import {
+  CHATGPT_DELIVERY_TIMEOUT_CODE,
+  CHATGPT_DELIVERY_TIMEOUT_MESSAGE,
+  deliveryTimeoutEvidenceHash,
+} from "../delivery-timeout.js";
 import {
   isExactChatGptConversationUrl as isConversationUrl,
   sameChatGptConversationUrl,
@@ -47,6 +55,10 @@ import {
 } from "./recovery-evidence.js";
 import { captureConversationUrlAfterSubmit } from "./submission-url.js";
 import { inspectVisibleSendButton } from "./send-button.js";
+import {
+  commitDeliveryTimeoutRetry,
+  inspectDeliveryTimeoutRetryButton,
+} from "./delivery-timeout.js";
 import { acquireChatGptTab, isTabUnavailableError } from "./tab-discovery.js";
 import { validatedTimingOption } from "./timing-options.js";
 import type { ExpectedControllerIdentity } from "../../protocol/types.js";
@@ -1691,6 +1703,21 @@ class CodexIabAdapter implements BrowserAdapter {
         composerPastedTextAttachmentPresent:
           composerState.pastedTextAttachmentPresent === true,
         composerSendButtonEnabled: composerState.sendButtonEnabled,
+        assistantMessageCount: state.assistantMessageCount,
+        lastMessageRole: state.lastMessageRole,
+        ...(state.deliveryFailure === undefined || state.deliveryFailure === null
+          ? {}
+          : {
+              deliveryFailure: {
+                code: CHATGPT_DELIVERY_TIMEOUT_CODE,
+                message: CHATGPT_DELIVERY_TIMEOUT_MESSAGE,
+                assistantTextHash: commandHash(
+                  normalizedMessageText(state.assistantText),
+                ),
+                retryActionAvailable:
+                  state.deliveryFailure.retryActionAvailable === true,
+              },
+            }),
       };
       const stagedPromptRemains = legacyPreSubmissionRecovery
         ? true
@@ -1793,6 +1820,29 @@ class CodexIabAdapter implements BrowserAdapter {
         hasExactCurrentEnvelope ||
         hasReliablePostClickUserTurn;
 
+      const deliveryFailureCorrelated =
+        baselineLoaded &&
+        currentRequestCorrelated &&
+        state.deliveryFailure !== undefined &&
+        state.deliveryFailure !== null &&
+        state.isAnswering === false &&
+        state.lastMessageRole === "assistant" &&
+        composerState.state === "empty" &&
+        composerState.inlineTextLength === 0 &&
+        composerState.attachmentCount === 0 &&
+        composerState.pastedTextAttachmentPresent !== true &&
+        composerState.sendButtonEnabled === false;
+      if (deliveryFailureCorrelated) {
+        this.#clearPendingObservation(input);
+        return { status: "delivery_failed", evidence };
+      }
+      // The exact ChatGPT error text is not a controller response even when the
+      // Retry action is unavailable or ambiguous. Keep observing, but never feed
+      // the error string into the controller protocol repair path.
+      if (state.deliveryFailure !== undefined && state.deliveryFailure !== null) {
+        return pendingObservation();
+      }
+
       const countDegradedExactEnvelope =
         !baselineLoaded &&
         (state.assistantTextSource === "accessibility_exact_envelope" ||
@@ -1890,6 +1940,328 @@ class CodexIabAdapter implements BrowserAdapter {
         );
       }
       return await this.#observeSubmittedDelivery(tab, input, selectedModelLabel);
+    } catch (error) {
+      throw this.#reconciliationFailure(error, input);
+    }
+  }
+
+  async retryDeliveryTimeout(
+    input: BrowserDeliveryRetryInput,
+    hooks: BrowserDeliveryRetryHooks = {},
+  ): Promise<BrowserDeliveryRetryResult> {
+    try {
+      throwIfCancelled(input.signal);
+      if (
+        this.#conversationUrl === undefined ||
+        !sameChatGptConversationUrl(
+          this.#conversationUrl,
+          input.expectedConversationUrl,
+        )
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_DELIVERY_TIMEOUT_CONVERSATION_MISMATCH",
+          "The one-shot Retry authorization does not match this adapter's exact ChatGPT conversation.",
+        );
+      }
+      if (!/^[0-9a-f]{64}$/.test(input.deliveryFailureEvidenceHash)) {
+        throw new CueLineError(
+          "CONTROLLER_DELIVERY_TIMEOUT_EVIDENCE_MISMATCH",
+          "The one-shot Retry authorization is missing a valid delivery-timeout evidence hash.",
+        );
+      }
+      if (hooks.onBeforeRetryClick === undefined) {
+        throw new CueLineError(
+          "CONTROLLER_DELIVERY_TIMEOUT_CHECKPOINT_REQUIRED",
+          "A durable one-shot consumption checkpoint is required before clicking Retry.",
+        );
+      }
+      const baselineUserMessageCount = input.baselineUserMessageCount;
+      if (
+        !Number.isSafeInteger(baselineUserMessageCount) ||
+        (baselineUserMessageCount ?? -1) < 0
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_DELIVERY_TIMEOUT_BASELINE_REQUIRED",
+          "The one-shot Retry requires the original durable user-message baseline.",
+        );
+      }
+      const tab = await this.#getTab();
+      const selectedModelLabel = await readComposerModelLabelWhenReady(
+        tab,
+        input.signal,
+      );
+      const operationTimeoutMs = Math.min(
+        SUBMISSION_ACTION_TIMEOUT_MS,
+        this.#options.timeoutMs,
+      );
+      const expectedIdentity: ExpectedControllerIdentity = {
+        runId: input.runId,
+        round: input.round,
+        requestId: input.requestId,
+      };
+      const readRetrySnapshot = async (
+        stage: "preclick" | "post_checkpoint",
+      ): Promise<{
+        state: PageChatState;
+        composerState: PageComposerState;
+        observedUserMessageCount: number | null;
+        requestMessageFound: boolean | null;
+        evidence: BrowserSubmittedTurnEvidence;
+      }> => {
+        const readCode =
+          stage === "preclick"
+            ? "CONTROLLER_DELIVERY_TIMEOUT_PRECLICK_READ_TIMEOUT"
+            : "CONTROLLER_DELIVERY_TIMEOUT_POSTCHECKPOINT_READ_TIMEOUT";
+        const readLabel =
+          stage === "preclick"
+            ? "before Retry"
+            : "after authorization consumption";
+        const state = await withBrowserOperationTimeout(
+          () => readPageChatState(tab, expectedIdentity, input.prompt),
+          operationTimeoutMs,
+          input.signal,
+          () =>
+            new CueLineError(
+              readCode,
+              `The delivery-timeout state could not be revalidated ${readLabel}; no click was attempted.`,
+            ),
+        );
+        const composerState = await withBrowserOperationTimeout(
+          () => readPageComposerState(tab, input.prompt, SEND_BUTTON_NAMES),
+          operationTimeoutMs,
+          input.signal,
+          () =>
+            new CueLineError(
+              readCode,
+              `The composer could not be revalidated ${readLabel}; no click was attempted.`,
+            ),
+        );
+        const observedUserMessageCount = Number.isSafeInteger(state.userMessageCount)
+          ? state.userMessageCount!
+          : null;
+        const requestMessageFound =
+          state.requestMessageFound ??
+          (state.lastUserText !== null &&
+            (normalizedMessageText(state.lastUserText) ===
+              normalizedMessageText(input.prompt) ||
+              state.lastUserText.includes(input.requestId)));
+        const evidence: BrowserSubmittedTurnEvidence = {
+          conversationUrl: state.pageUrl,
+          selectedModelLabel,
+          hydrated:
+            observedUserMessageCount !== null &&
+            (baselineUserMessageCount! > 0 || observedUserMessageCount > 0),
+          baselineUserMessageCount: baselineUserMessageCount!,
+          observationBaselineUserMessageCount: baselineUserMessageCount!,
+          observedUserMessageCount,
+          countRegressionDetected:
+            observedUserMessageCount !== null &&
+            observedUserMessageCount < baselineUserMessageCount!,
+          requestMessageFound,
+          requestMessageFoundBy: state.requestMessageFoundBy ?? null,
+          requestMessageScanComplete: state.requestMessageScanComplete === true,
+          accessibilityRequestIdFound: null,
+          ...(state.assistantTextFoundBy === undefined
+            ? {}
+            : { assistantTextFoundBy: state.assistantTextFoundBy }),
+          isAnswering: state.isAnswering,
+          composerPromptState: composerState.state,
+          composerAttachmentCount: composerState.attachmentCount,
+          composerPastedTextAttachmentPresent:
+            composerState.pastedTextAttachmentPresent === true,
+          composerSendButtonEnabled: composerState.sendButtonEnabled,
+          assistantMessageCount: state.assistantMessageCount,
+          lastMessageRole: state.lastMessageRole,
+          ...(state.deliveryFailure === undefined || state.deliveryFailure === null
+            ? {}
+            : {
+                deliveryFailure: {
+                  code: CHATGPT_DELIVERY_TIMEOUT_CODE,
+                  message: CHATGPT_DELIVERY_TIMEOUT_MESSAGE,
+                  assistantTextHash: commandHash(
+                    normalizedMessageText(state.assistantText),
+                  ),
+                  retryActionAvailable:
+                    state.deliveryFailure.retryActionAvailable === true,
+                },
+              }),
+        };
+        return {
+          state,
+          composerState,
+          observedUserMessageCount,
+          requestMessageFound,
+          evidence,
+        };
+      };
+      const responseBeforeRetry = async (
+        snapshot: Awaited<ReturnType<typeof readRetrySnapshot>>,
+        authorizationConsumed: boolean,
+      ): Promise<BrowserDeliveryRetryResult | undefined> => {
+        if (
+          !sameChatGptConversationUrl(
+            snapshot.state.pageUrl,
+            input.expectedConversationUrl,
+          )
+        ) return undefined;
+        const exactResponseAvailable =
+          hasExactControllerEnvelopeIdentity(
+            snapshot.state.assistantText,
+            expectedIdentity,
+          ) && snapshot.state.lastMessageRole === "assistant";
+        if (snapshot.state.isAnswering) {
+          this.#clearPendingObservation(input);
+          return {
+            status: "response_started",
+            evidence: snapshot.evidence,
+            authorizationConsumed,
+          };
+        }
+        if (!exactResponseAvailable) return undefined;
+        if (!isProLabel(selectedModelLabel)) {
+          throw new CueLineError(
+            "PRO_MODEL_MISMATCH",
+            "A controller response appeared before Retry, but the composer no longer proves Pro; no Retry click was attempted.",
+          );
+        }
+        const turn = await this.#resultFromCompletedTurn(
+          tab,
+          selectedModelLabel,
+          snapshot.state,
+        );
+        this.#clearPendingObservation(input);
+        return {
+          status: "response",
+          evidence: snapshot.evidence,
+          turn,
+          authorizationConsumed,
+        };
+      };
+
+      const preClick = await readRetrySnapshot("preclick");
+      const responseAlreadyAvailable = await responseBeforeRetry(
+        preClick,
+        false,
+      );
+      if (responseAlreadyAvailable !== undefined) return responseAlreadyAvailable;
+      const {
+        state,
+        composerState,
+        observedUserMessageCount,
+        requestMessageFound,
+        evidence,
+      } = preClick;
+      const evidenceHash = deliveryTimeoutEvidenceHash(evidence);
+      const exactSubmittedTurnStillFailed =
+        sameChatGptConversationUrl(state.pageUrl, input.expectedConversationUrl) &&
+        isProLabel(selectedModelLabel) &&
+        evidence.hydrated &&
+        evidence.countRegressionDetected !== true &&
+        (requestMessageFound === true ||
+          observedUserMessageCount === baselineUserMessageCount! + 1) &&
+        state.isAnswering === false &&
+        state.lastMessageRole === "assistant" &&
+        evidence.deliveryFailure?.code === CHATGPT_DELIVERY_TIMEOUT_CODE &&
+        evidence.deliveryFailure.retryActionAvailable === true &&
+        composerState.state === "empty" &&
+        composerState.inlineTextLength === 0 &&
+        composerState.attachmentCount === 0 &&
+        composerState.pastedTextAttachmentPresent !== true &&
+        composerState.sendButtonEnabled === false;
+      if (
+        !exactSubmittedTurnStillFailed ||
+        evidenceHash !== input.deliveryFailureEvidenceHash
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_DELIVERY_TIMEOUT_EVIDENCE_MISMATCH",
+          "The current DOM no longer matches the exact authorized delivery-timeout evidence; no Retry click was attempted.",
+          {
+            details: {
+              request_id: input.requestId,
+              expected_evidence_hash: input.deliveryFailureEvidenceHash,
+              observed_evidence_hash: evidenceHash,
+            },
+          },
+        );
+      }
+      const targetEvidence = await withBrowserOperationTimeout(
+        () => inspectDeliveryTimeoutRetryButton(tab),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_DELIVERY_TIMEOUT_RETRY_TARGET_TIMEOUT",
+            "The Retry target could not be inspected before the one-shot click.",
+          ),
+      );
+      if (
+        targetEvidence === undefined ||
+        targetEvidence.targetKind !== "coordinate" ||
+        targetEvidence.elementFromPointMatchesButton !== true
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_DELIVERY_TIMEOUT_RETRY_TARGET_UNVERIFIED",
+          "The last timed-out assistant turn does not expose exactly one verified Retry button; no click was attempted.",
+        );
+      }
+      await hooks.onBeforeRetryClick({ evidence, evidenceHash, targetEvidence });
+      const commitResult = await withBrowserOperationTimeout(
+        () =>
+          commitDeliveryTimeoutRetry(tab, {
+            expectedPageUrl: state.pageUrl,
+            expectedAssistantText: state.assistantText,
+            expectedUserMessageCount: observedUserMessageCount!,
+            expectedAssistantMessageCount: state.assistantMessageCount,
+            expectedTarget: targetEvidence,
+            sendButtonNames: SEND_BUTTON_NAMES,
+          }),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_DELIVERY_TIMEOUT_RETRY_COMMIT_TIMEOUT",
+            "The atomic Retry guard did not finish after authorization consumption; the click outcome is ambiguous and the grant remains consumed.",
+          ),
+      );
+      if (commitResult.status === "not_clicked") {
+        const afterSkip = await readRetrySnapshot("post_checkpoint");
+        const responseWonRace = await responseBeforeRetry(afterSkip, true);
+        if (responseWonRace !== undefined) return responseWonRace;
+        this.#clearPendingObservation(input);
+        return {
+          status: "not_clicked",
+          evidence: afterSkip.evidence,
+          authorizationConsumed: true,
+          reason: commitResult.reason,
+        };
+      }
+      await tab.playwright.waitForTimeout(100);
+      const postClick = await withBrowserOperationTimeout(
+        () => readPageChatState(tab, expectedIdentity, input.prompt),
+        operationTimeoutMs,
+        input.signal,
+        () =>
+          new CueLineError(
+            "CONTROLLER_DELIVERY_TIMEOUT_POSTCLICK_READ_TIMEOUT",
+            "Retry was clicked once, but its result could not be read; CueLine will only observe on the next continuation.",
+          ),
+      ).catch(() => undefined);
+      const submitted =
+        postClick !== undefined &&
+        sameChatGptConversationUrl(
+          postClick.pageUrl,
+          input.expectedConversationUrl,
+        ) &&
+        (postClick.isAnswering ||
+          postClick.deliveryFailure === null ||
+          postClick.deliveryFailure === undefined ||
+          normalizedMessageText(postClick.assistantText) !==
+            normalizedMessageText(state.assistantText));
+      this.#clearPendingObservation(input);
+      return {
+        status: submitted ? "submitted" : "possibly_started",
+        evidence,
+      };
     } catch (error) {
       throw this.#reconciliationFailure(error, input);
     }

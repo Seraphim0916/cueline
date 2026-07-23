@@ -4,6 +4,8 @@ import type {
   CueLineCallerJobSubmissionResult,
   CueLineCallerWorkClaimProof,
   ControllerMisdirectedConfirmation,
+  ControllerDeliveryTimeoutAttestationResult,
+  ControllerDeliveryTimeoutRetryAuthorization,
   ControllerNotSentConfirmation,
   ControllerPostFixRetryReauthorization,
   CueLineRuntimeOptions,
@@ -13,6 +15,10 @@ import type {
   BrowserMisdirectedTurnEvidence,
   BrowserSubmittedTurnEvidence,
 } from "./browser/browser-adapter.js";
+import {
+  CHATGPT_DELIVERY_TIMEOUT_CODE,
+  CHATGPT_DELIVERY_TIMEOUT_MESSAGE,
+} from "./browser/delivery-timeout.js";
 import { validateCallerWorkResultClaim } from "./api-caller-work.js";
 import { boundedControllerEventEvidence } from "./core/controller-turn.js";
 import {
@@ -20,6 +26,7 @@ import {
   sameChatGptConversationUrl,
 } from "./core/conversation-url.js";
 import { CueLineError } from "./core/errors.js";
+import { commandHash } from "./core/ids.js";
 import { loadPersistedRunStore } from "./core/persisted-run.js";
 import { runtimeEnvironment } from "./core/runtime.js";
 import { JobStatusStore, type JobStatus } from "./jobs/status.js";
@@ -979,6 +986,244 @@ export async function reauthorizeControllerPostFixRetry(
       conversationUrl: options.conversationUrl,
       promptHash: pending.promptHash,
       outcome: "reauthorized",
+    };
+  } finally {
+    await lease.release();
+  }
+}
+
+/**
+ * Records operator-supplied historical DOM evidence without pretending it was
+ * freshly observed by CueLine. This event is audit-only and never authorizes a
+ * Retry click.
+ */
+export async function recordControllerDeliveryTimeoutAttestation(
+  runId: string,
+  options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> & {
+    requestId: string;
+    round: number;
+    conversationUrl: string;
+    userTurnPresent: true;
+    retryActionVisible: true;
+    isAnswering: false;
+    composerInlineTextLength: 0;
+    composerAttachmentCount: 0;
+    composerSendButtonEnabled: false;
+  },
+): Promise<ControllerDeliveryTimeoutAttestationResult> {
+  const environment = options.environment ?? runtimeEnvironment();
+  const home = options.home ?? defaultCueLineHome(environment);
+  await loadPersistedRunStore(home, runId);
+  const lease = await RuntimeLease.claim({
+    home,
+    runId,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  try {
+    const store = await loadPersistedRunStore(home, runId);
+    store.bindRuntimeOwner(lease.ownerId);
+    const pending = (store.state.pendingControllerTurns ?? []).find(
+      (turn) =>
+        turn.requestId === options.requestId && turn.round === options.round,
+    );
+    if (
+      (store.state.pendingControllerTurns ?? []).length !== 1 ||
+      pending === undefined ||
+      pending.submissionState !== "submitted" ||
+      typeof pending.conversationUrl !== "string" ||
+      !sameChatGptConversationUrl(
+        pending.conversationUrl,
+        options.conversationUrl,
+      ) ||
+      typeof store.state.conversationUrl !== "string" ||
+      !sameChatGptConversationUrl(
+        store.state.conversationUrl,
+        options.conversationUrl,
+      )
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_DELIVERY_TIMEOUT_ATTESTATION_STATE_INVALID",
+        "The operator attestation does not match the one exact durably submitted pending turn.",
+      );
+    }
+    const cancellation = await readCancellationObservation(home, runId);
+    if (cancellation.runRequested || cancellation.jobRequests.length > 0) {
+      throw new CueLineError(
+        "CONTROLLER_DELIVERY_TIMEOUT_ATTESTATION_STATE_INVALID",
+        "Delivery-timeout attestation is forbidden while cancellation is pending.",
+      );
+    }
+    const attestationHash = commandHash({
+      schema: "cueline/controller-delivery-timeout-operator-attestation/v1",
+      run_id: runId,
+      round: options.round,
+      request_id: options.requestId,
+      prompt_hash: pending.promptHash,
+      conversation_url: options.conversationUrl,
+      user_turn_present: options.userTurnPresent,
+      assistant_failure_code: CHATGPT_DELIVERY_TIMEOUT_CODE,
+      assistant_failure_message: CHATGPT_DELIVERY_TIMEOUT_MESSAGE,
+      retry_action_visible: options.retryActionVisible,
+      is_answering: options.isAnswering,
+      composer_inline_text_length: options.composerInlineTextLength,
+      composer_attachment_count: options.composerAttachmentCount,
+      composer_send_button_enabled: options.composerSendButtonEnabled,
+    });
+    const events = await readAuthoritativeRunEvents(home, runId);
+    const existing = events.some((event) => {
+      const payload = eventPayload(event);
+      return event.type === "controller_delivery_timeout_operator_attested" &&
+        payload.request_id === options.requestId &&
+        payload.round === options.round &&
+        payload.attestation_hash === attestationHash;
+    });
+    if (!existing) {
+      await store.append("controller_delivery_timeout_operator_attested", {
+        round: options.round,
+        request_id: options.requestId,
+        prompt_hash: pending.promptHash,
+        conversation_url: options.conversationUrl,
+        failure_code: CHATGPT_DELIVERY_TIMEOUT_CODE,
+        failure_message: CHATGPT_DELIVERY_TIMEOUT_MESSAGE,
+        user_turn_present: true,
+        retry_action_visible: true,
+        is_answering: false,
+        composer_prompt_state: "empty",
+        composer_inline_text_length: 0,
+        composer_attachment_count: 0,
+        composer_send_button_enabled: false,
+        evidence_source: "operator_attested_dom",
+        fresh_dom_observation: false,
+        authorizes_retry: false,
+        attestation_hash: attestationHash,
+      });
+      await store.snapshot();
+    }
+    return {
+      runId,
+      requestId: options.requestId,
+      round: options.round,
+      conversationUrl: options.conversationUrl,
+      attestationHash,
+      outcome: existing ? "already_recorded" : "recorded",
+    };
+  } finally {
+    await lease.release();
+  }
+}
+
+/** Durable one-shot operator authorization for the exact observed Retry action. */
+export async function authorizeControllerDeliveryTimeoutRetry(
+  runId: string,
+  options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> & {
+    requestId: string;
+    round: number;
+    conversationUrl: string;
+    evidenceHash: string;
+  },
+): Promise<ControllerDeliveryTimeoutRetryAuthorization> {
+  if (!/^[0-9a-f]{64}$/.test(options.evidenceHash)) {
+    throw new CueLineError(
+      "CONTROLLER_DELIVERY_TIMEOUT_RETRY_STATE_INVALID",
+      "Delivery-timeout Retry authorization requires the exact lowercase SHA-256 evidence hash.",
+    );
+  }
+  const environment = options.environment ?? runtimeEnvironment();
+  const home = options.home ?? defaultCueLineHome(environment);
+  await loadPersistedRunStore(home, runId);
+  const lease = await RuntimeLease.claim({
+    home,
+    runId,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  try {
+    const store = await loadPersistedRunStore(home, runId);
+    store.bindRuntimeOwner(lease.ownerId);
+    const recovery = store.state.controllerDeliveryTimeoutRecovery;
+    const pending = (store.state.pendingControllerTurns ?? []).find(
+      (turn) =>
+        turn.requestId === options.requestId && turn.round === options.round,
+    );
+    const exactState =
+      (store.state.pendingControllerTurns ?? []).length === 1 &&
+      pending !== undefined &&
+      pending.submissionState === "submitted" &&
+      recovery?.requestId === options.requestId &&
+      recovery.round === options.round &&
+      recovery.promptHash === pending.promptHash &&
+      recovery.evidenceHash === options.evidenceHash &&
+      recovery.retryActionAvailable === true &&
+      sameChatGptConversationUrl(
+        recovery.conversationUrl,
+        options.conversationUrl,
+      ) &&
+      typeof pending.conversationUrl === "string" &&
+      sameChatGptConversationUrl(
+        pending.conversationUrl,
+        options.conversationUrl,
+      );
+    if (!exactState) {
+      throw new CueLineError(
+        "CONTROLLER_DELIVERY_TIMEOUT_RETRY_STATE_INVALID",
+        "The one-shot Retry authorization does not match the exact pending turn and fresh timeout evidence.",
+      );
+    }
+    if (recovery.status === "consumed" || recovery.status === "resolved") {
+      throw new CueLineError(
+        "CONTROLLER_DELIVERY_TIMEOUT_RETRY_EXHAUSTED",
+        "The exact delivery-timeout Retry grant was already consumed or the response was resolved.",
+      );
+    }
+    const cancellation = await readCancellationObservation(home, runId);
+    if (cancellation.runRequested || cancellation.jobRequests.length > 0) {
+      throw new CueLineError(
+        "CONTROLLER_DELIVERY_TIMEOUT_RETRY_STATE_INVALID",
+        "Delivery-timeout Retry authorization is forbidden while cancellation is pending.",
+      );
+    }
+    const events = await readAuthoritativeRunEvents(home, runId);
+    const hasFreshObservation = events.some((event) => {
+      const payload = eventPayload(event);
+      return event.type === "controller_delivery_timeout_observed" &&
+        payload.request_id === options.requestId &&
+        payload.round === options.round &&
+        payload.evidence_hash === options.evidenceHash &&
+        payload.evidence_source === "fresh_read_only_dom" &&
+        payload.retry_action_available === true;
+    });
+    if (!hasFreshObservation) {
+      throw new CueLineError(
+        "CONTROLLER_DELIVERY_TIMEOUT_FRESH_EVIDENCE_REQUIRED",
+        "Operator attestation alone cannot authorize Retry; a fresh read-only DOM observation is required.",
+      );
+    }
+    if (recovery.status === "authorized") {
+      return {
+        runId,
+        requestId: options.requestId,
+        round: options.round,
+        conversationUrl: options.conversationUrl,
+        evidenceHash: options.evidenceHash,
+        outcome: "already_authorized",
+      };
+    }
+    await store.append("controller_delivery_timeout_retry_authorized", {
+      round: options.round,
+      request_id: options.requestId,
+      prompt_hash: pending.promptHash,
+      conversation_url: options.conversationUrl,
+      evidence_hash: options.evidenceHash,
+      authorization_source: "operator_explicit",
+      one_shot: true,
+    });
+    await store.snapshot();
+    return {
+      runId,
+      requestId: options.requestId,
+      round: options.round,
+      conversationUrl: options.conversationUrl,
+      evidenceHash: options.evidenceHash,
+      outcome: "authorized",
     };
   } finally {
     await lease.release();

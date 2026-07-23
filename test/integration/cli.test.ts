@@ -1380,6 +1380,101 @@ test("run reconcile records operator-confirmed manual submission without resendi
   );
 });
 
+test("run authorize-delivery-retry records one exact operator authorization", async () => {
+  const context = await fixture();
+  const runId = "run_cli_delivery_timeout";
+  const requestId = "msg_cli_delivery_timeout";
+  const conversationUrl = "https://chatgpt.com/c/cli-delivery-timeout";
+  const prompt = "attachment-backed timeout prompt";
+  const promptHash = commandHash(prompt);
+  const evidenceHash = commandHash({ timeout: requestId });
+  const store = await RunStore.create({
+    home: context.home,
+    runId,
+    initialState: initialRunState(runId, prompt, "caller", 200),
+    reducer: reduceRunState,
+  });
+  await store.append("run_created", {
+    request: prompt,
+    executor: "caller",
+    max_rounds: 200,
+  });
+  await store.append("controller_conversation_bound", {
+    conversation_url: conversationUrl,
+  });
+  await store.append("controller_turn_requested", {
+    round: 198,
+    request_id: requestId,
+    prompt,
+    prompt_hash: promptHash,
+    submission_checkpoint_contract: "write_ahead_v1",
+  });
+  await store.append("controller_turn_prompt_staged", {
+    round: 198,
+    request_id: requestId,
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "attachment_ready",
+    baseline_user_message_count: 211,
+    baseline_assistant_message_count: 3,
+  });
+  await store.append("controller_turn_submitted", {
+    round: 198,
+    request_id: requestId,
+    submission_state: "submitted",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "attachment_ready",
+    baseline_user_message_count: 211,
+    baseline_assistant_message_count: 3,
+  });
+  await store.append("controller_delivery_timeout_observed", {
+    round: 198,
+    request_id: requestId,
+    prompt_hash: promptHash,
+    conversation_url: conversationUrl,
+    evidence_hash: evidenceHash,
+    evidence_source: "fresh_read_only_dom",
+    retry_action_available: true,
+  });
+  await store.snapshot();
+
+  const result = invoke(
+    [
+      "run",
+      "authorize-delivery-retry",
+      runId,
+      "--request-id",
+      requestId,
+      "--round",
+      "198",
+      "--conversation-url",
+      conversationUrl,
+      "--evidence-hash",
+      evidenceHash,
+      "--json",
+    ],
+    context.environment,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    runId,
+    requestId,
+    round: 198,
+    conversationUrl,
+    evidenceHash,
+    outcome: "authorized",
+  });
+  const events = await readEvents(runPaths(context.home, runId).events);
+  assert.equal(
+    events.filter(
+      (event) => event.type === "controller_delivery_timeout_retry_authorized",
+    ).length,
+    1,
+  );
+});
+
 test("run reconcile records operator-confirmed not-sent once and abandons the exact turn", async () => {
   const context = await fixture();
   const runId = "run_cli_not_sent_reconcile";

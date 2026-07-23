@@ -96,6 +96,16 @@ export interface ControllerPostFixRetryReauthorizationState {
   status: "authorized" | "consumed";
 }
 
+export interface ControllerDeliveryTimeoutRecoveryState {
+  requestId: string;
+  round: number;
+  promptHash: string;
+  conversationUrl: string;
+  evidenceHash: string;
+  retryActionAvailable: boolean;
+  status: "observed" | "authorized" | "consumed" | "resolved";
+}
+
 export interface ControllerNotSentRecoveryState {
   abandonedRequestId: string;
   round: number;
@@ -136,7 +146,18 @@ export interface CallerWorkClaim {
   expiresAt: string;
   ttlMs: number;
   startedAt: string | null;
+  /** Last durable executor progress; heartbeat renewal never changes this. */
+  lastProgressAt?: string;
+  lastProgressKind?: CallerWorkProgressKind;
+  lastProgressEvidenceHash?: string;
+  /** Exact accepted identities for replay-safe all-history deduplication. */
+  progressEvidenceHashes?: string[];
 }
+
+export type CallerWorkProgressKind =
+  | "tool_completed"
+  | "checkpoint_persisted"
+  | "verification_completed";
 
 export interface CallerWorkdirIdentity {
   resolvedPath: string;
@@ -191,6 +212,7 @@ export interface CueLineRunState {
   abandonedControllerTurns: PendingControllerTurn[];
   notSentRecovery?: ControllerNotSentRecoveryState | null | undefined;
   postFixRetryReauthorization?: ControllerPostFixRetryReauthorizationState | null;
+  controllerDeliveryTimeoutRecovery?: ControllerDeliveryTimeoutRecoveryState | null;
   lastFailure: RunFailureEvidence | null;
   jobs: Record<string, StoredJob>;
   /** Job IDs explicitly requested by the most recently accepted inspect command. */
@@ -219,6 +241,23 @@ function validCallerId(value: unknown): value is string {
 
 function validIsoTimestamp(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+const CALLER_WORK_PROGRESS_KINDS = new Set<CallerWorkProgressKind>([
+  "tool_completed",
+  "checkpoint_persisted",
+  "verification_completed",
+]);
+
+function validCallerWorkProgressKind(value: unknown): value is CallerWorkProgressKind {
+  return (
+    typeof value === "string" &&
+    CALLER_WORK_PROGRESS_KINDS.has(value as CallerWorkProgressKind)
+  );
+}
+
+function validProgressEvidenceHash(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
 function validWorkdirIdentity(value: unknown): value is CallerWorkdirIdentity {
@@ -328,6 +367,7 @@ export function initialRunState(
     abandonedControllerTurns: [],
     notSentRecovery: null,
     postFixRetryReauthorization: null,
+    controllerDeliveryTimeoutRecovery: null,
     lastFailure: null,
     jobs: {},
     inspectionJobIds: [],
@@ -484,6 +524,96 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     };
   }
   if (
+    event.type === "controller_delivery_timeout_observed" &&
+    typeof payload.request_id === "string" &&
+    typeof payload.round === "number" &&
+    typeof payload.prompt_hash === "string" &&
+    typeof payload.conversation_url === "string" &&
+    typeof payload.evidence_hash === "string" &&
+    typeof payload.retry_action_available === "boolean"
+  ) {
+    const pending = (state.pendingControllerTurns ?? []).find(
+      (turn) =>
+        turn.requestId === payload.request_id &&
+        turn.round === payload.round &&
+        turn.promptHash === payload.prompt_hash &&
+        turn.submissionState === "submitted",
+    );
+    const existing = state.controllerDeliveryTimeoutRecovery ?? null;
+    if (
+      pending === undefined ||
+      !/^[0-9a-f]{64}$/.test(payload.evidence_hash) ||
+      !/^[0-9a-f]{64}$/.test(payload.prompt_hash) ||
+      !isExactChatGptConversationUrl(payload.conversation_url) ||
+      (existing?.requestId === payload.request_id &&
+        existing.round === payload.round &&
+        (existing.status === "authorized" ||
+          existing.status === "consumed" ||
+          existing.status === "resolved"))
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      controllerDeliveryTimeoutRecovery: {
+        requestId: payload.request_id,
+        round: payload.round,
+        promptHash: payload.prompt_hash,
+        conversationUrl: payload.conversation_url,
+        evidenceHash: payload.evidence_hash,
+        retryActionAvailable: payload.retry_action_available,
+        status: "observed",
+      },
+    };
+  }
+  if (
+    event.type === "controller_delivery_timeout_retry_authorized" &&
+    typeof payload.request_id === "string" &&
+    typeof payload.round === "number" &&
+    typeof payload.evidence_hash === "string"
+  ) {
+    const recovery = state.controllerDeliveryTimeoutRecovery;
+    if (
+      recovery?.status !== "observed" ||
+      recovery.requestId !== payload.request_id ||
+      recovery.round !== payload.round ||
+      recovery.evidenceHash !== payload.evidence_hash ||
+      recovery.retryActionAvailable !== true
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      controllerDeliveryTimeoutRecovery: {
+        ...recovery,
+        status: "authorized",
+      },
+    };
+  }
+  if (
+    event.type === "controller_delivery_timeout_retry_started" &&
+    typeof payload.request_id === "string" &&
+    typeof payload.round === "number" &&
+    typeof payload.evidence_hash === "string"
+  ) {
+    const recovery = state.controllerDeliveryTimeoutRecovery;
+    if (
+      recovery?.status !== "authorized" ||
+      recovery.requestId !== payload.request_id ||
+      recovery.round !== payload.round ||
+      recovery.evidenceHash !== payload.evidence_hash
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      controllerDeliveryTimeoutRecovery: {
+        ...recovery,
+        status: "consumed",
+      },
+    };
+  }
+  if (
     event.type === "controller_conversation_bound" &&
     typeof payload.conversation_url === "string" &&
     payload.conversation_url !== ""
@@ -611,6 +741,12 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     };
   }
   if (event.type === "controller_response_received") {
+    const deliveryTimeoutRecovery = state.controllerDeliveryTimeoutRecovery;
+    const resolvesDeliveryTimeout =
+      deliveryTimeoutRecovery !== null &&
+      deliveryTimeoutRecovery !== undefined &&
+      payload.request_id === deliveryTimeoutRecovery.requestId &&
+      payload.round === deliveryTimeoutRecovery.round;
     return {
       ...state,
       conversationUrl: preserveCanonicalConversationUrl(
@@ -623,6 +759,9 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       pendingControllerTurns: state.pendingControllerTurns ?? [],
       lastFailure: null,
       pendingObservationDiagnostic: null,
+      controllerDeliveryTimeoutRecovery: resolvesDeliveryTimeout
+        ? { ...deliveryTimeoutRecovery, status: "resolved" }
+        : deliveryTimeoutRecovery ?? null,
     };
   }
   if (event.type === "controller_turn_abandoned" && typeof payload.request_id === "string") {
@@ -924,7 +1063,11 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       !validIsoTimestamp(record.claimedAt) ||
       record.heartbeatAt !== record.claimedAt ||
       !validClaimWindow(record.heartbeatAt, record.expiresAt, record.ttlMs) ||
-      record.startedAt !== null
+      record.startedAt !== null ||
+      record.lastProgressAt !== undefined ||
+      record.lastProgressKind !== undefined ||
+      record.lastProgressEvidenceHash !== undefined ||
+      record.progressEvidenceHashes !== undefined
     ) {
       return state;
     }
@@ -985,7 +1128,13 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       ...claim,
       heartbeatAt: timestamp,
       expiresAt,
-      ...(event.type === "caller_work_started" ? { startedAt: timestamp } : {}),
+      ...(event.type === "caller_work_started"
+        ? {
+            startedAt: timestamp,
+            lastProgressAt: timestamp,
+            progressEvidenceHashes: claim.progressEvidenceHashes ?? [],
+          }
+        : {}),
     };
     return {
       ...state,
@@ -997,6 +1146,62 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           callerWork: {
             claim: updatedClaim,
             nextFencingToken: existing.callerWork?.nextFencingToken ?? claim.fencingToken,
+          },
+        },
+      },
+    };
+  }
+  if (
+    event.type === "caller_work_progress" &&
+    typeof payload.job_id === "string" &&
+    typeof payload.claim_id === "string" &&
+    Number.isSafeInteger(payload.fencing_token)
+  ) {
+    const existing = state.jobs[payload.job_id];
+    const claim = existing?.callerWork?.claim;
+    if (
+      !existing ||
+      !claim ||
+      existing.status !== "running" ||
+      claim.startedAt === null ||
+      claim.claimId !== payload.claim_id ||
+      claim.fencingToken !== payload.fencing_token ||
+      payload.caller_id !== claim.callerId ||
+      !validCallerWorkProgressKind(payload.progress_kind) ||
+      !validProgressEvidenceHash(payload.progress_evidence_hash) ||
+      (claim.progressEvidenceHashes ?? []).includes(
+        payload.progress_evidence_hash as string,
+      ) ||
+      !validIsoTimestamp(payload.progress_at) ||
+      !validClaimWindow(payload.progress_at, payload.expires_at, claim.ttlMs) ||
+      Date.parse(payload.progress_at) < Date.parse(claim.heartbeatAt) ||
+      (claim.lastProgressAt !== undefined &&
+        Date.parse(payload.progress_at) < Date.parse(claim.lastProgressAt))
+    ) {
+      return state;
+    }
+    const updatedClaim: CallerWorkClaim = {
+      ...claim,
+      heartbeatAt: payload.progress_at,
+      expiresAt: payload.expires_at as string,
+      lastProgressAt: payload.progress_at,
+      lastProgressKind: payload.progress_kind,
+      lastProgressEvidenceHash: payload.progress_evidence_hash,
+      progressEvidenceHashes: [
+        ...(claim.progressEvidenceHashes ?? []),
+        payload.progress_evidence_hash,
+      ],
+    };
+    return {
+      ...state,
+      jobs: {
+        ...state.jobs,
+        [existing.jobId]: {
+          ...existing,
+          callerWork: {
+            claim: updatedClaim,
+            nextFencingToken:
+              existing.callerWork?.nextFencingToken ?? claim.fencingToken,
           },
         },
       },
@@ -1036,7 +1241,8 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     };
   }
   if (
-    event.type === "caller_work_became_ambiguous" &&
+    (event.type === "caller_work_became_ambiguous" ||
+      event.type === "caller_work_review_required") &&
     typeof payload.job_id === "string" &&
     typeof payload.claim_id === "string" &&
     Number.isSafeInteger(payload.fencing_token)
@@ -1050,7 +1256,20 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       claim.startedAt === null ||
       claim.claimId !== payload.claim_id ||
       claim.fencingToken !== payload.fencing_token ||
-      payload.caller_id !== claim.callerId
+      payload.caller_id !== claim.callerId ||
+      (event.type === "caller_work_review_required" &&
+        ((payload.reason_code !== "progress_stalled" &&
+          payload.reason_code !== "max_execution_elapsed") ||
+          typeof payload.reason !== "string" ||
+          payload.reason.trim() === "" ||
+          payload.reason.length > 1_024 ||
+          !Number.isSafeInteger(payload.limit_ms) ||
+          (payload.limit_ms as number) < 1 ||
+          (payload.limit_ms as number) > 2_147_483_647 ||
+          !validIsoTimestamp(payload.requested_at) ||
+          Date.parse(payload.requested_at) < Date.parse(claim.heartbeatAt) ||
+          payload.last_progress_at !==
+            (claim.lastProgressAt ?? claim.startedAt)))
     ) {
       return state;
     }

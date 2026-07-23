@@ -171,7 +171,7 @@ async function callerWorkFixture() {
   return { home, jobId: job.jobId, task, workdir: await realpath(workdir) };
 }
 
-test("MCP initialize and tools/list expose the fixed seven-tool contract", async () => {
+test("MCP initialize and tools/list expose the fixed nine-tool contract", async () => {
   const responses = await exchange([
     initialize(),
     initialized(),
@@ -200,6 +200,8 @@ test("MCP initialize and tools/list expose the fixed seven-tool contract", async
       "cueline_run_doctor",
       "cueline_claim_caller_job",
       "cueline_start_caller_job",
+      "cueline_heartbeat_caller_job",
+      "cueline_record_caller_job_progress",
       "cueline_list_runs",
     ],
   );
@@ -223,6 +225,22 @@ test("MCP initialize and tools/list expose the fixed seven-tool contract", async
     "claimId",
     "callerId",
     "fencingToken",
+  ]);
+  assert.deepEqual(byName.get("cueline_heartbeat_caller_job")?.inputSchema.required, [
+    "runId",
+    "jobId",
+    "claimId",
+    "callerId",
+    "fencingToken",
+  ]);
+  assert.deepEqual(byName.get("cueline_record_caller_job_progress")?.inputSchema.required, [
+    "runId",
+    "jobId",
+    "claimId",
+    "callerId",
+    "fencingToken",
+    "kind",
+    "evidenceHash",
   ]);
   const startProperties = byName.get("cueline_start_run")?.inputSchema.properties as
     | Record<string, Record<string, unknown>>
@@ -343,6 +361,73 @@ test("claim and start caller tools preserve explicit identity and fencing proof"
   assert.equal(started.outcome, "started");
   assert.equal(started.claimId, claim.claimId);
   assert.equal(started.fencingToken, claim.fencingToken);
+
+  const heartbeatResponses = await exchange([
+    initialize(),
+    initialized(),
+    toolCall(2, "cueline_heartbeat_caller_job", {
+      runId: "run_mcp_caller_work",
+      jobId,
+      claimId: claim.claimId,
+      callerId,
+      fencingToken: claim.fencingToken,
+      home,
+    }),
+  ]);
+  const heartbeat = structured(responseFor(heartbeatResponses, 2));
+  assert.equal(heartbeat.outcome, "heartbeat_recorded");
+  assert.equal(heartbeat.claimId, claim.claimId);
+  assert.equal(heartbeat.fencingToken, claim.fencingToken);
+
+  const progressResponses = await exchange([
+    initialize(),
+    initialized(),
+    toolCall(2, "cueline_record_caller_job_progress", {
+      runId: "run_mcp_caller_work",
+      jobId,
+      claimId: claim.claimId,
+      callerId,
+      fencingToken: claim.fencingToken,
+      kind: "tool_completed",
+      evidenceHash: "c".repeat(64),
+      home,
+    }),
+  ]);
+  const progress = structured(responseFor(progressResponses, 2));
+  assert.equal(progress.outcome, "progress_recorded");
+  assert.equal(progress.progressKind, "tool_completed");
+  assert.equal(progress.progressEvidenceHash, "c".repeat(64));
+});
+
+test("a failed caller tool does not bind or poison the MCP session identity", async () => {
+  const { home, jobId } = await callerWorkFixture();
+  const responses = await exchange([
+    initialize(),
+    initialized(),
+    toolCall(2, "cueline_record_caller_job_progress", {
+      runId: "run_mcp_caller_work",
+      jobId,
+      claimId: "claim_that_does_not_exist",
+      callerId: "failed-probe-caller",
+      fencingToken: 1,
+      kind: "tool_completed",
+      evidenceHash: "d".repeat(64),
+      home,
+    }),
+    toolCall(3, "cueline_claim_caller_job", {
+      runId: "run_mcp_caller_work",
+      jobId,
+      callerId: "valid-caller-after-failed-probe",
+      home,
+    }),
+  ]);
+
+  const failedProbe = responseFor(responses, 2).result;
+  assert.equal(failedProbe?.isError, true);
+  assert.doesNotMatch(failedProbe?.content?.[0]?.text ?? "", /MCP_CALLER_ID_MISMATCH/);
+  const claim = structured(responseFor(responses, 3));
+  assert.equal(claim.callerId, "valid-caller-after-failed-probe");
+  assert.equal(claim.outcome, "claimed");
 });
 
 test("process execution remains refused without per-call authorization", async () => {
@@ -397,7 +482,7 @@ test("cueline mcp serve wires the real CLI stdio surface", () => {
   const responses = result.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
   assert.equal(responses.length, 2);
   assert.equal(responses[0].result.protocolVersion, CUELINE_MCP_PROTOCOL_VERSION);
-  assert.equal(responses[1].result.tools.length, 7);
+  assert.equal(responses[1].result.tools.length, 9);
 });
 
 test("cueline mcp serve handles SIGTERM as a graceful transport shutdown", { timeout: 5_000 }, async () => {

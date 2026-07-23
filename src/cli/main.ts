@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  authorizeControllerDeliveryTimeoutRetry,
   cancelCueLineJob,
   cancelCueLineRun,
   confirmControllerTurnMisdirected,
@@ -42,7 +43,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|self-test|upgrade preflight|routing|routing explain|jobs|runs|runs prune|protocol lint|mcp serve|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run audit-secrets|run export|run reconcile|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|self-test|upgrade preflight|routing|routing explain|jobs|runs|runs prune|protocol lint|mcp serve|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run audit-secrets|run export|run reconcile|run authorize-delivery-retry|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -76,6 +77,7 @@ function help(): string {
     "  run audit-secrets  scan durable events for secret-shaped strings; never prints them",
     "  run export     emit one sanitized support bundle (status, verify, doctor, timeline)",
     "  run reconcile  confirm one manually sent, not-sent, or misdirected controller turn",
+    "  run authorize-delivery-retry  authorize one exact existing ChatGPT Retry action",
     "  run takeover   explicitly retire one exact stale runtime owner",
     "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
     "  run cancel     request safe cancellation; ownerless work becomes ambiguous",
@@ -113,6 +115,7 @@ function help(): string {
     "  cueline run reconcile <run-id> --request-id <request-id> --manual-send-confirmed [--conversation-url <url>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --not-sent-confirmed [--conversation-url <url>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --misdirected-conversation-url <url> [--json]",
+    "  cueline run authorize-delivery-retry <run-id> --request-id <request-id> --round <n> --conversation-url <url> --evidence-hash <sha256> [--json]",
     "  cueline run takeover <run-id> [--json]",
     "  cueline run reconcile-runtime <run-id> [--json]",
     "  cueline run cancel <run-id> [--json]",
@@ -142,7 +145,7 @@ function help(): string {
     "  run export reads run state read-only and writes only the file named by --out,",
     "  refusing to overwrite an existing file.",
     "  Local setup: install and uninstall change only the package-owned skill link.",
-    "  Durable state writes: run reconcile, takeover, reconcile-runtime, cancel/stop,",
+    "  Durable state writes: run reconcile, run authorize-delivery-retry, takeover, reconcile-runtime, cancel/stop,",
     "  and job cancel append evidence or change local run/job state.",
     "  Deletion: runs prune with --apply permanently removes eligible terminal runs;",
     "  without --apply it only reports what would be removed.",
@@ -738,6 +741,83 @@ export async function main(
         );
       }
       return result.outcome === "owner_alive" || result.outcome === "processes_alive" ? 1 : 0;
+    }
+    if (
+      args[0] === "run" &&
+      args[1] === "authorize-delivery-retry" &&
+      typeof args[2] === "string"
+    ) {
+      let requestId: string | undefined;
+      let round: number | undefined;
+      let conversationUrl: string | undefined;
+      let evidenceHash: string | undefined;
+      let json = false;
+      let valid = true;
+      for (let index = 3; index < args.length; index += 1) {
+        const argument = args[index];
+        if (
+          argument === "--request-id" &&
+          requestId === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          requestId = args[index + 1];
+          index += 1;
+        } else if (
+          argument === "--round" &&
+          round === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          round = Number(args[index + 1]);
+          index += 1;
+        } else if (
+          argument === "--conversation-url" &&
+          conversationUrl === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          conversationUrl = args[index + 1];
+          index += 1;
+        } else if (
+          argument === "--evidence-hash" &&
+          evidenceHash === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          evidenceHash = args[index + 1];
+          index += 1;
+        } else if (argument === "--json" && !json) {
+          json = true;
+        } else {
+          valid = false;
+        }
+      }
+      if (
+        !valid ||
+        !requestId ||
+        round === undefined ||
+        !Number.isSafeInteger(round) ||
+        round < 1 ||
+        !conversationUrl ||
+        !evidenceHash ||
+        !/^[0-9a-f]{64}$/.test(evidenceHash)
+      ) {
+        throw new CueLineError(
+          "CLI_ARGUMENTS_INVALID",
+          "usage: cueline run authorize-delivery-retry <run-id> --request-id <request-id> --round <n> --conversation-url <url> --evidence-hash <sha256> [--json]",
+        );
+      }
+      const result = await authorizeControllerDeliveryTimeoutRetry(args[2], {
+        environment,
+        requestId,
+        round,
+        conversationUrl,
+        evidenceHash,
+      });
+      if (json) io.stdout(JSON.stringify(result, null, 2));
+      else {
+        io.stdout(
+          `${result.runId}\t${result.requestId}\t${result.outcome}\tround=${result.round}\tone_shot`,
+        );
+      }
+      return 0;
     }
     if (
       args[0] === "run" &&

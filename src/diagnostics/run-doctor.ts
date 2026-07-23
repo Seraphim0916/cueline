@@ -47,6 +47,12 @@ const PHASE_DIAGNOSES: Record<CueLineRunPhase, PhaseDiagnosis> = {
     summary: "Durable request-correlated evidence proves the controller prompt was not sent.",
     action: "Retry the same persisted turn; do not allocate a new round.",
   },
+  controller_delivery_failed: {
+    code: "CONTROLLER_DELIVERY_FAILED",
+    severity: "warning",
+    summary: "ChatGPT explicitly reported that the submitted controller turn timed out during delivery.",
+    action: "Inspect the permanent evidence and require explicit operator authorization before one Retry click.",
+  },
   controller_response_pending: {
     code: "CONTROLLER_RESPONSE_PENDING",
     severity: "info",

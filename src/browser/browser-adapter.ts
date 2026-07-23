@@ -75,6 +75,16 @@ export interface BrowserSubmittedTurnEvidence {
   /** Redacted identity evidence; no attachment content or filename is exposed. */
   composerPastedTextAttachmentPresent?: boolean;
   composerSendButtonEnabled?: boolean;
+  assistantMessageCount?: number;
+  lastMessageRole?: "assistant" | "user" | null;
+  deliveryFailure?: BrowserDeliveryFailureEvidence;
+}
+
+export interface BrowserDeliveryFailureEvidence {
+  code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT";
+  message: "Message delivery timed out. Please try again.";
+  assistantTextHash: string;
+  retryActionAvailable: boolean;
 }
 
 export type BrowserSubmittedTurnObservation =
@@ -85,8 +95,53 @@ export type BrowserSubmittedTurnObservation =
       /** Narrow provenance used to preserve a separate dispatch boundary. */
       responseSource?: RecoveredResponseSource;
     }
-| { status: "pending"; evidence?: BrowserSubmittedTurnEvidence }
-| { status: "definitely_not_sent"; evidence: BrowserSubmittedTurnEvidence };
+  | { status: "pending"; evidence?: BrowserSubmittedTurnEvidence }
+  | { status: "definitely_not_sent"; evidence: BrowserSubmittedTurnEvidence }
+  | { status: "delivery_failed"; evidence: BrowserSubmittedTurnEvidence };
+
+export interface BrowserDeliveryRetryInput extends BrowserTurnInput {
+  expectedConversationUrl: string;
+  deliveryFailureEvidenceHash: string;
+}
+
+export interface BrowserDeliveryRetryCheckpoint {
+  evidence: BrowserSubmittedTurnEvidence;
+  evidenceHash: string;
+  targetEvidence: BrowserSubmissionTargetEvidence;
+}
+
+export interface BrowserDeliveryRetryHooks {
+  /** Durable one-shot consumption checkpoint; must finish before the Retry click. */
+  onBeforeRetryClick?: (
+    checkpoint: BrowserDeliveryRetryCheckpoint,
+  ) => Promise<void>;
+}
+
+export type BrowserDeliveryRetryResult =
+  | {
+      status: "submitted" | "possibly_started";
+      evidence: BrowserSubmittedTurnEvidence;
+    }
+  | {
+      /** A response won the race before the Retry click; no click occurred. */
+      status: "response";
+      evidence: BrowserSubmittedTurnEvidence;
+      turn: ControllerTurn;
+      authorizationConsumed: boolean;
+    }
+  | {
+      /** ChatGPT resumed answering before the Retry click; observe only. */
+      status: "response_started";
+      evidence: BrowserSubmittedTurnEvidence;
+      authorizationConsumed: boolean;
+    }
+  | {
+      /** Final atomic guard changed, so no Retry click occurred. */
+      status: "not_clicked";
+      evidence: BrowserSubmittedTurnEvidence;
+      authorizationConsumed: true;
+      reason: string;
+    };
 
 export interface BrowserMisdirectedTurnObservationInput {
   runId: string;
@@ -242,14 +297,19 @@ export interface BrowserAdapter {
   /** Observe the exact submitted turn once; undefined means Pro is not finished yet. */
   observeTurn?(input: BrowserTurnInput): Promise<ControllerTurn | undefined>;
   /** Observe a normally submitted turn without sending, including durable not-sent evidence. */
-observeSubmittedTurn?(
-input: BrowserTurnInput,
-): Promise<BrowserSubmittedTurnObservation>;
-/** Read-only proof that a submitted request landed in a different exact conversation. */
-observeMisdirectedTurn?(
-input: BrowserMisdirectedTurnObservationInput,
-): Promise<BrowserMisdirectedTurnObservation>;
-sendTurn(input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<ControllerTurn>;
+  observeSubmittedTurn?(
+    input: BrowserTurnInput,
+  ): Promise<BrowserSubmittedTurnObservation>;
+  /** One operator-authorized Retry click for a durably observed delivery timeout. */
+  retryDeliveryTimeout?(
+    input: BrowserDeliveryRetryInput,
+    hooks?: BrowserDeliveryRetryHooks,
+  ): Promise<BrowserDeliveryRetryResult>;
+  /** Read-only proof that a submitted request landed in a different exact conversation. */
+  observeMisdirectedTurn?(
+    input: BrowserMisdirectedTurnObservationInput,
+  ): Promise<BrowserMisdirectedTurnObservation>;
+  sendTurn(input: BrowserTurnInput, hooks?: BrowserTurnHooks): Promise<ControllerTurn>;
   recoverTurn?(input: BrowserTurnInput): Promise<ControllerTurn>;
   /** Archive one exact completed controller conversation. Implementations must never retry the archive click. */
   archiveConversation?(

@@ -18,6 +18,11 @@ export interface PageChatState {
   requestMessageFound?: boolean | null;
   requestMessageFoundBy?: "last_text" | "request_id_scan" | "prompt_scan" | null;
   requestMessageScanComplete?: boolean;
+  deliveryFailure?: {
+    code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT";
+    message: "Message delivery timed out. Please try again.";
+    retryActionAvailable: boolean;
+  } | null;
 }
 
 export interface PageComposerState {
@@ -217,20 +222,7 @@ export async function readPageChatState(
           return false;
         }
       };
-      const buttons = Array.from(document.querySelectorAll("button"));
-      const isAnswering = buttons.some((button) => {
-        const ariaLabel = button.getAttribute("aria-label")?.trim();
-        const label = (ariaLabel || button.textContent || "")
-          .replace(/\s+/g, " ")
-          .trim();
-        if (
-          !/(stop|停止|中止|중지|정지)/i.test(label) ||
-          !/(answer|generat|respond|response|stream|thinking|回答|回覆|作答|生成|產生|思考|応答|생성|답변|응답)/i.test(
-            label,
-          )
-        ) {
-          return false;
-        }
+      const isVisibleActionButton = (button: HTMLButtonElement): boolean => {
         if (
           button.disabled ||
           button.hidden ||
@@ -259,8 +251,7 @@ export async function readPageChatState(
               return false;
             }
           } catch {
-            // Older browser bindings may expose checkVisibility without option support.
-            // The explicit style and geometry checks below remain the safe fallback.
+            // Explicit style and geometry checks below remain the safe fallback.
           }
         }
         const style = getComputedStyle(button);
@@ -275,6 +266,22 @@ export async function readPageChatState(
         }
         const bounds = button.getBoundingClientRect();
         return bounds.width > 0 && bounds.height > 0 && button.getClientRects().length > 0;
+      };
+      const buttons = Array.from(document.querySelectorAll("button"));
+      const isAnswering = buttons.some((button) => {
+        const ariaLabel = button.getAttribute("aria-label")?.trim();
+        const label = (ariaLabel || button.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (
+          !/(stop|停止|中止|중지|정지)/i.test(label) ||
+          !/(answer|generat|respond|response|stream|thinking|回答|回覆|作答|生成|產生|思考|応答|생성|답변|응답)/i.test(
+            label,
+          )
+        ) {
+          return false;
+        }
+        return isVisibleActionButton(button);
       });
 
       const messages = Array.from(document.querySelectorAll("[data-message-author-role]"));
@@ -290,6 +297,32 @@ export async function readPageChatState(
       );
       const selectedAssistant = exactAssistant ?? lastAssistant;
       const assistantText = normalizeMessageText(visibleMessageText(selectedAssistant));
+      const deliveryTimeoutMessage =
+        "Message delivery timed out. Please try again." as const;
+      const retryScope =
+        selectedAssistant !== undefined &&
+        typeof selectedAssistant.closest === "function"
+          ? selectedAssistant.closest("article") ?? selectedAssistant
+          : selectedAssistant;
+      const retryButtons =
+        retryScope === undefined ||
+        typeof retryScope.querySelectorAll !== "function"
+        ? []
+        : Array.from(retryScope.querySelectorAll("button")).filter((button) => {
+            const label = normalizeMessageText(
+              button.getAttribute("aria-label") || button.textContent,
+            );
+            return /^retry$/i.test(label) && isVisibleActionButton(button);
+          });
+      const deliveryFailure =
+        selectedAssistant === lastAssistant &&
+        assistantText.includes(deliveryTimeoutMessage)
+          ? {
+              code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT" as const,
+              message: deliveryTimeoutMessage,
+              retryActionAvailable: retryButtons.length === 1,
+            }
+          : null;
       const modelTaggedMessages = Array.from(
         document.querySelectorAll("[data-message-model-slug]"),
       );
@@ -362,6 +395,7 @@ export async function readPageChatState(
         requestMessageFoundBy,
         requestMessageScanComplete:
           exactControllerIdentity !== undefined || normalizedExpectedPrompt !== "",
+        deliveryFailure,
       };
     },
     {

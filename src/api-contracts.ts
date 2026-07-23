@@ -4,6 +4,7 @@ import type {
 } from "./browser/browser-adapter.js";
 import type { CodexIabAdapterOptions } from "./browser/codex-iab/chatgpt-client.js";
 import type { CueLineRunStatusSummary } from "./core/run-status.js";
+import type { CallerWorkProgressKind } from "./core/state-machine.js";
 import type { RoutingConfig } from "./router/types.js";
 import type { JobResultStatus } from "./runners/runner-adapter.js";
 
@@ -121,6 +122,24 @@ export interface ControllerPostFixRetryReauthorization {
   outcome: "reauthorized" | "already_reauthorized";
 }
 
+export interface ControllerDeliveryTimeoutRetryAuthorization {
+  runId: string;
+  requestId: string;
+  round: number;
+  conversationUrl: string;
+  evidenceHash: string;
+  outcome: "authorized" | "already_authorized";
+}
+
+export interface ControllerDeliveryTimeoutAttestationResult {
+  runId: string;
+  requestId: string;
+  round: number;
+  conversationUrl: string;
+  attestationHash: string;
+  outcome: "recorded" | "already_recorded";
+}
+
 export interface ControllerMisdirectedConfirmation {
   runId: string;
   requestId: string;
@@ -174,6 +193,8 @@ export interface CueLineCallerWorkClaimResult extends CueLineCallerWorkClaimProo
   heartbeatAt: string;
   expiresAt: string;
   started: boolean;
+  startedAt: string | null;
+  lastProgressAt?: string;
 }
 
 export interface CueLineCallerWorkMutationResult {
@@ -185,9 +206,26 @@ export interface CueLineCallerWorkMutationResult {
     | "started"
     | "already_started"
     | "heartbeat_recorded"
+    | "progress_recorded"
+    | "progress_already_recorded"
     | "released";
   heartbeatAt?: string;
   expiresAt?: string;
+  /** Operation clock observation; unlike heartbeatAt, this need not renew ownership. */
+  observedAt?: string;
+  progressAt?: string;
+  startedAt?: string;
+  progressKind?: CueLineCallerWorkProgressKind;
+  progressEvidenceHash?: string;
+}
+
+export type CueLineCallerWorkProgressKind = CallerWorkProgressKind;
+
+export interface CueLineCallerWorkProgressInput {
+  /** Executor-observed completion category; liveness alone is not progress. */
+  kind: CueLineCallerWorkProgressKind;
+  /** Lowercase SHA-256 of bounded evidence. Raw tool output is never persisted here. */
+  evidenceHash: string;
 }
 
 export interface CueLineCallerWorkMutationOptions

@@ -49,7 +49,7 @@ inspect. These checks happen before job registration or process execution.
 
 A non-default `maxRounds` is fixed when the run is created and counts total controller rounds across every ownerless pause. Later continuations normally omit it and reuse the durable value; supplying a different value is rejected rather than silently resetting or widening the budget.
 
-`caller` is the default executor for both `startCueLineRun` and `runCueLine`. With the built-in browser, CueLine submits once, captures the exact conversation URL, returns `awaiting_controller`, and releases the runtime lease instead of holding one tool call open while Pro thinks. A later `continueCueLineRun` performs one read-only observation: unfinished work returns `awaiting_controller` again without resending. When the narrow count-degraded accessibility recovery accepts a `dispatch`, that continuation returns `ready` before registering its jobs; the accepted command remains durable and only the next independent `continueCueLineRun` registers them. An ordinary fresh dispatch produces durable pending jobs in its current advancement. `advise` returns `awaiting_caller`; it has no side-effect claim, so coordinate one session. `work` returns `awaiting_caller_work` and remains unstarted until the current Codex calls `claimCueLineCallerJob` and `startCueLineCallerJob`. The claim is bound to run, job, task hash, absolute workdir, canonical directory identity, caller identity, and a fencing token; callers execute only in its returned `resolvedWorkdir`. Started work is never automatically retried; an expired started claim becomes `ambiguous`. ChatGPT proposed and reviewed the work—it did not use local tools or perform the work itself.
+`caller` is the default executor for both `startCueLineRun` and `runCueLine`. With the built-in browser, CueLine submits once, captures the exact conversation URL, returns `awaiting_controller`, and releases the runtime lease instead of holding one tool call open while Pro thinks. A later `continueCueLineRun` performs one read-only observation: unfinished work returns `awaiting_controller` again without resending. When the narrow count-degraded accessibility recovery accepts a `dispatch`, that continuation returns `ready` before registering its jobs; the accepted command remains durable and only the next independent `continueCueLineRun` registers them. An ordinary fresh dispatch produces durable pending jobs in its current advancement. `advise` returns `awaiting_caller`; it has no side-effect claim, so coordinate one session. `work` returns `awaiting_caller_work` and remains unstarted until the current Codex calls `claimCueLineCallerJob` and `startCueLineCallerWorkLease`. The claim is bound to run, job, task hash, absolute workdir, canonical directory identity, caller identity, and a fencing token; callers execute only in its returned `resolvedWorkdir`. Started work is never automatically retried. Heartbeats prove executor ownership, while separate durable progress checkpoints prove completed tool, persistence, or verification activity. An expired started claim, a one-hour progress stall, or the 24-hour absolute limit becomes `ambiguous` and requires a fresh Pro dispatch before more mutation. ChatGPT proposed and reviewed the work—it did not use local tools or perform the work itself.
 
 Process execution requires both `executor: "process"` and `allowProcessExecution: true`; a non-terminal continuation must pass the second authorization again. The bundled route also uses `--ignore-user-config`, preventing hidden workers from loading user-configured MCP servers or their command arguments. The controller chooses *what should happen* and the local side chooses *whether and how it may happen*: the lane must be enabled, the candidate must be available **before** anything spawns, and `argv[0]` must already be registered by your routing config. Nothing is passed through a shell. A process `workdir` must be absolute; when omitted, CueLine binds the accepted job to the runtime's resolved absolute workspace so recovery cannot silently move it to another checkout. Independent advice defaults to two concurrent jobs globally and per lane; a batch containing `work` is serial. Once a worker starts, there is no silent fallback to a second candidate. Status exposes the resolved runner, PID, phase, last progress time, and safely observed model/provider metadata.
 
@@ -108,7 +108,7 @@ Configure an MCP client to launch CueLine over newline-delimited stdio:
 }
 ```
 
-The zero-runtime-dependency server implements MCP `2025-11-25` and exposes start, continue, sanitized status/doctor/list, and fenced caller claim/start tools. It never returns raw transcripts. Process execution remains off unless that exact tool call sets both `executor: "process"` and `allowProcessExecution: true`; the first caller tool call binds that stdio session to one stable explicit `callerId`, followed by the exact claim ID and fencing token. Browser-advancing calls require the server host to expose CueLine's built-in Browser binding; a plain subprocess without it returns `IAB_BROWSER_MISSING`, while durable start/status/doctor/list and caller fencing remain available. Only JSON-safe API options cross the protocol; Browser, environment, clock, and abort bindings remain host-injected.
+The zero-runtime-dependency server implements MCP `2025-11-25` and exposes start, continue, sanitized status/doctor/list, and fenced caller claim/start/heartbeat/progress tools. It never returns raw transcripts. Process execution remains off unless that exact tool call sets both `executor: "process"` and `allowProcessExecution: true`; the first successful caller tool call binds that stdio session to one stable explicit `callerId`, followed by the exact claim ID and fencing token. Browser-advancing calls require the server host to expose CueLine's built-in Browser binding; a plain subprocess without it returns `IAB_BROWSER_MISSING`, while durable start/status/doctor/list and caller fencing remain available. Only JSON-safe API options cross the protocol; Browser, environment, clock, and abort bindings remain host-injected.
 
 ### Install from source
 
@@ -139,9 +139,8 @@ import {
   claimCueLineCallerJob,
   continueCueLineRun,
   createCodexIabAdapter,
-  heartbeatCueLineCallerJob,
   runCueLine,
-  startCueLineCallerJob,
+  startCueLineCallerWorkLease,
   submitCueLineCallerJobResult,
 } from "cueline";
 
@@ -175,16 +174,24 @@ while (["awaiting_controller", "awaiting_caller", "awaiting_caller_work"].includ
         callerId: claim.callerId,
         fencingToken: claim.fencingToken,
       };
-      await startCueLineCallerJob(result.runId, job.jobId, proof);
-      const stdout = await executeExactLocalWork(job.spec.task, claim.resolvedWorkdir, {
-        heartbeat: () => heartbeatCueLineCallerJob(result.runId, job.jobId, proof),
-      });
-      await submitCueLineCallerJobResult(
-        result.runId,
-        job.jobId,
-        { status: "succeeded", stdout },
-        { claim: proof },
-      );
+      const lease = await startCueLineCallerWorkLease(claim);
+      let stdout;
+      try {
+        stdout = await executeExactLocalWork(job.spec.task, claim.resolvedWorkdir, {
+          signal: lease.signal,
+          // Call only after the executor observes a completed tool/checkpoint/verification.
+          onCompletedProgress: (progress) => lease.recordProgress(progress),
+        });
+        lease.assertHealthy();
+        await submitCueLineCallerJobResult(
+          result.runId,
+          job.jobId,
+          { status: "succeeded", stdout },
+          { claim: proof },
+        );
+      } finally {
+        await lease.stop();
+      }
     }
   }
   result = await continueCueLineRun({ runId: result.runId });
@@ -195,6 +202,8 @@ if (result.status === "complete") {
 }
 ```
 
+`startCueLineCallerWorkLease` keeps renewal in the executor client rather than the MCP server or repeated LLM decisions. It heartbeats every 60 seconds against the default five-minute claim TTL. Heartbeat means only “the executor still owns this work.” A separate one-hour progress deadline resets only after `recordProgress` durably accepts a new lowercase SHA-256 evidence hash with `tool_completed`, `checkpoint_persisted`, or `verification_completed`; replaying any earlier hash for that claim does not reset it. The first durable start, latest durable progress time, and complete accepted-hash history survive executor restarts, so rebuilding a lease cannot reset either deadline. A stall first attempts to persist `caller_work_review_required`, makes the old job `ambiguous`, and then aborts `lease.signal`. If that write itself fails, renewals still stop and normal claim-expiry reconciliation preserves the same fail-closed outcome. The same claim is never revived: continue the same CueLine run so Pro can inspect the evidence and explicitly dispatch a fresh job. Independent of progress, 24 hours is the absolute execution limit and follows the same review path.
+
 `archiveControllerConversationOnComplete` defaults to `false` and is fixed when the run is created. When enabled, CueLine first persists `complete`, then archives only the exact bound conversation while Pro is idle. A proven failure before the durable click checkpoint can be retried; after that checkpoint, any timeout, restart, navigation race, or missing proof becomes `ambiguous` and CueLine never clicks Archive again. `blocked` and `cancelled` runs are left open.
 
 `startCueLineRun` creates the durable run and returns `ready` without driving the browser. `runCueLine` creates and advances it to a durable controller-observation pause, caller handoff, or terminal state. `continueCueLineRun({ runId })` advances the same conversation and reuses its stored URL. `loadCueLineRunState(runId)` is read-only. A terminal run is returned as-is. Before continuation, run `cueline run status <run-id> --json`: `controller_response_pending` with exactly one normally submitted turn and `safeNextAction: observe` means Pro's response has not yet been observed; wait briefly and continue it without resend. That exact read-only observer can be safely fenced even after its lease becomes stale, but ambiguous/manual submissions, jobs, pending commands, cancellation, or a missing/mismatched URL still require explicit recovery. `phase: prompt_not_sent` with `safeNextAction: retry` is used only with write-ahead or request-correlated `definitely_not_sent` evidence. Caller work phases report `claim_caller_work`, `start_caller_work`, or `continue_caller_work`; a dispatch alone is not local execution. An accepted response plus `jobs_running` means a double-authorized process executor is active. CLI status output is an explicit metadata allowlist: it omits task bodies, caller identities, task hashes, workdirs, and runtime owner IDs. The formal caller claim API returns the exact task and workdir to the authorized caller; the detailed read-only API remains available for trusted local diagnostics.
@@ -204,6 +213,8 @@ if (result.status === "complete") {
 `verifyCueLineRun(runId)` is a read-only integrity check for the creation marker, event replay and authority fences, optional snapshot, runtime lease, and job status evidence. It returns stable findings without returning durable run content.
 
 `confirmManualControllerSubmission(runId, …)` and `confirmControllerTurnNotSent(runId, …)` are the programmatic forms of the two reconcile confirmations. Both are append-only and idempotent, and neither drives the browser or resends anything.
+
+ChatGPT's exact `Message delivery timed out. Please try again.` assistant state is a separate recovery class: the user turn already exists, so CueLine keeps the same round and request, permanently records redacted DOM evidence, and never retries automatically. `run status --json` reports `controller_delivery_failed` plus the evidence hash. Only `run authorize-delivery-retry ... --evidence-hash SHA256` can grant one retry; the next continuation revalidates the unchanged identity and empty composer, consumes the grant before the click, then runs one synchronous page task that revalidates the complete DOM guard and pre-inspected scoped target before invoking only the existing assistant `Retry` action. It never fills the composer or duplicates the attachment. If a response appears, starts, or changes the target before that page task, CueLine permanently records that Retry was skipped and continues read-only reconciliation without clicking.
 
 Inside Codex's runtime, import the absolute module that `cueline api path` prints — that is the built API of the package you installed.
 
@@ -305,7 +316,7 @@ npm pack --dry-run
 
 ## Limits in 0.1
 
-Text commands only. One conversation per run. Selecting `Pro` is the only model switch CueLine makes. Automatic long-text-to-attachment conversion is supported, but deliberate file upload, images, Deep Research, Projects, and Apps are not. Caller `work` requires an explicit durable claim/start and a heartbeat for long work; process execution requires two explicit authorization fields. No automatic retry or fallback starts work twice. macOS is the primary desktop target and Linux is the CI target; Windows is unverified. The adapter depends on the current ChatGPT web UI, so a UI change surfaces explicitly, never as a fabricated answer.
+Text commands only. One conversation per run. Selecting `Pro` is the only model switch CueLine makes. Automatic long-text-to-attachment conversion is supported, but deliberate file upload, images, Deep Research, Projects, and Apps are not. Caller `work` requires an explicit durable claim/start, executor heartbeats, and executor-reported completed-progress checkpoints for long work; CueLine does not infer progress from LLM text. Process execution requires two explicit authorization fields. No automatic retry or fallback starts work twice. macOS is the primary desktop target and Linux is the CI target; Windows is unverified. The adapter depends on the current ChatGPT web UI, so a UI change surfaces explicitly, never as a fabricated answer.
 
 See [compatibility](docs/compatibility.md) for the full matrix.
 

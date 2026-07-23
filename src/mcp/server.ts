@@ -4,8 +4,10 @@ import {
   claimCueLineCallerJob,
   continueCueLineRun,
   diagnoseCueLineRun,
+  heartbeatCueLineCallerJob,
   listCueLineRuns,
   loadCueLineRunStatus,
+  recordCueLineCallerJobProgress,
   startCueLineCallerJob,
   startCueLineRun,
   type CueLineResult,
@@ -38,6 +40,7 @@ interface JsonSchema {
   maximum?: number;
   minLength?: number;
   maxLength?: number;
+  pattern?: string;
 }
 
 interface McpToolDefinition {
@@ -257,6 +260,62 @@ const TOOLS = [
     },
   },
   {
+    name: "cueline_heartbeat_caller_job",
+    description:
+      "Renew exactly one active caller work claim with the claim ID, caller ID, and fencing token returned by claim. The executor client owns heartbeat scheduling.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: runIdProperty,
+        jobId: jobIdProperty,
+        claimId: stringProperty("Exact claim ID returned by cueline_claim_caller_job."),
+        callerId: callerIdProperty,
+        fencingToken: positiveIntegerProperty("Exact fencing token returned by the claim."),
+        home: runtimeProperties.home,
+      },
+      required: ["runId", "jobId", "claimId", "callerId", "fencingToken"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "cueline_record_caller_job_progress",
+    description:
+      "Record one new executor-observed caller-work progress checkpoint. Heartbeats alone are not progress; repeated evidence hashes do not extend the review deadline.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: runIdProperty,
+        jobId: jobIdProperty,
+        claimId: stringProperty("Exact claim ID returned by cueline_claim_caller_job."),
+        callerId: callerIdProperty,
+        fencingToken: positiveIntegerProperty("Exact fencing token returned by the claim."),
+        kind: {
+          type: "string",
+          enum: ["tool_completed", "checkpoint_persisted", "verification_completed"],
+          description: "Executor-observed completion category.",
+        },
+        evidenceHash: {
+          type: "string",
+          minLength: 64,
+          maxLength: 64,
+          pattern: "^[0-9a-f]{64}$",
+          description: "Lowercase SHA-256 of bounded progress evidence; raw output is not stored.",
+        },
+        home: runtimeProperties.home,
+      },
+      required: [
+        "runId",
+        "jobId",
+        "claimId",
+        "callerId",
+        "fencingToken",
+        "kind",
+        "evidenceHash",
+      ],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "cueline_list_runs",
     description:
       "List sanitized persisted run summaries without controller text, conversation URLs, job tasks, or worker output.",
@@ -322,6 +381,9 @@ function validateSchema(value: unknown, schema: JsonSchema, path = "arguments"):
     }
     if (schema.maxLength !== undefined && value.length > schema.maxLength) {
       return [`${path} must contain at most ${schema.maxLength} character(s)`];
+    }
+    if (schema.pattern !== undefined && !new RegExp(schema.pattern).test(value)) {
+      return [`${path} must match ${schema.pattern}`];
     }
     return [];
   }
@@ -440,6 +502,39 @@ async function executeTool(
           runtime,
         )),
       };
+    case "cueline_heartbeat_caller_job":
+      return {
+        ...(await heartbeatCueLineCallerJob(
+          args.runId as string,
+          args.jobId as string,
+          {
+            claimId: args.claimId as string,
+            callerId: args.callerId as string,
+            fencingToken: args.fencingToken as number,
+          },
+          runtime,
+        )),
+      };
+    case "cueline_record_caller_job_progress":
+      return {
+        ...(await recordCueLineCallerJobProgress(
+          args.runId as string,
+          args.jobId as string,
+          {
+            claimId: args.claimId as string,
+            callerId: args.callerId as string,
+            fencingToken: args.fencingToken as number,
+          },
+          {
+            kind: args.kind as
+              | "tool_completed"
+              | "checkpoint_persisted"
+              | "verification_completed",
+            evidenceHash: args.evidenceHash as string,
+          },
+          runtime,
+        )),
+      };
     case "cueline_list_runs":
       return { runs: await listCueLineRuns(runtime) };
     default:
@@ -475,24 +570,33 @@ class CueLineMcpSession {
 
   constructor(private readonly options: ServeCueLineMcpOptions) {}
 
-  #bindCallerId(toolName: string, args: JsonObject): void {
+  #assertCallerIdCompatible(toolName: string, args: JsonObject): void {
     if (
       toolName !== "cueline_claim_caller_job" &&
-      toolName !== "cueline_start_caller_job"
+      toolName !== "cueline_start_caller_job" &&
+      toolName !== "cueline_heartbeat_caller_job" &&
+      toolName !== "cueline_record_caller_job_progress"
     ) return;
     const callerId = args.callerId as string;
-    if (this.#callerId === undefined) {
-      // clientInfo is descriptive, so the first explicit callerId binds this
-      // stdio client session without weakening the durable API proof.
-      this.#callerId = callerId;
-      return;
-    }
-    if (this.#callerId !== callerId) {
+    if (this.#callerId !== undefined && this.#callerId !== callerId) {
       throw new CueLineError(
         "MCP_CALLER_ID_MISMATCH",
         "This MCP client session is already bound to a different callerId.",
       );
     }
+  }
+
+  #bindCallerIdAfterSuccess(toolName: string, args: JsonObject): void {
+    if (
+      this.#callerId !== undefined ||
+      (toolName !== "cueline_claim_caller_job" &&
+        toolName !== "cueline_start_caller_job" &&
+        toolName !== "cueline_heartbeat_caller_job" &&
+        toolName !== "cueline_record_caller_job_progress")
+    ) return;
+    // clientInfo is descriptive, so the first successful caller operation
+    // binds this stdio session without letting a failed probe poison it.
+    this.#callerId = args.callerId as string;
   }
 
   async handle(value: unknown): Promise<JsonRpcResponse | undefined> {
@@ -577,8 +681,10 @@ class CueLineMcpSession {
         );
       }
       try {
-        this.#bindCallerId(tool.name, args);
-        return resultResponse(id!, toolResult(await executeTool(tool.name, args, this.options)));
+        this.#assertCallerIdCompatible(tool.name, args);
+        const result = await executeTool(tool.name, args, this.options);
+        this.#bindCallerIdAfterSuccess(tool.name, args);
+        return resultResponse(id!, toolResult(result));
       } catch (error) {
         return resultResponse(id!, toolError(error));
       }

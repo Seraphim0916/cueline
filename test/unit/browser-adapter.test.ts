@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createCodexIabAdapter } from "../../src/browser/codex-iab/chatgpt-client.js";
+import {
+  commitDeliveryTimeoutRetry,
+  type DeliveryTimeoutRetryCommitResult,
+} from "../../src/browser/codex-iab/delivery-timeout.js";
 import type {
   BrowserAdapter,
   BrowserTurnInput,
   ControllerTurn,
 } from "../../src/browser/browser-adapter.js";
+import { deliveryTimeoutEvidenceHash } from "../../src/browser/delivery-timeout.js";
 import { CueLineError } from "../../src/core/errors.js";
 import { commandHash } from "../../src/core/ids.js";
 import {
@@ -127,6 +132,9 @@ function fakeBrowser(options: {
   cuaAvailable?: boolean;
   coordinateClickError?: string;
   coordinateClickSubmitsBeforeThrow?: boolean;
+  deliveryRetryTargetAvailable?: boolean;
+  deliveryRetryClickError?: string;
+  deliveryRetryCommitResults?: DeliveryTimeoutRetryCommitResult[];
   firstClickError?: string;
   failStateReadAt?: number;
   stateReadError?: string;
@@ -196,6 +204,9 @@ function fakeBrowser(options: {
   let url = options.initialUrl ?? "https://chatgpt.com/";
   let sendLookup = 0;
   let coordinateClicks = 0;
+  let deliveryRetryClicks = 0;
+  let deliveryRetryTargetInspections = 0;
+  let deliveryRetryCommitAttempts = 0;
   let composerStateRead = 0;
   let urlRead = 0;
   let accessibilitySnapshotRead = 0;
@@ -234,6 +245,61 @@ function fakeBrowser(options: {
       _pageFunction: (argument: Argument) => Result | Promise<Result>,
       argument?: Argument,
     ) {
+      if (
+        typeof argument === "object" &&
+        argument !== null &&
+        "retryCommit" in argument
+      ) {
+        const commitResults = options.deliveryRetryCommitResults ?? [
+          { status: "clicked" as const },
+        ];
+        const result =
+          commitResults[
+            Math.min(deliveryRetryCommitAttempts, commitResults.length - 1)
+          ]!;
+        deliveryRetryCommitAttempts += 1;
+        if (options.deliveryRetryClickError) {
+          throw new Error(options.deliveryRetryClickError);
+        }
+        if (result.status === "clicked") deliveryRetryClicks += 1;
+        return result as Result;
+      }
+      if (
+        typeof argument === "object" &&
+        argument !== null &&
+        "retryProbe" in argument
+      ) {
+        deliveryRetryTargetInspections += 1;
+        if (options.deliveryRetryTargetAvailable === false) return null as Result;
+        const retryButton = {
+          tagName: "button",
+          role: null,
+          ariaLabel: null,
+          testId: null,
+          id: null,
+          className: "retry-action",
+        };
+        return {
+          coordinate: { x: 512, y: 300 },
+          buttonRect: {
+            x: 480,
+            y: 280,
+            width: 64,
+            height: 40,
+            top: 280,
+            right: 544,
+            bottom: 320,
+            left: 480,
+          },
+          viewport: { width: 1440, height: 900 },
+          devicePixelRatio: 2,
+          elementFromPoint: retryButton,
+          elementFromPointButtonAncestor: retryButton,
+          elementFromPointMatchesButton: true,
+          documentHasFocus: true,
+          documentVisibilityState: "visible",
+        } as Result;
+      }
       if (
         typeof argument === "object" &&
         argument !== null &&
@@ -369,6 +435,13 @@ function fakeBrowser(options: {
   if (options.cuaAvailable) {
     tab.cua = {
       async click({ x, y }) {
+        if (x === 512 && y === 300) {
+          deliveryRetryClicks += 1;
+          if (options.deliveryRetryClickError) {
+            throw new Error(options.deliveryRetryClickError);
+          }
+          return;
+        }
         assert.deepEqual({ x, y }, { x: 1024, y: 398 });
         coordinateClicks += 1;
         if (options.coordinateClickSubmitsBeforeThrow) sendSubmissions += 1;
@@ -397,6 +470,9 @@ function fakeBrowser(options: {
       hangUrlReads = true;
     },
     coordinateClicks: () => coordinateClicks,
+    deliveryRetryClicks: () => deliveryRetryClicks,
+    deliveryRetryTargetInspections: () => deliveryRetryTargetInspections,
+    deliveryRetryCommitAttempts: () => deliveryRetryCommitAttempts,
     sendSubmissions: () => sendSubmissions,
     accessibilitySnapshotReads: () => accessibilitySnapshotRead,
   };
@@ -1073,6 +1149,309 @@ test("ignores a hidden residual Stop answering button after the Pro response com
     assert.equal(state.isAnswering, false);
     assert.equal(state.assistantText, assistant.innerText);
     assert.equal(state.lastMessageRole, "assistant");
+  } finally {
+    for (const [name, descriptor] of [
+      ["document", documentDescriptor],
+      ["window", windowDescriptor],
+      ["getComputedStyle", styleDescriptor],
+    ] as const) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globalThis as Record<string, unknown>)[name];
+    }
+  }
+});
+
+test("page chat state recognizes delivery timeout only with one visible Retry in the last assistant turn", async () => {
+  const retryButton = {
+    disabled: false,
+    hidden: false,
+    textContent: "Retry",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Retry";
+      return null;
+    },
+    closest(selector: string) {
+      return selector.includes("hidden") || selector.includes("inert")
+        ? null
+        : this;
+    },
+    checkVisibility() { return true; },
+    getBoundingClientRect() { return { width: 64, height: 40 }; },
+    getClientRects() { return [{}]; },
+  };
+  let scopedButtons = [retryButton];
+  const article = {
+    querySelectorAll(selector: string) {
+      return selector === "button" ? scopedButtons : [];
+    },
+  };
+  const message = (role: "user" | "assistant", text: string) => ({
+    innerText: text,
+    textContent: text,
+    getAttribute(name: string) {
+      if (name === "data-message-author-role") return role;
+      if (name === "data-message-model-slug" && role === "assistant") {
+        return "gpt-5-6-pro";
+      }
+      return null;
+    },
+    closest(selector: string) {
+      return selector === "article" ? article : null;
+    },
+  });
+  const messages = [
+    message("user", "Pasted text(326).txt Document"),
+    message(
+      "assistant",
+      "Message delivery timed out. Please try again. Retry",
+    ),
+  ];
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const styleDescriptor = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelectorAll(selector: string) {
+        if (selector === "button") return scopedButtons;
+        if (selector === "[data-message-author-role]") return messages;
+        if (selector === "[data-message-model-slug]") return [messages[1]];
+        return [];
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { location: { href: "https://chatgpt.com/c/delivery-timeout-dom" } },
+  });
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => ({
+      display: "block",
+      visibility: "visible",
+      opacity: "1",
+      pointerEvents: "auto",
+    }),
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result>(pageFunction: () => Result | Promise<Result>): Promise<Result> {
+        return pageFunction();
+      },
+    },
+  } as unknown as IabTab;
+
+  try {
+    const state = await readPageChatState(tab);
+    assert.deepEqual(state.deliveryFailure, {
+      code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT",
+      message: "Message delivery timed out. Please try again.",
+      retryActionAvailable: true,
+    });
+
+    scopedButtons = [retryButton, { ...retryButton }];
+    const ambiguous = await readPageChatState(tab);
+    assert.equal(ambiguous.deliveryFailure?.retryActionAvailable, false);
+  } finally {
+    for (const [name, descriptor] of [
+      ["document", documentDescriptor],
+      ["window", windowDescriptor],
+      ["getComputedStyle", styleDescriptor],
+    ] as const) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globalThis as Record<string, unknown>)[name];
+    }
+  }
+});
+
+test("atomic delivery Retry guard revalidates and clicks within one page task", async () => {
+  let clickCount = 0;
+  let elementAtPoint: unknown;
+  const rect = {
+    x: 480,
+    y: 280,
+    width: 64,
+    height: 40,
+    top: 280,
+    right: 544,
+    bottom: 320,
+    left: 480,
+  };
+  const retryButton = {
+    disabled: false,
+    hidden: false,
+    isConnected: true,
+    innerText: "Retry",
+    textContent: "Retry",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Retry";
+      return null;
+    },
+    closest(selector: string) {
+      return selector === "button" ? this : null;
+    },
+    checkVisibility() { return true; },
+    getBoundingClientRect() { return rect; },
+    getClientRects() { return [{}]; },
+    click() { clickCount += 1; },
+  };
+  elementAtPoint = retryButton;
+  const sendButton = {
+    ...retryButton,
+    disabled: true,
+    innerText: "Send prompt",
+    textContent: "Send prompt",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Send prompt";
+      return null;
+    },
+    click() { throw new Error("disabled Send must never be clicked"); },
+  };
+  const form = {
+    querySelectorAll(selector: string) {
+      if (selector === "button" || selector === "button[aria-label]") {
+        return [sendButton];
+      }
+      if (selector.includes("button[aria-label]")) return [sendButton];
+      return [];
+    },
+  };
+  const composer = {
+    innerText: "",
+    textContent: "",
+    closest(selector: string) {
+      return selector === "form" ? form : null;
+    },
+    parentElement: null,
+  };
+  const article = {
+    querySelectorAll(selector: string) {
+      return selector === "button" ? [retryButton] : [];
+    },
+  };
+  const userMessage = {
+    textContent: "Pasted text(326).txt Document",
+    getAttribute(name: string) {
+      return name === "data-message-author-role" ? "user" : null;
+    },
+  };
+  const assistantMessage = {
+    innerText: "Message delivery timed out. Please try again.\nRetry",
+    textContent: "Message delivery timed out. Please try again. Retry",
+    getAttribute(name: string) {
+      return name === "data-message-author-role" ? "assistant" : null;
+    },
+    closest(selector: string) {
+      return selector === "article" ? article : null;
+    },
+  };
+  const messages = [userMessage, assistantMessage];
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const styleDescriptor = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      visibilityState: "visible",
+      hasFocus() { return true; },
+      querySelector(selector: string) {
+        return selector === '#prompt-textarea[contenteditable="true"]'
+          ? composer
+          : null;
+      },
+      querySelectorAll(selector: string) {
+        if (selector === "button") return [retryButton, sendButton];
+        if (selector === "[data-message-author-role]") return messages;
+        return [];
+      },
+      elementFromPoint() { return elementAtPoint; },
+    },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      location: { href: "https://chatgpt.com/c/atomic-retry" },
+      innerWidth: 1440,
+      innerHeight: 900,
+      devicePixelRatio: 2,
+    },
+  });
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => ({
+      display: "block",
+      visibility: "visible",
+      opacity: "1",
+      pointerEvents: "auto",
+    }),
+  });
+  const tab = {
+    id: "atomic-retry-tab",
+    playwright: {
+      async evaluate<Result, Argument>(
+        pageFunction: (argument: Argument) => Result | Promise<Result>,
+        argument: Argument,
+      ): Promise<Result> {
+        return pageFunction(argument);
+      },
+    },
+  } as unknown as IabTab;
+  const targetEvidence = {
+    tabId: "atomic-retry-tab",
+    targetKind: "coordinate" as const,
+    coordinate: { x: 512, y: 300 },
+    buttonRect: rect,
+    viewport: { width: 1440, height: 900 },
+    devicePixelRatio: 2,
+    elementFromPoint: null,
+    elementFromPointButtonAncestor: null,
+    elementFromPointMatchesButton: true,
+    documentHasFocus: true,
+    documentVisibilityState: "visible",
+  };
+
+  try {
+    const clicked = await commitDeliveryTimeoutRetry(tab, {
+      expectedPageUrl: "https://chatgpt.com/c/atomic-retry",
+      expectedAssistantText: assistantMessage.innerText,
+      expectedUserMessageCount: 1,
+      expectedAssistantMessageCount: 1,
+      expectedTarget: targetEvidence,
+      sendButtonNames: ["Send prompt"],
+    });
+    assert.deepEqual(clicked, { status: "clicked" });
+    assert.equal(clickCount, 1);
+
+    assistantMessage.innerText = "A valid response appeared first";
+    const skipped = await commitDeliveryTimeoutRetry(tab, {
+      expectedPageUrl: "https://chatgpt.com/c/atomic-retry",
+      expectedAssistantText: "Message delivery timed out. Please try again.\nRetry",
+      expectedUserMessageCount: 1,
+      expectedAssistantMessageCount: 1,
+      expectedTarget: targetEvidence,
+      sendButtonNames: ["Send prompt"],
+    });
+    assert.deepEqual(skipped, {
+      status: "not_clicked",
+      reason: "assistant_changed",
+    });
+    assert.equal(clickCount, 1);
+
+    assistantMessage.innerText = "Message delivery timed out. Please try again.\nRetry";
+    elementAtPoint = { closest() { return null; } };
+    const targetChanged = await commitDeliveryTimeoutRetry(tab, {
+      expectedPageUrl: "https://chatgpt.com/c/atomic-retry",
+      expectedAssistantText: assistantMessage.innerText,
+      expectedUserMessageCount: 1,
+      expectedAssistantMessageCount: 1,
+      expectedTarget: targetEvidence,
+      sendButtonNames: ["Send prompt"],
+    });
+    assert.deepEqual(targetChanged, {
+      status: "not_clicked",
+      reason: "target_changed",
+    });
+    assert.equal(clickCount, 1);
   } finally {
     for (const [name, descriptor] of [
       ["document", documentDescriptor],
@@ -2863,6 +3242,440 @@ test("submitted attachment observation treats hydrated history uplift as not sen
   assert.equal(observation.evidence.observedUserMessageCount, 103);
   assert.equal(fixture.sendSubmissions(), 0);
   assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("submitted-turn recovery classifies ChatGPT delivery timeout without clicking Retry", async () => {
+  const conversationUrl = "https://chatgpt.com/c/delivery-timeout-observation";
+  const runId = "run_delivery_timeout_observation";
+  const requestId = "msg_delivery_timeout_observation";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    cuaAvailable: true,
+    states: [{
+      isAnswering: false,
+      assistantText: "Message delivery timed out. Please try again.\nRetry",
+      assistantMessageCount: 4,
+      userMessageCount: 212,
+      lastUserText: "Pasted text(326).txt Document",
+      lastMessageRole: "assistant",
+      requestMessageFound: false,
+      requestMessageFoundBy: "request_id_scan",
+      requestMessageScanComplete: true,
+      deliveryFailure: {
+        code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT",
+        message: "Message delivery timed out. Please try again.",
+        retryActionAvailable: true,
+      },
+    }],
+    composerStates: [{
+      state: "empty",
+      inlineTextLength: 0,
+      attachmentCount: 0,
+      pastedTextAttachmentPresent: false,
+      sendButtonEnabled: false,
+    }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 198,
+    requestId,
+    prompt: "round 198 attachment prompt",
+    attachmentPromptExpected: true,
+    durableSubmittedCheckpoint: true,
+    baselineUserMessageCount: 211,
+    baselineAssistantMessageCount: 3,
+  });
+
+  assert.equal(observation.status, "delivery_failed");
+  assert.equal(observation.evidence.deliveryFailure?.code, "CHATGPT_MESSAGE_DELIVERY_TIMEOUT");
+  assert.equal(observation.evidence.deliveryFailure?.retryActionAvailable, true);
+  assert.equal(observation.evidence.observedUserMessageCount, 212);
+  assert.equal(observation.evidence.assistantMessageCount, 4);
+  assert.equal(observation.evidence.lastMessageRole, "assistant");
+  assert.equal(fixture.deliveryRetryClicks(), 0);
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("delivery-timeout text without one scoped Retry action is not adopted as a controller response", async () => {
+  const conversationUrl = "https://chatgpt.com/c/delivery-timeout-no-action";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [{
+      isAnswering: false,
+      assistantText: "Message delivery timed out. Please try again.",
+      assistantMessageCount: 4,
+      userMessageCount: 212,
+      lastUserText: "Pasted text(326).txt Document",
+      lastMessageRole: "assistant",
+      requestMessageFound: false,
+      requestMessageScanComplete: true,
+      deliveryFailure: {
+        code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT",
+        message: "Message delivery timed out. Please try again.",
+        retryActionAvailable: false,
+      },
+    }],
+    composerStates: [{
+      state: "empty",
+      inlineTextLength: 0,
+      attachmentCount: 0,
+      sendButtonEnabled: false,
+    }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId: "run_delivery_timeout_no_action",
+    round: 198,
+    requestId: "msg_delivery_timeout_no_action",
+    prompt: "round 198 attachment prompt",
+    attachmentPromptExpected: true,
+    baselineUserMessageCount: 211,
+    baselineAssistantMessageCount: 3,
+  });
+
+  assert.equal(observation.status, "delivery_failed");
+  assert.equal(observation.evidence.deliveryFailure?.retryActionAvailable, false);
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("operator-authorized delivery retry consumes its checkpoint before one existing Retry click", async () => {
+  const conversationUrl = "https://chatgpt.com/c/delivery-timeout-retry";
+  const runId = "run_delivery_timeout_retry";
+  const requestId = "msg_delivery_timeout_retry";
+  const timeoutState = {
+    isAnswering: false,
+    assistantText: "Message delivery timed out. Please try again.\nRetry",
+    assistantMessageCount: 4,
+    userMessageCount: 212,
+    lastUserText: "Pasted text(326).txt Document",
+    lastMessageRole: "assistant" as const,
+    requestMessageFound: false,
+    requestMessageFoundBy: "request_id_scan" as const,
+    requestMessageScanComplete: true,
+    deliveryFailure: {
+      code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT" as const,
+      message: "Message delivery timed out. Please try again." as const,
+      retryActionAvailable: true,
+    },
+  };
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    cuaAvailable: true,
+    states: [
+      timeoutState,
+      timeoutState,
+      {
+        ...timeoutState,
+        isAnswering: true,
+        deliveryFailure: null,
+      },
+    ],
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+  const input = {
+    runId,
+    round: 198,
+    requestId,
+    prompt: "round 198 attachment prompt",
+    attachmentPromptExpected: true,
+    durableSubmittedCheckpoint: true,
+    baselineUserMessageCount: 211,
+    baselineAssistantMessageCount: 3,
+  };
+  const observed = await adapter.observeSubmittedTurn!(input);
+  assert.equal(observed.status, "delivery_failed");
+  const evidenceHash = deliveryTimeoutEvidenceHash(observed.evidence);
+  const checkpoints: string[] = [];
+
+  const result = await adapter.retryDeliveryTimeout!(
+    {
+      ...input,
+      expectedConversationUrl: conversationUrl,
+      deliveryFailureEvidenceHash: evidenceHash,
+    },
+    {
+      async onBeforeRetryClick(checkpoint) {
+        assert.equal(fixture.deliveryRetryClicks(), 0);
+        checkpoints.push(checkpoint.evidenceHash);
+      },
+    },
+  );
+
+  assert.equal(result.status, "submitted");
+  assert.deepEqual(checkpoints, [evidenceHash]);
+  assert.equal(fixture.deliveryRetryTargetInspections(), 1);
+  assert.equal(fixture.deliveryRetryCommitAttempts(), 1);
+  assert.equal(fixture.deliveryRetryClicks(), 1);
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("a valid response appearing during the durable Retry checkpoint wins without a click", async () => {
+  const conversationUrl = "https://chatgpt.com/c/delivery-timeout-checkpoint-race";
+  const runId = "run_delivery_timeout_checkpoint_race";
+  const requestId = "msg_delivery_timeout_checkpoint_race";
+  const prompt = "round 198 attachment prompt";
+  const timeoutState = {
+    isAnswering: false,
+    assistantText: "Message delivery timed out. Please try again.\nRetry",
+    assistantMessageCount: 4,
+    userMessageCount: 212,
+    lastUserText: "Pasted text(326).txt Document",
+    lastMessageRole: "assistant" as const,
+    requestMessageFound: false,
+    requestMessageFoundBy: "request_id_scan" as const,
+    requestMessageScanComplete: true,
+    deliveryFailure: {
+      code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT" as const,
+      message: "Message delivery timed out. Please try again." as const,
+      retryActionAvailable: true,
+    },
+  };
+  const responseText = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 198,
+    request_id: requestId,
+    action: "inspect",
+  })}</CueLineControl>`;
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    cuaAvailable: true,
+    deliveryRetryCommitResults: [{
+      status: "not_clicked",
+      reason: "response_started",
+    }],
+    states: [
+      timeoutState,
+      timeoutState,
+      {
+        ...timeoutState,
+        assistantText: responseText,
+        assistantMessageCount: 5,
+        deliveryFailure: null,
+      },
+    ],
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+  const input = {
+    runId,
+    round: 198,
+    requestId,
+    prompt,
+    attachmentPromptExpected: true,
+    durableSubmittedCheckpoint: true,
+    baselineUserMessageCount: 211,
+    baselineAssistantMessageCount: 3,
+  };
+  const observed = await adapter.observeSubmittedTurn!(input);
+  assert.equal(observed.status, "delivery_failed");
+  const evidenceHash = deliveryTimeoutEvidenceHash(observed.evidence);
+  let checkpoints = 0;
+
+  const result = await adapter.retryDeliveryTimeout!(
+    {
+      ...input,
+      expectedConversationUrl: conversationUrl,
+      deliveryFailureEvidenceHash: evidenceHash,
+    },
+    {
+      async onBeforeRetryClick() {
+        checkpoints += 1;
+        assert.equal(fixture.deliveryRetryClicks(), 0);
+      },
+    },
+  );
+
+  assert.equal(result.status, "response");
+  assert.equal(result.authorizationConsumed, true);
+  assert.equal(result.turn.text, responseText);
+  assert.equal(checkpoints, 1);
+  assert.equal(fixture.deliveryRetryTargetInspections(), 1);
+  assert.equal(fixture.deliveryRetryCommitAttempts(), 1);
+  assert.equal(fixture.deliveryRetryClicks(), 0);
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("an atomic Retry target change after checkpoint is recorded as not clicked", async () => {
+  const conversationUrl = "https://chatgpt.com/c/delivery-timeout-target-race";
+  const runId = "run_delivery_timeout_target_race";
+  const requestId = "msg_delivery_timeout_target_race";
+  const timeoutState = {
+    isAnswering: false,
+    assistantText: "Message delivery timed out. Please try again.\nRetry",
+    assistantMessageCount: 4,
+    userMessageCount: 212,
+    lastUserText: "Pasted text(326).txt Document",
+    lastMessageRole: "assistant" as const,
+    requestMessageFound: false,
+    requestMessageFoundBy: "request_id_scan" as const,
+    requestMessageScanComplete: true,
+    deliveryFailure: {
+      code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT" as const,
+      message: "Message delivery timed out. Please try again." as const,
+      retryActionAvailable: true,
+    },
+  };
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    cuaAvailable: true,
+    deliveryRetryCommitResults: [{
+      status: "not_clicked",
+      reason: "target_changed",
+    }],
+    states: [timeoutState, timeoutState, timeoutState],
+    composerStates: [
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+  const input = {
+    runId,
+    round: 198,
+    requestId,
+    prompt: "round 198 attachment prompt",
+    attachmentPromptExpected: true,
+    durableSubmittedCheckpoint: true,
+    baselineUserMessageCount: 211,
+    baselineAssistantMessageCount: 3,
+  };
+  const observed = await adapter.observeSubmittedTurn!(input);
+  assert.equal(observed.status, "delivery_failed");
+  const evidenceHash = deliveryTimeoutEvidenceHash(observed.evidence);
+  let checkpoints = 0;
+
+  const result = await adapter.retryDeliveryTimeout!(
+    {
+      ...input,
+      expectedConversationUrl: conversationUrl,
+      deliveryFailureEvidenceHash: evidenceHash,
+    },
+    {
+      async onBeforeRetryClick() {
+        checkpoints += 1;
+      },
+    },
+  );
+
+  assert.equal(result.status, "not_clicked");
+  assert.equal(result.reason, "target_changed");
+  assert.equal(result.authorizationConsumed, true);
+  assert.equal(checkpoints, 1);
+  assert.equal(fixture.deliveryRetryTargetInspections(), 1);
+  assert.equal(fixture.deliveryRetryCommitAttempts(), 1);
+  assert.equal(fixture.deliveryRetryClicks(), 0);
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("delivery retry rejects an evidence-hash mismatch before any click", async () => {
+  const conversationUrl = "https://chatgpt.com/c/delivery-timeout-hash-mismatch";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    cuaAvailable: true,
+    states: [{
+      isAnswering: false,
+      assistantText: "Message delivery timed out. Please try again.\nRetry",
+      assistantMessageCount: 4,
+      userMessageCount: 212,
+      lastMessageRole: "assistant",
+      requestMessageFound: false,
+      requestMessageScanComplete: true,
+      deliveryFailure: {
+        code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT",
+        message: "Message delivery timed out. Please try again.",
+        retryActionAvailable: true,
+      },
+    }],
+    composerStates: [{
+      state: "empty",
+      inlineTextLength: 0,
+      attachmentCount: 0,
+      sendButtonEnabled: false,
+    }],
+  });
+  const adapter = createCodexIabAdapter({ browser: fixture.browser, conversationUrl });
+
+  await assert.rejects(
+    adapter.retryDeliveryTimeout!(
+      {
+        runId: "run_delivery_timeout_hash_mismatch",
+        round: 198,
+        requestId: "msg_delivery_timeout_hash_mismatch",
+        prompt: "round 198 attachment prompt",
+        attachmentPromptExpected: true,
+        durableSubmittedCheckpoint: true,
+        baselineUserMessageCount: 211,
+        baselineAssistantMessageCount: 3,
+        expectedConversationUrl: conversationUrl,
+        deliveryFailureEvidenceHash: "0".repeat(64),
+      },
+      { async onBeforeRetryClick() {} },
+    ),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_DELIVERY_TIMEOUT_EVIDENCE_MISMATCH",
+  );
+  assert.equal(fixture.deliveryRetryClicks(), 0);
+  assert.equal(fixture.sendSubmissions(), 0);
 });
 
 test("post-fix retry fails closed without a coordinate and never falls back to locator click", async () => {

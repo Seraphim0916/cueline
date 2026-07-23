@@ -8,6 +8,8 @@ import type {
   CueLineCallerWorkClaimResult,
   CueLineCallerWorkMutationOptions,
   CueLineCallerWorkMutationResult,
+  CueLineCallerWorkProgressInput,
+  CueLineCallerWorkProgressKind,
 } from "./api-contracts.js";
 import { CueLineError } from "./core/errors.js";
 import { jobSpecHash } from "./core/ids.js";
@@ -26,13 +28,27 @@ import {
   retireDeadRuntimeLease,
   RuntimeLease,
 } from "./state/runtime-lease.js";
-import type { RunStore } from "./state/store.js";
+import {
+  readAuthoritativeRunEvents,
+  type RunStore,
+} from "./state/store.js";
 
 const DEFAULT_CALLER_WORK_CLAIM_TTL_MS = 300_000;
 const MIN_CALLER_WORK_CLAIM_TTL_MS = 1_000;
 const MAX_CALLER_WORK_CLAIM_TTL_MS = 86_400_000;
+const CALLER_WORK_PROGRESS_KINDS = new Set<CueLineCallerWorkProgressKind>([
+  "tool_completed",
+  "checkpoint_persisted",
+  "verification_completed",
+]);
 
 type CallerWorkMutationOptions = CueLineCallerWorkMutationOptions;
+
+export interface CallerWorkReviewInput {
+  reasonCode: "progress_stalled" | "max_execution_elapsed";
+  reason: string;
+  limitMs: number;
+}
 
 function assertCallerId(value: string): void {
   if (value.trim() === "" || value.length > 256 || /[\u0000-\u001f\u007f]/.test(value)) {
@@ -64,6 +80,22 @@ function assertClaimProof(value: CueLineCallerWorkClaimProof): void {
     throw new CueLineError(
       "CALLER_WORK_CLAIM_PROOF_INVALID",
       "Caller work proof requires a non-empty claimId and a safe integer fencingToken.",
+    );
+  }
+}
+
+function assertProgressInput(
+  value: CueLineCallerWorkProgressInput | null | undefined,
+): asserts value is CueLineCallerWorkProgressInput {
+  if (
+    value === null ||
+    value === undefined ||
+    !CALLER_WORK_PROGRESS_KINDS.has(value.kind) ||
+    !/^[0-9a-f]{64}$/.test(value.evidenceHash)
+  ) {
+    throw new CueLineError(
+      "CALLER_WORK_PROGRESS_INVALID",
+      "Caller work progress requires an allowed kind and a lowercase SHA-256 evidenceHash.",
     );
   }
 }
@@ -189,6 +221,7 @@ async function writeClaimJobStatus(
   status: "pending" | "running" | "ambiguous",
   timestamp: string,
   error?: string,
+  progress?: { phase: string; lastProgressAt: string },
 ): Promise<void> {
   const statusStore = new JobStatusStore(home);
   const existing = await statusStore.read(job.jobId);
@@ -196,6 +229,8 @@ async function writeClaimJobStatus(
     status === "running" && existing?.status !== "running"
       ? timestamp
       : (existing?.startedAt ?? timestamp);
+  const phase = progress?.phase ?? existing?.phase;
+  const lastProgressAt = progress?.lastProgressAt ?? existing?.lastProgressAt;
   const next: JobStatus = {
     jobId: job.jobId,
     runId: store.runId,
@@ -205,10 +240,49 @@ async function writeClaimJobStatus(
     execution: "foreground",
     status,
     startedAt,
+    ...(phase === undefined ? {} : { phase }),
+    ...(lastProgressAt === undefined ? {} : { lastProgressAt }),
     ...(status === "ambiguous" ? { finishedAt: timestamp } : {}),
     ...(error === undefined ? {} : { error }),
   };
   await statusStore.write(next);
+}
+
+function priorProgressEvidence(
+  events: Awaited<ReturnType<typeof readAuthoritativeRunEvents>>,
+  jobId: string,
+  claimId: string,
+  evidenceHash: string,
+): { progressAt: string; progressKind: CueLineCallerWorkProgressKind } | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (
+      event?.type !== "caller_work_progress" ||
+      typeof event.payload !== "object" ||
+      event.payload === null ||
+      Array.isArray(event.payload)
+    ) {
+      continue;
+    }
+    const payload = event.payload as Record<string, unknown>;
+    if (
+      payload.job_id === jobId &&
+      payload.claim_id === claimId &&
+      payload.progress_evidence_hash === evidenceHash &&
+      typeof payload.progress_at === "string" &&
+      Number.isFinite(Date.parse(payload.progress_at)) &&
+      typeof payload.progress_kind === "string" &&
+      CALLER_WORK_PROGRESS_KINDS.has(
+        payload.progress_kind as CueLineCallerWorkProgressKind,
+      )
+    ) {
+      return {
+        progressAt: payload.progress_at,
+        progressKind: payload.progress_kind as CueLineCallerWorkProgressKind,
+      };
+    }
+  }
+  return undefined;
 }
 
 async function markStartedClaimAmbiguous(
@@ -326,6 +400,10 @@ function claimResult(
     heartbeatAt: claim.heartbeatAt,
     expiresAt: claim.expiresAt,
     started: claim.startedAt !== null,
+    startedAt: claim.startedAt,
+    ...(claim.lastProgressAt === undefined
+      ? {}
+      : { lastProgressAt: claim.lastProgressAt }),
   };
 }
 
@@ -471,6 +549,11 @@ export async function startCueLineCallerJob(
         outcome: "already_started",
         heartbeatAt: claim.heartbeatAt,
         expiresAt: claim.expiresAt,
+        observedAt: currentTime.toISOString(),
+        ...(claim.startedAt === null ? {} : { startedAt: claim.startedAt }),
+        ...(claim.lastProgressAt === undefined
+          ? {}
+          : { progressAt: claim.lastProgressAt }),
       };
     }
     await assertClaimedWorkdir(claim);
@@ -489,7 +572,10 @@ export async function startCueLineCallerJob(
       started_at: timestamp,
       expires_at: expiresAt,
     });
-    await writeClaimJobStatus(home, store, job, "running", timestamp);
+    await writeClaimJobStatus(home, store, job, "running", timestamp, undefined, {
+      phase: "caller_work_started",
+      lastProgressAt: timestamp,
+    });
     await store.snapshot();
     return {
       runId,
@@ -499,6 +585,9 @@ export async function startCueLineCallerJob(
       outcome: "started",
       heartbeatAt: timestamp,
       expiresAt,
+      observedAt: timestamp,
+      startedAt: timestamp,
+      progressAt: timestamp,
     };
   });
 }
@@ -546,7 +635,134 @@ export async function heartbeatCueLineCallerJob(
       outcome: "heartbeat_recorded",
       heartbeatAt: timestamp,
       expiresAt,
+      observedAt: timestamp,
+      ...(claim.startedAt === null ? {} : { startedAt: claim.startedAt }),
+      ...(claim.lastProgressAt === undefined
+        ? {}
+        : { progressAt: claim.lastProgressAt }),
     };
+  });
+}
+
+export async function recordCueLineCallerJobProgress(
+  runId: string,
+  jobId: string,
+  proof: CueLineCallerWorkClaimProof,
+  input: CueLineCallerWorkProgressInput,
+  options: CallerWorkMutationOptions = {},
+): Promise<CueLineCallerWorkMutationResult> {
+  assertProgressInput(input);
+  return withCallerWorkStore(runId, options, async (store, home, now) => {
+    const job = callerWorkJob(store, jobId);
+    const claim = exactClaim(job, proof);
+    if (job.status !== "running" || claim.startedAt === null) {
+      throw new CueLineError(
+        "CALLER_WORK_NOT_STARTED",
+        `Caller work job '${jobId}' must be durably started before recording progress.`,
+      );
+    }
+    const currentTime = now();
+    await assertClaimNotExpired(store, job, claim, home, currentTime);
+    const prior = priorProgressEvidence(
+      await readAuthoritativeRunEvents(home, runId),
+      jobId,
+      claim.claimId,
+      input.evidenceHash,
+    );
+    if (prior !== undefined) {
+      return {
+        runId,
+        jobId,
+        claimId: claim.claimId,
+        fencingToken: claim.fencingToken,
+        outcome: "progress_already_recorded",
+        heartbeatAt: claim.heartbeatAt,
+        expiresAt: claim.expiresAt,
+        progressAt: prior.progressAt,
+        progressKind: prior.progressKind,
+        progressEvidenceHash: input.evidenceHash,
+      };
+    }
+    const timestamp = currentTime.toISOString();
+    const expiresAt = expiration(currentTime, claim.ttlMs);
+    await store.append("caller_work_progress", {
+      job_id: jobId,
+      claim_id: claim.claimId,
+      caller_id: claim.callerId,
+      fencing_token: claim.fencingToken,
+      progress_at: timestamp,
+      progress_kind: input.kind,
+      progress_evidence_hash: input.evidenceHash,
+      expires_at: expiresAt,
+    });
+    await writeClaimJobStatus(home, store, job, "running", timestamp, undefined, {
+      phase: input.kind,
+      lastProgressAt: timestamp,
+    });
+    await store.snapshot();
+    return {
+      runId,
+      jobId,
+      claimId: claim.claimId,
+      fencingToken: claim.fencingToken,
+      outcome: "progress_recorded",
+      heartbeatAt: timestamp,
+      expiresAt,
+      progressAt: timestamp,
+      progressKind: input.kind,
+      progressEvidenceHash: input.evidenceHash,
+    };
+  });
+}
+
+/** Internal executor safety transition used before aborting a timed-out lease. */
+export async function requireCueLineCallerJobReview(
+  runId: string,
+  jobId: string,
+  proof: CueLineCallerWorkClaimProof,
+  input: CallerWorkReviewInput,
+  options: CallerWorkMutationOptions = {},
+): Promise<boolean> {
+  if (
+    (input.reasonCode !== "progress_stalled" &&
+      input.reasonCode !== "max_execution_elapsed") ||
+    input.reason.trim() === "" ||
+    input.reason.length > 1_024 ||
+    !Number.isSafeInteger(input.limitMs) ||
+    input.limitMs < 1
+  ) {
+    throw new CueLineError(
+      "CALLER_WORK_REVIEW_INVALID",
+      "Caller work review requires a supported reason, bounded message, and positive limitMs.",
+    );
+  }
+  return withCallerWorkStore(runId, options, async (store, home, now) => {
+    const job = callerWorkJob(store, jobId);
+    const claim = exactClaim(job, proof);
+    if (job.status !== "pending" && job.status !== "running") return false;
+    if (job.status !== "running" || claim.startedAt === null) {
+      throw new CueLineError(
+        "CALLER_WORK_NOT_STARTED",
+        `Caller work job '${jobId}' must be durably started before controller review.`,
+      );
+    }
+    const currentTime = now();
+    await assertClaimNotExpired(store, job, claim, home, currentTime);
+    const timestamp = currentTime.toISOString();
+    await store.append("caller_work_review_required", {
+      job_id: jobId,
+      claim_id: claim.claimId,
+      caller_id: claim.callerId,
+      fencing_token: claim.fencingToken,
+      reason_code: input.reasonCode,
+      reason: input.reason,
+      limit_ms: input.limitMs,
+      requested_at: timestamp,
+      last_progress_at: claim.lastProgressAt ?? claim.startedAt,
+    });
+    await writeClaimJobStatus(home, store, job, "ambiguous", timestamp, input.reason);
+    await store.snapshot();
+    return true;
   });
 }
 

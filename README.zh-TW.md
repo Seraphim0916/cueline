@@ -42,7 +42,7 @@ CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 
 
 非預設的 `maxRounds` 會在建立 run 時固定，並跨所有無 owner 的暫停累計主控總輪數。之後續跑通常省略它、沿用持久值；若傳入不同數字，CueLine 會拒絕，不會偷偷重設或放寬預算。
 
-`startCueLineRun` 與 `runCueLine` 都預設使用 `caller` executor。使用內建瀏覽器時，CueLine 只送一次、保存精確對話 URL，然後回傳 `awaiting_controller` 並釋放 runtime lease，不會讓單一工具呼叫卡著等 Pro 思考。之後的 `continueCueLineRun` 只做一次唯讀觀測；若仍未完成，就再次回傳 `awaiting_controller`，絕不重送。`advise` 派工回傳 `awaiting_caller`，沒有副作用 claim，需協調單一 session。`work` 派工回傳 `awaiting_caller_work`，在目前 Codex 呼叫 `claimCueLineCallerJob` 與 `startCueLineCallerJob` 前，絕對尚未開始本機修改。claim 綁定 run、job、task hash、絕對 workdir、canonical 目錄身分、caller identity 與 fencing token；本機工作只能使用它回傳的 `resolvedWorkdir`。已開始的工作不會自動重試，claim 逾期則成為 `ambiguous`。Pro 只提出與審查文字指令，沒有親自使用本機工具。
+`startCueLineRun` 與 `runCueLine` 都預設使用 `caller` executor。使用內建瀏覽器時，CueLine 只送一次、保存精確對話 URL，然後回傳 `awaiting_controller` 並釋放 runtime lease，不會讓單一工具呼叫卡著等 Pro 思考。之後的 `continueCueLineRun` 只做一次唯讀觀測；若仍未完成，就再次回傳 `awaiting_controller`，絕不重送。`advise` 派工回傳 `awaiting_caller`，沒有副作用 claim，需協調單一 session。`work` 派工回傳 `awaiting_caller_work`，在目前 Codex 呼叫 `claimCueLineCallerJob` 與 `startCueLineCallerWorkLease` 前，絕對尚未開始本機修改。claim 綁定 run、job、task hash、絕對 workdir、canonical 目錄身分、caller identity 與 fencing token；本機工作只能使用它回傳的 `resolvedWorkdir`。heartbeat 只證明 executor 還持有工作；另有持久進度 checkpoint 證明工具、落盤或驗證確實完成。已開始的工作不會自動重試；claim 逾期、連續一小時沒有新進度，或到達 24 小時絕對上限，都會成為 `ambiguous`，必須由 Pro 重新派出一份新工作後才能再修改。Pro 只提出與審查文字指令，沒有親自使用本機工具。
 
 Process 模式必須同時指定 `executor: "process"` 與 `allowProcessExecution: true`，非終態續跑也要再次傳入第二道授權。內建 route 另加 `--ignore-user-config`，不讓隱藏 worker 載入使用者設定的 MCP server 或其命令參數。通道（lane）必須啟用、候選項必須在任何程序啟動**之前**就確認可用、`argv[0]` 必須早已由路由設定註冊。沒有任何東西會經過 shell。唯讀工作預設全域與每 lane 最多同時 2 個；只要批次包含 `work` 就維持串行。狀態會顯示解析後 runner、PID、phase、最後進度時間，以及安全辨識到的 model/provider。
 
@@ -115,9 +115,8 @@ import {
   claimCueLineCallerJob,
   continueCueLineRun,
   createCodexIabAdapter,
-  heartbeatCueLineCallerJob,
   runCueLine,
-  startCueLineCallerJob,
+  startCueLineCallerWorkLease,
   submitCueLineCallerJobResult,
 } from "cueline";
 
@@ -151,16 +150,24 @@ while (["awaiting_controller", "awaiting_caller", "awaiting_caller_work"].includ
         callerId: claim.callerId,
         fencingToken: claim.fencingToken,
       };
-      await startCueLineCallerJob(result.runId, job.jobId, proof);
-      const stdout = await executeExactLocalWork(job.spec.task, claim.resolvedWorkdir, {
-        heartbeat: () => heartbeatCueLineCallerJob(result.runId, job.jobId, proof),
-      });
-      await submitCueLineCallerJobResult(
-        result.runId,
-        job.jobId,
-        { status: "succeeded", stdout },
-        { claim: proof },
-      );
+      const lease = await startCueLineCallerWorkLease(claim);
+      let stdout;
+      try {
+        stdout = await executeExactLocalWork(job.spec.task, claim.resolvedWorkdir, {
+          signal: lease.signal,
+          // 只能在 executor 觀察到工具、checkpoint 或驗證確實完成後呼叫。
+          onCompletedProgress: (progress) => lease.recordProgress(progress),
+        });
+        lease.assertHealthy();
+        await submitCueLineCallerJobResult(
+          result.runId,
+          job.jobId,
+          { status: "succeeded", stdout },
+          { claim: proof },
+        );
+      } finally {
+        await lease.stop();
+      }
     }
   }
   result = await continueCueLineRun({ runId: result.runId });
@@ -171,6 +178,8 @@ if (result.status === "complete") {
 }
 ```
 
+`startCueLineCallerWorkLease` 的續租 timer 位於 executor client，不在 MCP server，也不由 LLM 逐次決定。預設每 60 秒 heartbeat，預設 claim TTL 是五分鐘；heartbeat 只表示「executor 還持有這份工作」。另一個一小時進度期限，只會在 `recordProgress` 持久接受一個新的小寫 SHA-256 證據雜湊，而且種類是 `tool_completed`、`checkpoint_persisted` 或 `verification_completed` 時重算；同一 claim 以前用過的雜湊不能反覆延命。首次持久 start、最新持久進度時間與完整已接受雜湊紀錄都會跨 executor 重啟保留，因此重建 lease 不能把一小時或 24 小時重新歸零。若一小時沒有新進度，lease 會先嘗試寫入 `caller_work_review_required`、把舊 job 標成 `ambiguous`，再中止 `lease.signal`；若連這筆持久寫入也失敗，heartbeat 仍會停止，之後由原本的 claim 逾期機制安全收斂成 `ambiguous`。舊 claim 不會復活：請續跑同一個 CueLine run，讓 Pro 看證據後明確派出新 job。無論有沒有進度，24 小時都是絕對上限，也走同一條重新審查路徑。
+
 `archiveControllerConversationOnComplete` 預設為 `false`，並在建立 run 時固定。啟用後，CueLine 會先把 `complete` 寫進持久紀錄，再於 Pro 未回答時封存那一個精確對話。點擊 fence 前能證明尚未點擊的失敗可以重試；fence 後只要逾時、重開、換頁或缺少完成證據，就標成 `ambiguous` 且永不再點。`blocked` 與 `cancelled` 一律保留原對話。
 
 若回傳 `awaiting_controller`，代表同一個精確 request 已送出、但 Pro 回覆尚未被觀測；稍後續跑只會唯讀觀測，不會重送。`awaiting_caller` 交接 `advise`；`awaiting_caller_work` 則必須依序 claim、start、執行、heartbeat 與帶 claim proof 提交結果。Pro 網頁從未直接使用本機工具。
@@ -180,6 +189,8 @@ if (result.status === "complete") {
 `verifyCueLineRun(runId)` 是唯讀完整性檢查，會核對建立 marker、event replay 與 authority fence、選用 snapshot、runtime lease 和 job status 證據；只回傳穩定 finding，不回傳持久 run 內容。
 
 `confirmManualControllerSubmission(runId, …)` 與 `confirmControllerTurnNotSent(runId, …)` 是兩種 reconcile 確認的程式介面。兩者都只追加事件、可重複執行（冪等），也都不驅動瀏覽器、不重送任何東西。
+
+ChatGPT 顯示精確的 `Message delivery timed out. Please try again.` assistant 狀態時，屬於另一種恢復情境：user turn 已存在，所以 CueLine 保留同一個 round 與 request，永久記錄去敏感 DOM 證據，而且絕不自動重試。`run status --json` 會回報 `controller_delivery_failed` 與證據雜湊。只有 `run authorize-delivery-retry ... --evidence-hash SHA256` 能授權一次重試；下一次續跑會先重新核對相同身分與空 composer，在點擊前消耗授權，接著在同一個同步頁面任務內重新核對完整 DOM 防護與先前辨識的 scoped target，最後才可能只觸發原 assistant turn 的 `Retry`。它不會填寫 composer，也不會重複附件。若回覆已出現、開始產生或 target 已改變，CueLine 會永久記錄跳過 Retry，優先唯讀接回，完全不點擊。
 
 在 Codex 的 runtime 裡，import `cueline api path` 印出的那個絕對路徑模組——那就是你安裝的那份套件建置出來的 API。
 
@@ -283,7 +294,7 @@ npm pack --dry-run
 
 ## 0.1 的限制
 
-只支援文字控制命令。一次執行只對應一個對話。選成 `Pro` 是 CueLine 唯一會做的模型切換。支援 ChatGPT 自動把長文字轉成附件，但不支援主動上傳檔案、圖片、Deep Research、Projects 或 Apps。Caller `work` 必須經過明確 claim/start，長工作需 heartbeat；process 執行則要雙重明確授權。任何模糊送出或已啟動工作都不會被自動重試。macOS 是主要桌面目標、Linux 是 CI 目標；Windows 未驗證。adapter 依賴目前的 ChatGPT 網頁 UI，UI 改版會被明確浮現，絕不變成捏造的答案。
+只支援文字控制命令。一次執行只對應一個對話。選成 `Pro` 是 CueLine 唯一會做的模型切換。支援 ChatGPT 自動把長文字轉成附件，但不支援主動上傳檔案、圖片、Deep Research、Projects 或 Apps。Caller `work` 必須經過明確 claim/start；長工作需要 executor heartbeat 與 executor 回報的已完成進度 checkpoint，CueLine 不會把 LLM 文字當成進度。process 執行則要雙重明確授權。任何模糊送出或已啟動工作都不會被自動重試。macOS 是主要桌面目標、Linux 是 CI 目標；Windows 未驗證。adapter 依賴目前的 ChatGPT 網頁 UI，UI 改版會被明確浮現，絕不變成捏造的答案。
 
 完整矩陣見 [compatibility](docs/compatibility.md)。
 
