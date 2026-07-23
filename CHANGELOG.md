@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.2 - 2026-07-23
+
 ### Added
 
 - Added a public, no-dispatch Goalbraid decision bridge. It validates Python-compatible canonical request digests, constrains Pro output to Goalbraid's closed runnable set, requires a fully verified CueLine run, and publishes one immutable advisory response without importing or invoking Omnilane.

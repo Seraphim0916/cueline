@@ -1,1 +1,1 @@
-export const CUELINE_VERSION = "0.6.1";
+export const CUELINE_VERSION = "0.6.2";
