@@ -452,13 +452,94 @@ export async function readPageComposerState(
           .replace(/[ \t]+\n/g, "\n")
           .replace(/\n(?:[ \t]*\n)+/g, "\n")
           .trim();
-      const composer = document.querySelector('#prompt-textarea[contenteditable="true"]');
-      const inlineText = normalize(
-        composer && "innerText" in composer
-          ? (composer as HTMLElement).innerText
-          : composer?.textContent,
-      );
+      const composerSelector = '#prompt-textarea[contenteditable="true"]';
       const expected = normalize(expectedPrompt);
+      const composerText = (element: Element): string =>
+        normalize(
+          "innerText" in element
+            ? (element as HTMLElement).innerText
+            : element.textContent,
+        );
+      const isLiveComposer = (element: Element): boolean => {
+        const candidate = element as HTMLElement & {
+          checkVisibility?: (options?: {
+            checkOpacity?: boolean;
+            checkVisibilityCSS?: boolean;
+          }) => boolean;
+        };
+        if (
+          candidate.isConnected === false ||
+          candidate.hidden ||
+          candidate.getAttribute?.("aria-hidden") === "true"
+        ) {
+          return false;
+        }
+        const hiddenAncestor = candidate.closest?.(
+          '[hidden], [aria-hidden="true"]',
+        );
+        if (
+          hiddenAncestor &&
+          (hiddenAncestor.hasAttribute?.("hidden") ||
+            hiddenAncestor.getAttribute?.("aria-hidden") === "true")
+        ) {
+          return false;
+        }
+        if (typeof candidate.checkVisibility === "function") {
+          try {
+            if (
+              !candidate.checkVisibility({
+                checkOpacity: true,
+                checkVisibilityCSS: true,
+              })
+            ) {
+              return false;
+            }
+          } catch {
+            if (!candidate.checkVisibility()) return false;
+          }
+        } else if (typeof getComputedStyle === "function") {
+          const style = getComputedStyle(candidate);
+          if (
+            style.display === "none" ||
+            style.visibility === "hidden" ||
+            style.visibility === "collapse" ||
+            Number(style.opacity) === 0
+          ) {
+            return false;
+          }
+        }
+        if (typeof candidate.getBoundingClientRect === "function") {
+          const bounds = candidate.getBoundingClientRect();
+          if (bounds.width <= 0 || bounds.height <= 0) return false;
+        }
+        if (
+          typeof candidate.getClientRects === "function" &&
+          candidate.getClientRects().length === 0
+        ) {
+          return false;
+        }
+        return true;
+      };
+      const queriedComposers =
+        typeof document.querySelectorAll === "function"
+          ? Array.from(document.querySelectorAll(composerSelector))
+          : [];
+      const composerCandidates =
+        queriedComposers.length > 0
+          ? queriedComposers
+          : typeof document.querySelector === "function"
+            ? [document.querySelector(composerSelector)].filter(
+                (element): element is Element => element !== null,
+              )
+            : [];
+      const liveComposers = composerCandidates.filter(isLiveComposer);
+      const composer =
+        liveComposers.find(
+          (candidate) =>
+            expected !== "" && composerText(candidate) === expected,
+        ) ?? (liveComposers.length === 1 ? liveComposers[0] : undefined);
+      const inlineText =
+        composer === undefined ? "" : composerText(composer);
       const root = composer?.closest("form") ?? composer?.parentElement?.parentElement ?? document;
       const attachmentElements = new Set<Element>();
       for (const element of Array.from(

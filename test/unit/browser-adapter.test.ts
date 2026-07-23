@@ -821,6 +821,112 @@ test("never clicks Archive when Pro starts answering during the durable checkpoi
   assert.equal(fixture.archiveMenuItem.clicks, 0);
 });
 
+test("composer probe prefers the visible live contenteditable after delayed hydration", async () => {
+  const expectedPrompt =
+    "run_id=run_delayed_hydration request_id=msg_delayed_hydration";
+  const staleSendButton = {
+    disabled: true,
+    hidden: true,
+    innerText: "Send prompt",
+    textContent: "Send prompt",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Send prompt";
+      if (name === "aria-disabled") return "true";
+      if (name === "aria-hidden") return "true";
+      return null;
+    },
+  };
+  const liveSendButton = {
+    disabled: false,
+    hidden: false,
+    innerText: "Send prompt",
+    textContent: "Send prompt",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Send prompt";
+      if (name === "aria-disabled") return "false";
+      return null;
+    },
+  };
+  const staleForm = {
+    querySelectorAll(selector: string) {
+      return selector === "button" ? [staleSendButton] : [];
+    },
+  };
+  const liveForm = {
+    querySelectorAll(selector: string) {
+      return selector === "button" ? [liveSendButton] : [];
+    },
+  };
+  const staleComposer = {
+    innerText: "",
+    textContent: "",
+    isConnected: true,
+    hidden: true,
+    getAttribute(name: string) {
+      return name === "aria-hidden" ? "true" : null;
+    },
+    closest() {
+      return staleForm;
+    },
+    checkVisibility() {
+      return false;
+    },
+  };
+  const liveComposer = {
+    innerText: expectedPrompt,
+    textContent: expectedPrompt,
+    isConnected: true,
+    hidden: false,
+    getAttribute() {
+      return null;
+    },
+    closest() {
+      return liveForm;
+    },
+    checkVisibility() {
+      return true;
+    },
+  };
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelector() {
+        return staleComposer;
+      },
+      querySelectorAll(selector: string) {
+        return selector === '#prompt-textarea[contenteditable="true"]'
+          ? [staleComposer, liveComposer]
+          : [];
+      },
+    },
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result, Argument>(
+        pageFunction: (argument: Argument) => Result | Promise<Result>,
+        argument: Argument,
+      ): Promise<Result> {
+        return pageFunction(argument);
+      },
+    },
+  } as unknown as IabTab;
+
+  try {
+    const state = await readPageComposerState(tab, expectedPrompt, ["Send prompt"]);
+    assert.equal(state.state, "inline_ready");
+    assert.equal(state.inlineTextLength, expectedPrompt.length);
+    assert.equal(state.attachmentCount, 0);
+    assert.equal(state.sendButtonEnabled, true);
+  } finally {
+    if (documentDescriptor) {
+      Object.defineProperty(globalThis, "document", documentDescriptor);
+    } else {
+      delete (globalThis as Record<string, unknown>).document;
+    }
+  }
+});
+
 test("normalizes contenteditable block newlines without erasing indentation", async () => {
   const sendButton = {
     disabled: false,
@@ -1028,11 +1134,19 @@ test("composer readiness ignores every non-actionable residual Send button", asy
   });
   Object.defineProperty(globalThis, "getComputedStyle", {
     configurable: true,
-    value: () => ({
-      display: visibilityCase === "display" ? "none" : "block",
-      visibility: visibilityCase === "visibility" ? "hidden" : "visible",
-      opacity: visibilityCase === "opacity" ? "0" : "1",
-      pointerEvents: visibilityCase === "pointer_events" ? "none" : "auto",
+    value: (element: unknown) => ({
+      display:
+        element === sendButton && visibilityCase === "display" ? "none" : "block",
+      visibility:
+        element === sendButton && visibilityCase === "visibility"
+          ? "hidden"
+          : "visible",
+      opacity:
+        element === sendButton && visibilityCase === "opacity" ? "0" : "1",
+      pointerEvents:
+        element === sendButton && visibilityCase === "pointer_events"
+          ? "none"
+          : "auto",
     }),
   });
   const tab = {
@@ -4469,6 +4583,62 @@ test("reuses CueLine's own leftover attachment on an operator-confirmed not-sent
   assert.equal(fixture.coordinateClicks(), 1);
   assert.equal(fixture.sendSubmissions(), 1);
   assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("waits through disabled attachment conversion until inline composer hydration is stable", async () => {
+  const prompt =
+    "run_id=run_inline_hydration request_id=msg_inline_hydration " +
+    "x".repeat(31_000);
+  const fixture = fakeBrowser({
+    composerStates: [
+      {
+        state: "empty",
+        inlineTextLength: 0,
+        attachmentCount: 0,
+        sendButtonEnabled: false,
+      },
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: false,
+      },
+      {
+        state: "attachment_ready",
+        inlineTextLength: 0,
+        attachmentCount: 1,
+        sendButtonEnabled: false,
+      },
+      {
+        state: "inline_ready",
+        inlineTextLength: prompt.length,
+        attachmentCount: 0,
+        sendButtonEnabled: true,
+      },
+    ],
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    pollIntervalMs: 1,
+    stableMs: 2,
+    timeoutMs: 1_000,
+  });
+
+  await adapter.sendTurn({
+    runId: "run_inline_hydration",
+    round: 42,
+    requestId: "msg_inline_hydration",
+    prompt,
+  });
+
+  assert.deepEqual(fixture.composer.fills, [prompt]);
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendSubmissions(), 1);
 });
 
 test("does not classify an empty composer as unsent while an attachment is still settling", async () => {
