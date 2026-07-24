@@ -118,6 +118,22 @@ function event(type: string, payload: unknown): RunEvent {
   };
 }
 
+// Keep a referenced guard alive while production lease timers remain intentionally unref'ed.
+async function waitForAbort(signal: AbortSignal, timeoutMs = 2_000): Promise<void> {
+  if (signal.aborted) return;
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      reject(new Error(`Expected abort signal within ${timeoutMs}ms.`));
+    }, timeoutMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 test("two callers racing to claim one work job produce exactly one valid claim", async () => {
   const { home, workdir, job } = await fixture("run_caller_claim_race");
   const attempts = await Promise.allSettled([
@@ -1154,10 +1170,7 @@ test("executor-owned caller work lease stops at its hard execution limit", async
     maxExecutionMs: 40,
   });
 
-  await new Promise<void>((resolve) => {
-    if (lease.signal.aborted) resolve();
-    else lease.signal.addEventListener("abort", () => resolve(), { once: true });
-  });
+  await waitForAbort(lease.signal);
   assert.equal(lease.signal.aborted, true);
   assert.throws(
     () => lease.assertHealthy(),
@@ -1202,10 +1215,7 @@ test("executor-owned heartbeats do not count as work progress", async () => {
     maxExecutionMs: 1_000,
   });
 
-  await new Promise<void>((resolve) => {
-    if (lease.signal.aborted) resolve();
-    else lease.signal.addEventListener("abort", () => resolve(), { once: true });
-  });
+  await waitForAbort(lease.signal);
   assert.throws(
     () => lease.assertHealthy(),
     (error: unknown) =>
@@ -1258,10 +1268,7 @@ test("new executor progress resets review timing but duplicate evidence does not
   });
   assert.equal(duplicate.outcome, "progress_already_recorded");
 
-  await new Promise<void>((resolve) => {
-    if (lease.signal.aborted) resolve();
-    else lease.signal.addEventListener("abort", () => resolve(), { once: true });
-  });
+  await waitForAbort(lease.signal);
   assert.throws(
     () => lease.assertHealthy(),
     (error: unknown) =>
