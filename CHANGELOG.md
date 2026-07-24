@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.3 - 2026-07-24
+
 ### Fixed
 
 - Composer readiness now ignores detached or hidden hydration-era contenteditables and prefers the visible live composer containing the exact controller prompt. Attachment state, inline text, and Send readiness are therefore read from the same current composer form while long prompts transition from Pasted text back to inline content.

@@ -26,11 +26,11 @@
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 的包装层。
 
-## 最新版本：0.6.1
+## 最新版本：0.6.3
 
 - ChatGPT 发送流程现在会在历史消息数不可读时于点击前 fail-closed，同时永久记录精确的点击前目标，并且每次尝试只允许一个 Send 动作。持久的一次性恢复会沿用同一轮和 request 身份。只要已有永久 submitted 证据，完全匹配的 Pro 回复就能优先于过期的 not-sent 证据被接收，不会重复发送或建立新一轮；715/715 测试通过。
 
-完整内容请查看 [changelog](CHANGELOG.md#061---2026-07-22) 或版本化的 [v0.6.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.1)。
+完整内容请查看 [changelog](CHANGELOG.md#061---2026-07-22) 或版本化的 [v0.6.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.3)。
 
 ## 一次运行实际是怎么走的
 
@@ -71,15 +71,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.6.1
+npm install -g cueline@0.6.3
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.6.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.1) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.6.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.3) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.1/cueline-0.6.1.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.3/cueline-0.6.3.tgz
 cueline install
 cueline doctor
 ```
@@ -188,7 +188,7 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.6.1
+CueLine 0.6.3
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
