@@ -33,6 +33,7 @@ const KNOWN_EVENT_TYPES = new Set([
   "controller_delivery_timeout_observed",
   "controller_delivery_timeout_operator_attested",
   "controller_delivery_timeout_retry_authorized",
+  "controller_delivery_timeout_retry_rearmed",
   "controller_delivery_timeout_retry_skipped",
   "controller_delivery_timeout_retry_started",
   "controller_delivery_timeout_retry_submitted",
@@ -240,6 +241,8 @@ function summary(type: string, attributes: Record<string, string | number | bool
       return "Operator-attested historical delivery-timeout evidence recorded.";
     case "controller_delivery_timeout_retry_authorized":
       return "Operator authorized one Retry click for the exact timed-out turn.";
+    case "controller_delivery_timeout_retry_rearmed":
+      return "Unused Retry authorization rearmed after a proven pre-click IAB failure.";
     case "controller_delivery_timeout_retry_skipped":
       return "A response won the race before Retry; the existing Retry action was not clicked.";
     case "controller_delivery_timeout_retry_started":

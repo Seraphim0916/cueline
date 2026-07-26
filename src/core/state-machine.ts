@@ -134,6 +134,24 @@ export interface RunFailureEvidence {
   conversationUrl: string | null;
 }
 
+export function isLegacyIabDeliveryTimeoutPreClickFailure(
+  failure: RunFailureEvidence | null,
+  requestId: string,
+  conversationUrl: string,
+): boolean {
+  return (
+    failure?.code === "IAB_RECONCILIATION_FAILED" &&
+    failure.requestId === requestId &&
+    failure.stage === "reconciling" &&
+    failure.submissionState === "possibly_sent" &&
+    typeof failure.message === "string" &&
+    /TypeError: button\.click is not (?:a )?function/.test(failure.message) &&
+    failure.message.includes("__playwrightEvaluate") &&
+    typeof failure.conversationUrl === "string" &&
+    sameChatGptConversationUrl(failure.conversationUrl, conversationUrl)
+  );
+}
+
 export interface CallerWorkClaim {
   claimId: string;
   callerId: string;
@@ -610,6 +628,40 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       controllerDeliveryTimeoutRecovery: {
         ...recovery,
         status: "consumed",
+      },
+    };
+  }
+  if (
+    event.type === "controller_delivery_timeout_retry_rearmed" &&
+    typeof payload.request_id === "string" &&
+    typeof payload.round === "number" &&
+    typeof payload.evidence_hash === "string" &&
+    typeof payload.conversation_url === "string" &&
+    payload.zero_click_proven === true
+  ) {
+    const recovery = state.controllerDeliveryTimeoutRecovery;
+    if (
+      recovery?.status !== "consumed" ||
+      recovery.requestId !== payload.request_id ||
+      recovery.round !== payload.round ||
+      recovery.evidenceHash !== payload.evidence_hash ||
+      !sameChatGptConversationUrl(
+        recovery.conversationUrl,
+        payload.conversation_url,
+      ) ||
+      !isLegacyIabDeliveryTimeoutPreClickFailure(
+        state.lastFailure,
+        payload.request_id,
+        payload.conversation_url,
+      )
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      controllerDeliveryTimeoutRecovery: {
+        ...recovery,
+        status: "authorized",
       },
     };
   }

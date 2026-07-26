@@ -250,9 +250,12 @@ function fakeBrowser(options: {
         argument !== null &&
         "retryCommit" in argument
       ) {
-        const commitResults = options.deliveryRetryCommitResults ?? [
-          { status: "clicked" as const },
-        ];
+      const commitResults = options.deliveryRetryCommitResults ?? [
+        {
+          status: "ready_to_click" as const,
+          coordinate: { x: 512, y: 300 },
+        },
+      ];
         const result =
           commitResults[
             Math.min(deliveryRetryCommitAttempts, commitResults.length - 1)
@@ -261,8 +264,7 @@ function fakeBrowser(options: {
         if (options.deliveryRetryClickError) {
           throw new Error(options.deliveryRetryClickError);
         }
-        if (result.status === "clicked") deliveryRetryClicks += 1;
-        return result as Result;
+      return result as Result;
       }
       if (
         typeof argument === "object" &&
@@ -1378,8 +1380,9 @@ test("page chat state recognizes delivery timeout only with one visible Retry in
   }
 });
 
-test("atomic delivery Retry guard revalidates and clicks within one page task", async () => {
-  let clickCount = 0;
+test("delivery Retry guard revalidates then clicks once through the IAB coordinate surface", async () => {
+  let nativeClickCount = 0;
+  let coordinateClickCount = 0;
   let elementAtPoint: unknown;
   const rect = {
     x: 480,
@@ -1407,7 +1410,7 @@ test("atomic delivery Retry guard revalidates and clicks within one page task", 
     checkVisibility() { return true; },
     getBoundingClientRect() { return rect; },
     getClientRects() { return [{}]; },
-    click() { clickCount += 1; },
+    click() { nativeClickCount += 1; },
   };
   elementAtPoint = retryButton;
   const sendButton = {
@@ -1509,6 +1512,12 @@ test("atomic delivery Retry guard revalidates and clicks within one page task", 
         return pageFunction(argument);
       },
     },
+    cua: {
+      async click(coordinate: { x: number; y: number }) {
+        assert.deepEqual(coordinate, { x: 512, y: 300 });
+        coordinateClickCount += 1;
+      },
+    },
   } as unknown as IabTab;
   const targetEvidence = {
     tabId: "atomic-retry-tab",
@@ -1534,7 +1543,8 @@ test("atomic delivery Retry guard revalidates and clicks within one page task", 
       sendButtonNames: ["Send prompt"],
     });
     assert.deepEqual(clicked, { status: "clicked" });
-    assert.equal(clickCount, 1);
+    assert.equal(nativeClickCount, 0);
+    assert.equal(coordinateClickCount, 1);
 
     assistantMessage.innerText = "A valid response appeared first";
     const skipped = await commitDeliveryTimeoutRetry(tab, {
@@ -1549,7 +1559,8 @@ test("atomic delivery Retry guard revalidates and clicks within one page task", 
       status: "not_clicked",
       reason: "assistant_changed",
     });
-    assert.equal(clickCount, 1);
+    assert.equal(nativeClickCount, 0);
+    assert.equal(coordinateClickCount, 1);
 
     assistantMessage.innerText = "Message delivery timed out. Please try again.\nRetry";
     elementAtPoint = { closest() { return null; } };
@@ -1565,7 +1576,8 @@ test("atomic delivery Retry guard revalidates and clicks within one page task", 
       status: "not_clicked",
       reason: "target_changed",
     });
-    assert.equal(clickCount, 1);
+    assert.equal(nativeClickCount, 0);
+    assert.equal(coordinateClickCount, 1);
   } finally {
     for (const [name, descriptor] of [
       ["document", documentDescriptor],

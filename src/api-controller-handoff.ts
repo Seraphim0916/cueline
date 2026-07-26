@@ -576,12 +576,16 @@ export async function confirmControllerTurnNotSent(
         ...(typeof turn.baselineAssistantMessageCount === "number"
           ? { baselineAssistantMessageCount: turn.baselineAssistantMessageCount }
           : {}),
-        ...(turn.composerPromptState === "attachment_ready"
-          ? { attachmentPromptExpected: true }
-          : {}),
-        ...(legacyPreSubmissionFailure
-          ? { legacyPreSubmissionRecovery: true }
-          : {}),
+      ...(turn.composerPromptState === "attachment_ready"
+        ? { attachmentPromptExpected: true }
+        : {}),
+      ...(evidenceGatedSubmittedTurn &&
+      turn.composerPromptState === "attachment_ready"
+        ? { emptyComposerNotSentRecovery: true }
+        : {}),
+      ...(legacyPreSubmissionFailure
+        ? { legacyPreSubmissionRecovery: true }
+        : {}),
       });
       if (
         observation.status !== "definitely_not_sent" ||

@@ -3820,6 +3820,26 @@ test("operator-confirmed not-sent retries the same prompt once keeping the stage
     requestId: abandonedRequestId,
     conversationUrl,
   });
+  const diagnosticLease = await RuntimeLease.claim({
+    home: stateHome,
+    runId,
+  });
+  try {
+    const store = await RunStore.load({
+      home: stateHome,
+      runId,
+      initialState: initialRunState(runId, ""),
+      reducer: reduceRunState,
+    });
+    store.bindRuntimeOwner(diagnosticLease.ownerId);
+    await store.append("notice", {
+      message:
+        "CONTROLLER_OBSERVATION_PENDING_STABLE: exact controller envelope not found",
+    });
+    await store.snapshot();
+  } finally {
+    await diagnosticLease.release();
+  }
 
   const retriedBrowser = new FakeBrowserAdapter([
     reply(() => ({

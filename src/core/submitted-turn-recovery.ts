@@ -61,9 +61,21 @@ export function isDefinitelyNotSentObservation(
         ? evidence.composerPromptState === "inline_ready" &&
           evidence.composerSendButtonEnabled === true
         : false;
+  const emptyComposerProvesReloadedAttachmentWasNotPersisted =
+    turn.submissionState === "submitted" &&
+    turn.composerPromptState === "attachment_ready" &&
+    evidence.composerPromptState === "empty" &&
+    evidence.composerAttachmentCount === 0 &&
+    evidence.composerPastedTextAttachmentPresent !== true &&
+    evidence.composerSendButtonEnabled === false &&
+    evidence.requestMessageScanComplete === true &&
+    evidence.accessibilityRequestIdFound === false &&
+    evidence.countRegressionDetected !== true &&
+    evidence.observedUserMessageCount === turn.baselineUserMessageCount;
   return (
     recoveryCandidate &&
-    stagedComposerMatches &&
+    (stagedComposerMatches ||
+      emptyComposerProvesReloadedAttachmentWasNotPersisted) &&
     evidence.hydrated === true &&
     evidence.requestMessageFound === false &&
     evidence.isAnswering === false &&

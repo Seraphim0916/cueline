@@ -357,6 +357,105 @@ test("delivery timeout is permanent, operator-gated, one-shot, and preserves rou
   );
 });
 
+test("a proven legacy IAB DOM pre-click failure rearms the unused Retry grant once", async () => {
+  const home = await temporaryHome();
+  await createSubmittedRound198(home);
+  const evidence = timeoutEvidence();
+  const evidenceHash = deliveryTimeoutEvidenceHash(evidence);
+
+  const observer = timeoutBrowser(evidence);
+  await continueCueLineRun({
+    runId,
+    home,
+    browser: observer,
+    conversationUrl,
+    routingConfig,
+  });
+  await authorizeControllerDeliveryTimeoutRetry(runId, {
+    home,
+    requestId,
+    round,
+    conversationUrl,
+    evidenceHash,
+  });
+
+  const store = await RunStore.load({
+    home,
+    runId,
+    initialState: initialRunState(runId, prompt, "caller", 200),
+    reducer: reduceRunState,
+  });
+  await store.append("controller_delivery_timeout_retry_started", {
+    round,
+    request_id: requestId,
+    prompt_hash: commandHash(prompt),
+    conversation_url: conversationUrl,
+    evidence_hash: evidenceHash,
+    one_shot: true,
+    authorization_consumed_before_click: true,
+  });
+  await store.append("run_failed", {
+    code: "IAB_RECONCILIATION_FAILED",
+    request_id: requestId,
+    message:
+      "Error: TypeError: button.click is not function\n at __playwrightEvaluate (<anonymous>:1:1)",
+    stage: "reconciling",
+    submission_state: "possibly_sent",
+    conversation_url: conversationUrl,
+  });
+  await store.snapshot();
+
+  const retryBrowser = timeoutBrowser(evidence);
+  const result = await continueCueLineRun({
+    runId,
+    home,
+    browser: retryBrowser,
+    conversationUrl,
+    routingConfig,
+  });
+  assert.equal(result.status, "awaiting_controller");
+  assert.equal(retryBrowser.retryCalls, 1);
+  assert.equal(retryBrowser.submitCalls, 0);
+  assert.equal(retryBrowser.sendCalls, 0);
+
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.round, round);
+  assert.equal(state.pendingControllerTurns.length, 1);
+  assert.equal(state.pendingControllerTurns[0]?.requestId, requestId);
+  assert.equal(state.controllerDeliveryTimeoutRecovery?.status, "consumed");
+
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_delivery_timeout_retry_rearmed",
+    ).length,
+    1,
+  );
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_delivery_timeout_retry_started",
+    ).length,
+    2,
+  );
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_delivery_timeout_retry_submitted",
+    ).length,
+    1,
+  );
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_turn_requested" &&
+        (event.payload as { round?: number }).round === round + 1,
+    ).length,
+    0,
+  );
+});
+
 test("operator attestation alone cannot authorize Retry", async () => {
   const home = await temporaryHome();
   await createSubmittedRound198(home);

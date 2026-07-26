@@ -12,7 +12,15 @@ export type DeliveryTimeoutRetryCommitResult =
         | "assistant_changed"
         | "composer_changed"
         | "target_changed"
-        | "page_not_interactive";
+        | "page_not_interactive"
+        | "click_surface_unavailable";
+    };
+
+type DeliveryTimeoutRetryGuardResult =
+  | Extract<DeliveryTimeoutRetryCommitResult, { status: "not_clicked" }>
+  | {
+      status: "ready_to_click";
+      coordinate: { x: number; y: number };
     };
 
 /**
@@ -130,9 +138,10 @@ export async function inspectDeliveryTimeoutRetryButton(
 }
 
 /**
- * Revalidates the complete no-resend guard and invokes the one Retry button in
- * the same page task. ChatGPT cannot interleave a response DOM update between
- * this final check and `button.click()`.
+ * Revalidates the complete no-resend guard in one page task, then performs
+ * exactly one click through the IAB coordinate surface. The IAB DOM facade is
+ * intentionally read-only and does not expose native HTMLElement methods.
+ * There is no locator or second-click fallback.
  */
 export async function commitDeliveryTimeoutRetry(
   tab: IabTab,
@@ -145,8 +154,8 @@ export async function commitDeliveryTimeoutRetry(
     sendButtonNames: readonly string[];
   },
 ): Promise<DeliveryTimeoutRetryCommitResult> {
-  return tab.playwright.evaluate<
-    DeliveryTimeoutRetryCommitResult,
+  const guardResult = await tab.playwright.evaluate<
+    DeliveryTimeoutRetryGuardResult,
     {
       retryCommit: true;
       deliveryTimeoutMessage: string;
@@ -401,8 +410,7 @@ export async function commitDeliveryTimeoutRetry(
         return { status: "not_clicked", reason: "target_changed" };
       }
 
-      button.click();
-      return { status: "clicked" };
+      return { status: "ready_to_click", coordinate };
     },
     {
       retryCommit: true,
@@ -415,4 +423,10 @@ export async function commitDeliveryTimeoutRetry(
       sendButtonNames: [...input.sendButtonNames],
     },
   );
+  if (guardResult.status === "not_clicked") return guardResult;
+  if (tab.cua === undefined) {
+    return { status: "not_clicked", reason: "click_surface_unavailable" };
+  }
+  await tab.cua.click(guardResult.coordinate);
+  return { status: "clicked" };
 }

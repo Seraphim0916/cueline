@@ -64,6 +64,7 @@ import {
   DEFAULT_MAX_ROUNDS,
   initialRunState,
   isControllerTurnProvenUnsent,
+  isLegacyIabDeliveryTimeoutPreClickFailure,
   jobObservations,
   reduceRunState,
   type CueLineRunState,
@@ -669,7 +670,24 @@ async function driveControllerLoop(
                   not_sent_retry_prompt_hash: notSentRetry.promptHash,
                 }),
           });
-    const observation = observationFor(state, round, requestId, evidenceJobs);
+    const observationState =
+      notSentRetry === undefined
+        ? state
+        : {
+            ...state,
+            notices: state.notices.filter(
+              (notice) =>
+                !notice.startsWith(
+                  "CONTROLLER_OBSERVATION_PENDING_STABLE:",
+                ),
+            ),
+          };
+    const observation = observationFor(
+      observationState,
+      round,
+      requestId,
+      evidenceJobs,
+    );
     const command = await requestControllerCommand(
       store,
       options.browser,
@@ -971,9 +989,32 @@ async function reconcilePendingControllerTurn(
           evidenceHash,
         );
       }
-      const recovery = store.state.controllerDeliveryTimeoutRecovery;
-      if (
-        recovery?.requestId !== pending.requestId ||
+    let recovery = store.state.controllerDeliveryTimeoutRecovery;
+    if (
+      recovery?.requestId === pending.requestId &&
+      recovery.round === pending.round &&
+      recovery.evidenceHash === evidenceHash &&
+      recovery.status === "consumed" &&
+      isLegacyIabDeliveryTimeoutPreClickFailure(
+        store.state.lastFailure,
+        pending.requestId,
+        expectedConversationUrl,
+      )
+    ) {
+      await store.append("controller_delivery_timeout_retry_rearmed", {
+        round: pending.round,
+        request_id: pending.requestId,
+        prompt_hash: pending.promptHash,
+        conversation_url: expectedConversationUrl,
+        evidence_hash: evidenceHash,
+        rearm_reason: "iab_dom_click_method_unavailable_before_click",
+        original_authorization_reused: true,
+        zero_click_proven: true,
+      });
+      recovery = store.state.controllerDeliveryTimeoutRecovery;
+    }
+    if (
+      recovery?.requestId !== pending.requestId ||
         recovery.round !== pending.round ||
         recovery.evidenceHash !== evidenceHash ||
         recovery.status !== "authorized"
