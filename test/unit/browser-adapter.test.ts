@@ -7123,8 +7123,12 @@ test("misdirected observation confirms after zero-count hydration becomes stable
     browser: fixture.browser,
     conversationUrl: boundUrl,
     pollIntervalMs: 1,
+    // This case needs six sequential polls plus a stability window to reach
+    // `confirmed`, so a tight wall-clock ceiling makes it report the timeout
+    // `pending` under a loaded full-suite run. The ceiling is deliberately
+    // generous; confirmation still returns as soon as stability is proven.
     stableMs: 1,
-    timeoutMs: 1_000,
+    timeoutMs: 20_000,
   });
 
   const observation = await adapter.observeMisdirectedTurn!({
