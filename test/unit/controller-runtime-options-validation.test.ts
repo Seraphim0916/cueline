@@ -30,6 +30,18 @@ test("rejects a non-positive-integer maxRounds", () => {
   }
 });
 
+test("rejects a non-positive-integer maxStagnantRounds", () => {
+  for (const maxStagnantRounds of [
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    rejectsWith({ maxStagnantRounds }, "MAX_STAGNANT_ROUNDS_INVALID");
+  }
+});
+
 test("rejects a non-positive-integer maxJobEvidenceChars", () => {
   for (const maxJobEvidenceChars of [0, -5, 2.5, Number.NaN]) {
     rejectsWith({ maxJobEvidenceChars }, "MAX_JOB_EVIDENCE_CHARS_INVALID");
@@ -66,8 +78,8 @@ test("rejects a malformed laneConcurrency record or limit", () => {
 test("normalizes valid input to durable defaults and freezes lane limits", () => {
   const normalized = validateControllerRuntimeOptions({});
   assert.equal(normalized.maxRepairAttempts, 2);
-  assert.equal(typeof normalized.maxRounds, "number");
-  assert.equal(normalized.maxRounds >= 1, true);
+  assert.equal(normalized.maxRounds, null);
+  assert.equal(normalized.maxStagnantRounds, 12);
   assert.equal(typeof normalized.maxJobEvidenceChars, "number");
   assert.equal(normalized.laneConcurrency, undefined);
 

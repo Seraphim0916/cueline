@@ -10,6 +10,10 @@ import {
   deliveryTimeoutEvidenceHash,
 } from "../browser/delivery-timeout.js";
 import { JobStatusStore } from "../jobs/status.js";
+import type {
+  ControllerCommand,
+  JobObservation,
+} from "../protocol/types.js";
 import {
   CancellationWatcher,
   readCancellationObservation,
@@ -62,6 +66,7 @@ import {
 import {
   DEFAULT_MAX_REPAIR_ATTEMPTS,
   DEFAULT_MAX_ROUNDS,
+  DEFAULT_MAX_STAGNANT_ROUNDS,
   initialRunState,
   isControllerTurnProvenUnsent,
   isLegacyIabDeliveryTimeoutPreClickFailure,
@@ -189,6 +194,9 @@ function failurePayload(
   const failureRequestId = requestId ?? pending?.requestId;
   return {
     code: normalized.code,
+    ...(normalized.code === "STAGNATION_DETECTED"
+      ? { reason: "stagnation_detected" }
+      : {}),
     message: truncate(normalized.message, 2_000),
     stage,
     ...(failureRequestId === undefined ? {} : { request_id: failureRequestId }),
@@ -341,6 +349,7 @@ function watchOwnedCancellation(
 type ControllerRuntimeLimitOptions = Pick<
   ControllerRuntimeOptions,
   | "maxRounds"
+  | "maxStagnantRounds"
   | "maxJobEvidenceChars"
   | "maxRepairAttempts"
   | "runTimeoutMs"
@@ -352,13 +361,17 @@ type ControllerRuntimeLimitOptions = Pick<
 >;
 
 export function validateControllerRuntimeOptions(options: ControllerRuntimeLimitOptions): {
-  maxRounds: number;
+  maxRounds: number | null;
+  maxStagnantRounds: number;
   maxJobEvidenceChars: number;
   maxRepairAttempts: number;
   laneConcurrency: Readonly<Record<string, number>> | undefined;
 } {
   validatedArchivePolicy(options.archiveControllerConversationOnComplete);
   const maxRounds = validatedMaxRounds(options.maxRounds);
+  const maxStagnantRounds = validatedMaxStagnantRounds(
+    options.maxStagnantRounds,
+  );
   const maxJobEvidenceChars = validatedMaxJobEvidenceChars(options.maxJobEvidenceChars);
   const maxRepairAttempts = validatedMaxRepairAttempts(options.maxRepairAttempts);
   if (options.runTimeoutMs !== undefined) {
@@ -413,6 +426,7 @@ export function validateControllerRuntimeOptions(options: ControllerRuntimeLimit
   }
   return {
     maxRounds,
+    maxStagnantRounds,
     maxJobEvidenceChars,
     maxRepairAttempts,
     laneConcurrency: normalizedLaneConcurrency,
@@ -429,12 +443,23 @@ function validatedRuntimeOptions<Options extends ControllerRuntimeOptions>(
   };
 }
 
-function validatedMaxRounds(value: number | undefined): number {
-  const maxRounds = value ?? DEFAULT_MAX_ROUNDS;
-  if (!Number.isSafeInteger(maxRounds) || maxRounds < 1) {
+function validatedMaxRounds(value: number | undefined): number | null {
+  if (value === undefined) return DEFAULT_MAX_ROUNDS;
+  if (!Number.isSafeInteger(value) || value < 1) {
     throw new CueLineError("MAX_ROUNDS_INVALID", "maxRounds must be a positive integer.");
   }
-  return maxRounds;
+  return value;
+}
+
+function validatedMaxStagnantRounds(value: number | undefined): number {
+  const maximum = value ?? DEFAULT_MAX_STAGNANT_ROUNDS;
+  if (!Number.isSafeInteger(maximum) || maximum < 1) {
+    throw new CueLineError(
+      "MAX_STAGNANT_ROUNDS_INVALID",
+      "maxStagnantRounds must be a positive integer.",
+    );
+  }
+  return maximum;
 }
 
 function validatedMaxJobEvidenceChars(value: number | undefined): number {
@@ -472,13 +497,37 @@ function validatedArchivePolicy(value: boolean | undefined): boolean {
 function persistedMaxRounds(
   state: CueLineRunState,
   requested: number | undefined,
-): number {
-  const persisted = state.maxRounds ?? DEFAULT_MAX_ROUNDS;
+): number | null {
+  const persisted = state.maxRounds;
   if (requested !== undefined && requested !== persisted) {
     throw new CueLineError(
       "RUN_MAX_ROUNDS_MISMATCH",
-      `Run '${state.runId}' has a durable maxRounds limit of ${persisted}, not ${requested}.`,
+      `Run '${state.runId}' has a durable maxRounds limit of ${
+        persisted === null ? "unlimited" : persisted
+      }, not ${requested}.`,
       { details: { run_id: state.runId, max_rounds: persisted, requested_max_rounds: requested } },
+    );
+  }
+  return persisted;
+}
+
+function persistedMaxStagnantRounds(
+  state: CueLineRunState,
+  requested: number | undefined,
+): number {
+  const persisted =
+    state.maxStagnantRounds ?? DEFAULT_MAX_STAGNANT_ROUNDS;
+  if (requested !== undefined && requested !== persisted) {
+    throw new CueLineError(
+      "RUN_MAX_STAGNANT_ROUNDS_MISMATCH",
+      `Run '${state.runId}' has a durable maxStagnantRounds limit of ${persisted}, not ${requested}.`,
+      {
+        details: {
+          run_id: state.runId,
+          max_stagnant_rounds: persisted,
+          requested_max_stagnant_rounds: requested,
+        },
+      },
     );
   }
   return persisted;
@@ -533,9 +582,47 @@ function maxRoundsExceeded(maxRounds: number): CueLineError {
   );
 }
 
-function durableRoundLimitReached(state: CueLineRunState, maxRounds: number): boolean {
+function durableRoundLimitReached(
+  state: CueLineRunState,
+  maxRounds: number | null,
+): boolean {
   return (
-    state.lastFailure?.code === "MAX_ROUNDS_EXCEEDED" && state.round >= maxRounds
+    maxRounds !== null &&
+    state.lastFailure?.code === "MAX_ROUNDS_EXCEEDED" &&
+    state.round >= maxRounds
+  );
+}
+
+function stagnationDetected(state: CueLineRunState): CueLineError {
+  return new CueLineError(
+    "STAGNATION_DETECTED",
+    `Controller produced no observable progress for ${state.stagnantRounds} consecutive rounds.`,
+    {
+      details: {
+        reason: "stagnation_detected",
+        stagnant_rounds: state.stagnantRounds,
+        max_stagnant_rounds: state.maxStagnantRounds,
+      },
+    },
+  );
+}
+
+function controllerRoundProgressFingerprint(
+  command: ControllerCommand,
+  evidenceJobs: readonly JobObservation[],
+): string {
+  const controllerOutput = { ...command } as Record<string, unknown>;
+  delete controllerOutput.protocol;
+  delete controllerOutput.run_id;
+  delete controllerOutput.round;
+  delete controllerOutput.request_id;
+  return commandHash(
+    JSON.parse(
+      JSON.stringify({
+        controller_output: controllerOutput,
+        controller_evidence: evidenceJobs,
+      }),
+    ),
   );
 }
 
@@ -628,12 +715,13 @@ async function driveControllerLoop(
   store: RunStore<CueLineRunState>,
   options: ControllerRuntimeOptions,
 ): Promise<CueLineResult> {
-  const { maxRounds, maxRepairAttempts } = validateControllerRuntimeOptions(options);
+  const { maxRounds, maxStagnantRounds, maxRepairAttempts } =
+    validateControllerRuntimeOptions(options);
   const id = store.runId;
   for (;;) {
     throwIfCancelled(options.signal);
     const state = store.state;
-    if (state.round >= maxRounds) {
+    if (maxRounds !== null && state.round >= maxRounds) {
       throw maxRoundsExceeded(maxRounds);
     }
     const round = state.round + 1;
@@ -717,6 +805,25 @@ async function driveControllerLoop(
       acceptedCommandHash,
       options,
     );
+    const progressFingerprint = controllerRoundProgressFingerprint(
+      command,
+      evidenceJobs,
+    );
+    const progressed =
+      store.state.lastProgressFingerprint !== progressFingerprint;
+    await store.append("controller_round_progress", {
+      round,
+      progress_fingerprint: progressFingerprint,
+      progressed,
+      stagnant_rounds: progressed ? 0 : store.state.stagnantRounds + 1,
+      max_stagnant_rounds: maxStagnantRounds,
+    });
+    if (
+      outcome !== "terminal" &&
+      store.state.stagnantRounds >= maxStagnantRounds
+    ) {
+      throw stagnationDetected(store.state);
+    }
     await store.snapshot();
     if (outcome === "terminal") {
       return resultFromState(store.state);
@@ -1457,6 +1564,9 @@ async function createControllerRunStore(
     );
   }
   const maxRounds = validatedMaxRounds(options.maxRounds);
+  const maxStagnantRounds = validatedMaxStagnantRounds(
+    options.maxStagnantRounds,
+  );
   const maxJobEvidenceChars = validatedMaxJobEvidenceChars(options.maxJobEvidenceChars);
   const maxRepairAttempts = validatedMaxRepairAttempts(options.maxRepairAttempts);
   const archiveControllerConversationOnComplete = validatedArchivePolicy(
@@ -1471,15 +1581,26 @@ async function createControllerRunStore(
     archiveControllerConversationOnComplete,
     maxJobEvidenceChars,
     maxRepairAttempts,
+    maxStagnantRounds,
   );
   const home = options.home ?? defaultCueLineHome();
-  const store = await RunStore.createWithInitialEvent({
-    home,
-    runId: id,
-    initialState: initial,
-    reducer: reduceRunState,
-    now,
-  }, "run_created", {
+  const currentCreationPayload = {
+    request: options.request,
+    executor,
+    ...(allowProcessExecution ? { allow_process_execution: true } : {}),
+    max_rounds: maxRounds,
+    max_stagnant_rounds: maxStagnantRounds,
+    ...(options.maxJobEvidenceChars === undefined
+      ? {}
+      : { max_job_evidence_chars: maxJobEvidenceChars }),
+    ...(options.maxRepairAttempts === undefined
+      ? {}
+      : { max_repair_attempts: maxRepairAttempts }),
+    ...(archiveControllerConversationOnComplete
+      ? { archive_controller_conversation_on_complete: true }
+      : {}),
+  };
+  const legacyCreationPayload = {
     request: options.request,
     executor,
     ...(allowProcessExecution ? { allow_process_execution: true } : {}),
@@ -1493,7 +1614,16 @@ async function createControllerRunStore(
     ...(archiveControllerConversationOnComplete
       ? { archive_controller_conversation_on_complete: true }
       : {}),
-  });
+  };
+  const store = await RunStore.createWithInitialEvent({
+    home,
+    runId: id,
+    initialState: initial,
+    reducer: reduceRunState,
+    now,
+  }, "run_created", currentCreationPayload, options.maxStagnantRounds === undefined
+    ? [legacyCreationPayload]
+    : []);
   await store.snapshot();
   return store;
 }
@@ -1599,9 +1729,13 @@ export async function continueControllerLoop(
     );
   }
   const maxRounds = persistedMaxRounds(initialState, options.maxRounds);
+  const maxStagnantRounds = persistedMaxStagnantRounds(
+    initialState,
+    options.maxStagnantRounds,
+  );
   persistedMaxJobEvidenceChars(initialState, options.maxJobEvidenceChars);
   const maxRepairAttempts = persistedMaxRepairAttempts(initialState, options.maxRepairAttempts);
-  if (durableRoundLimitReached(initialState, maxRounds)) {
+  if (maxRounds !== null && durableRoundLimitReached(initialState, maxRounds)) {
     throw maxRoundsExceeded(maxRounds);
   }
   const initialRuntime = await readRuntimeLease(home, options.runId, { now });
@@ -1687,7 +1821,8 @@ export async function continueControllerLoop(
         : AbortSignal.any([options.signal, lease.signal]);
     cancellation = watchOwnedCancellation(home, options.runId, {
       ...options,
-      maxRounds,
+      ...(maxRounds === null ? {} : { maxRounds }),
+      maxStagnantRounds,
       maxRepairAttempts,
       signal: ownedSignal,
     });

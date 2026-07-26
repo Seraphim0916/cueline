@@ -1146,6 +1146,27 @@ test("start persists an explicit max round contract before any browser access", 
   assert.equal(browser.calls.length, 0);
 });
 
+test("start persists unlimited rounds and the default stagnation contract", async () => {
+  const runId = "run_start_unlimited_round_contract";
+  const stateHome = await home();
+  const created = await startCueLineRun({
+    request: "Persist unlimited rounds before sending",
+    runId,
+    home: stateHome,
+  });
+
+  assert.equal(created.status, "ready");
+  assert.equal(created.state.maxRounds, null);
+  assert.equal(created.state.maxStagnantRounds, 12);
+  assert.equal(created.state.stagnantRounds, 0);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal((events[0]?.payload as Record<string, unknown>).max_rounds, null);
+  assert.equal(
+    (events[0]?.payload as Record<string, unknown>).max_stagnant_rounds,
+    12,
+  );
+});
+
 test("start persists the per-job evidence cap and continuation cannot change it", async () => {
   const runId = "run_start_job_evidence_contract";
   const stateHome = await home();
@@ -1212,6 +1233,7 @@ test("an exact first event without a marker is recoverable exactly once", async 
 
   const result = await startCueLineRun({ request, runId, home: stateHome, executor: "caller" });
   assert.equal(result.status, "ready");
+  assert.equal(result.state.maxRounds, 12);
   assert.equal((await readEvents(paths.events)).length, 1);
   await assert.rejects(
     startCueLineRun({ request, runId, home: stateHome, executor: "caller" }),
@@ -3070,6 +3092,82 @@ test("max round exhaustion stops a controller that only waits", async () => {
     (error: unknown) => error instanceof CueLineError && error.code === "MAX_ROUNDS_EXCEEDED",
   );
   assert.equal(browser.calls.length, 2);
+});
+
+test("default unlimited rounds continue beyond the former twelve-round cap", async () => {
+  const runId = "run_unlimited_rounds_default";
+  const stateHome = await home();
+  const browser = new FakeBrowserAdapter([
+    ...Array.from({ length: 13 }, (_, index) =>
+      reply(() => ({ action: "wait", wait_ms: index + 1 })),
+    ),
+    reply(() => ({ action: "complete", final_delivery_text: "ROUND_14_OK" })),
+  ]);
+
+  const result = await runControllerLoop({
+    request: "Continue while every controller output changes",
+    runId,
+    home: stateHome,
+    browser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "ROUND_14_OK");
+  assert.equal(result.state.maxRounds, null);
+  assert.equal(browser.calls.length, 14);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === "run_failed" &&
+        (event.payload as Record<string, unknown>).code === "MAX_ROUNDS_EXCEEDED",
+    ),
+    false,
+  );
+});
+
+test("stagnation fuse fails closed after twelve repeated no-progress rounds", async () => {
+  const runId = "run_stagnation_detected";
+  const stateHome = await home();
+  const browser = new FakeBrowserAdapter(
+    Array.from({ length: 13 }, () =>
+      reply(() => ({ action: "wait", wait_ms: 1 })),
+    ),
+  );
+
+  await assert.rejects(
+    runControllerLoop({
+      request: "Stop if the controller keeps repeating itself",
+      runId,
+      home: stateHome,
+      browser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "STAGNATION_DETECTED",
+  );
+
+  assert.equal(browser.calls.length, 13);
+  const status = await loadCueLineRunStatus(runId, { home: stateHome });
+  assert.equal(status.status, "failed");
+  assert.equal(status.phase, "stagnation_detected");
+  assert.equal(status.stagnantRounds, 12);
+  assert.equal(status.maxStagnantRounds, 12);
+  assert.equal(status.continueAllowed, false);
+  assert.equal(status.safeNextAction, "return_result");
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    events.filter((event) => event.type === "controller_round_progress").length,
+    13,
+  );
+  assert.equal(events.at(-1)?.type, "run_failed");
+  assert.equal(
+    (events.at(-1)?.payload as Record<string, unknown>).reason,
+    "stagnation_detected",
+  );
 });
 
 test("split caller enforces the persisted max round limit across ownerless continuations", async () => {

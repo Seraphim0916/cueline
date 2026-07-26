@@ -99,7 +99,8 @@ let result = await startCueLineRun({
   // executor defaults to "caller". Select "process" only explicitly.
   // Opt in only when the user wants this exact controller conversation archived
   // after a durable `complete`: archiveControllerConversationOnComplete: true,
-  // Optional here: runId, home, environment, now, maxRounds.
+  // Optional here: runId, home, environment, now, maxRounds,
+  // maxStagnantRounds.
 });
 result = await continueCueLineRun({
   runId: result.runId,
@@ -109,7 +110,7 @@ result = await continueCueLineRun({
 });
 ```
 
-`maxRounds` is fixed as a durable total-run limit at creation. Continuations should omit it and reuse the stored value; if supplied, it must exactly match or CueLine rejects the continuation without sending another controller turn.
+Controller rounds are unlimited when `maxRounds` is omitted. A positive `maxRounds` is fixed as a durable total-run limit at creation; continuations should omit it and reuse the stored value, or supply the exact same value. `maxStagnantRounds` defaults to 12 and is durable too. CueLine resets this fuse when the identity-free structured controller output or observed job evidence changes, then fails closed with `stagnation_detected` after 12 consecutive unchanged comparisons.
 
 `archiveControllerConversationOnComplete` is also a durable creation-time policy. It defaults to `false`. When explicitly enabled, CueLine first persists `run_completed`, then archives only the exact bound ChatGPT conversation and only while Pro is no longer answering. It never archives a `blocked` or `cancelled` run. The browser must finish a durable write-ahead checkpoint immediately before the Archive click. A proven failure before that checkpoint remains `pending` and may be retried; a timeout or restart after it, a missing checkpoint, or missing completion proof becomes `ambiguous` and is never retried automatically. A later continuation must omit the option or supply the exact stored value.
 

@@ -2430,6 +2430,8 @@ test("help lists every command, the environment, and the exit codes", async () =
     }
     assert.match(result.stdout, /read-only/i);
     assert.match(result.stdout, /append-only|durable state/i);
+    assert.match(result.stdout, /maxRounds.*unlimited/i);
+    assert.match(result.stdout, /stagnation.*12 consecutive/i);
     assert.doesNotMatch(result.stdout, /commands only diagnose/i);
   }
 });

@@ -248,6 +248,11 @@ test("MCP initialize and tools/list expose the fixed nine-tool contract", async 
   assert.equal(startProperties?.executor?.type, "string");
   assert.equal(startProperties?.allowProcessExecution?.type, "boolean");
   assert.equal(startProperties?.browserOptions?.type, "object");
+  assert.match(
+    String(startProperties?.maxRounds?.description),
+    /omitted means unlimited/i,
+  );
+  assert.equal(startProperties?.maxStagnantRounds?.minimum, 1);
 });
 
 test("start, status, doctor, and list tools return sanitized bounded evidence", async () => {
@@ -272,6 +277,9 @@ test("start, status, doctor, and list tools return sanitized bounded evidence", 
 
   const status = structured(responseFor(responses, 3));
   assert.equal(status.runId, "run_mcp_start");
+  assert.equal(status.maxRounds, null);
+  assert.equal(status.maxStagnantRounds, 12);
+  assert.equal(status.stagnantRounds, 0);
   assert.equal(status.safeNextAction, "continue");
 
   const diagnosis = structured(responseFor(responses, 4));

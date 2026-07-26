@@ -44,5 +44,5 @@
 
   <path d="M40 352H960" class="rule"/>
   <text x="40" y="378" class="foot">任何模糊状态都需要显式 reconcile——CueLine 绝不重发、绝不靠猜。</text>
-  <text x="40" y="400" class="foot">轮次上限默认 12；非默认 maxRounds 在创建 run 时即固定。</text>
+  <text x="40" y="400" class="foot">轮次默认不设上限；命令与证据连续 12 次不变会触发停滞熔断器。</text>
 </svg>

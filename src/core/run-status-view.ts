@@ -18,6 +18,9 @@ export function safeCueLineRunStatus(status: CueLineRunStatusSummary) {
     phase: status.phase,
     round: status.round,
     maxRounds: status.maxRounds,
+    maxStagnantRounds: status.maxStagnantRounds,
+    stagnantRounds: status.stagnantRounds,
+    lastProgressFingerprint: status.lastProgressFingerprint,
     lastEventSequence: status.lastEventSequence,
     runtime: {
       ownership: status.runtime.ownership,

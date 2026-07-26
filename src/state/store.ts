@@ -173,6 +173,7 @@ export class RunStore<State> {
     options: RunStoreOptions<State>,
     type: string,
     payload: unknown,
+    recoverablePayloads: readonly unknown[] = [],
   ): Promise<RunStore<State>> {
     if (type.trim() === "") throw new Error("EVENT_TYPE_INVALID");
     const paths = runPaths(options.home, options.runId);
@@ -189,6 +190,10 @@ export class RunStore<State> {
       type,
       payload,
     };
+    const recoverablePayloadJson = new Set([
+      canonicalJson(payload),
+      ...recoverablePayloads.map((value) => canonicalJson(value)),
+    ]);
     let event = candidate;
     let createdEvent = false;
     try {
@@ -201,7 +206,7 @@ export class RunStore<State> {
         existing.length !== 1 ||
         existing[0]?.sequence !== 1 ||
         existing[0].type !== type ||
-        canonicalJson(existing[0].payload) !== canonicalJson(payload) ||
+        !recoverablePayloadJson.has(canonicalJson(existing[0].payload)) ||
         (await pathExists(`${paths.events}.segments`))
       ) {
         throw runAlreadyExists(options.runId, error);

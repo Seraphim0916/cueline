@@ -44,5 +44,5 @@
 
   <path d="M40 352H960" class="rule"/>
   <text x="40" y="378" class="foot">任何含糊狀態都需要明確 reconcile——CueLine 絕不重送、絕不用猜的。</text>
-  <text x="40" y="400" class="foot">輪數上限預設 12；非預設 maxRounds 在建立 run 時即固定。</text>
+  <text x="40" y="400" class="foot">輪數預設無上限；命令與證據連續 12 次不變會觸發停滯保險絲。</text>
 </svg>

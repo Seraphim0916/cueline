@@ -14,7 +14,9 @@ export interface CueLineRunDiffProjection {
   allowProcessExecution: boolean;
   phase: string;
   round: number;
-  maxRounds: number;
+  maxRounds: number | null;
+  maxStagnantRounds: number;
+  stagnantRounds: number;
   lastEventSequence: number;
   runtimeOwnership: string;
   cancellationRequested: boolean;
@@ -49,6 +51,8 @@ function project(status: CueLineRunStatusSummary): CueLineRunDiffProjection {
     phase: status.phase,
     round: status.round,
     maxRounds: status.maxRounds,
+    maxStagnantRounds: status.maxStagnantRounds,
+    stagnantRounds: status.stagnantRounds,
     lastEventSequence: status.lastEventSequence,
     runtimeOwnership: status.runtime.ownership,
     cancellationRequested: status.cancellation.runRequested,

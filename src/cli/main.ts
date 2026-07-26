@@ -18,6 +18,7 @@ import {
   pruneCueLineRuns,
   reconcileCueLineRuntime,
   routingConfigPath,
+  sweepCueLineRuns,
   takeoverCueLineRuntime,
   type PrunableRunState,
 } from "../api.js";
@@ -43,7 +44,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|self-test|upgrade preflight|routing|routing explain|jobs|runs|runs prune|protocol lint|mcp serve|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run audit-secrets|run export|run reconcile|run authorize-delivery-retry|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|self-test|upgrade preflight|routing|routing explain|jobs|runs|runs prune|runs sweep|protocol lint|mcp serve|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run audit-secrets|run export|run reconcile|run authorize-delivery-retry|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -64,6 +65,7 @@ function help(): string {
     "  protocol lint  validate a Pro control envelope offline and explain corrections",
     "  runs           list safe summaries of every persisted run",
     "  runs prune     sweep old terminal runs; dry-run unless --apply is given",
+    "  runs sweep     close stale ownerless running runs; dry-run unless --apply is given",
     "  mcp serve      serve bounded CueLine API tools over newline-delimited stdio",
     "  run status     metadata-only summary for safe cross-session handoff",
     "  run status-at  reconstruct sanitized run state at one event sequence",
@@ -100,6 +102,7 @@ function help(): string {
     "  cueline protocol lint <file> --run-id <id> --round <n> --request-id <id> [--json]",
     "  cueline runs [--json]",
     "  cueline runs prune [--older-than-days <0..3650>] [--state <complete|blocked|cancelled>]... [--apply] [--json]",
+    "  cueline runs sweep [--stale-hours <0..8760>] [--apply] [--json]",
     "  cueline mcp serve",
     "  cueline run status <run-id> [--json]",
     "  cueline run status-at <run-id> --sequence <positive-integer> [--json]",
@@ -130,6 +133,12 @@ function help(): string {
     "  -h, --help     same as `cueline help`",
     "  -v, --version  same as `cueline version`",
     "",
+    "runtime limits (API/MCP run creation):",
+    "  Omit maxRounds for unlimited controller rounds; an explicit positive",
+    "  maxRounds remains a durable per-run finite cap.",
+    "  The stagnation fuse fails closed after 12 consecutive controller rounds",
+    "  with unchanged structured output and unchanged observed job evidence.",
+    "",
     "environment:",
     "  CUELINE_HOME    run and job state directory (default: ~/.cueline)",
     "  CUELINE_CONFIG  routing configuration file (default: the bundled config)",
@@ -149,6 +158,8 @@ function help(): string {
     "  and job cancel append evidence or change local run/job state.",
     "  Deletion: runs prune with --apply permanently removes eligible terminal runs;",
     "  without --apply it only reports what would be removed.",
+    "  runs sweep with --apply appends reconciliation evidence to close stale",
+    "  ownerless running runs; it never deletes run directories.",
     "",
     "Direct CLI observation and setup commands never drive the browser. `mcp serve`",
     "exposes start/continue API tools; continuation still requires the same injected",
@@ -534,6 +545,43 @@ async function runsPruneCommand(
   return result.errors.length === 0 ? 0 : 1;
 }
 
+async function runsSweepCommand(
+  options: { staleMs: number; apply: boolean },
+  json: boolean,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<number> {
+  const result = await sweepCueLineRuns({ ...options, environment });
+  if (json) {
+    io.stdout(
+      JSON.stringify(
+        { schema: "cueline-runs-sweep/1", version: CUELINE_VERSION, ...result },
+        null,
+        2,
+      ),
+    );
+  } else {
+    io.stdout(
+      `sweep\tmode=${result.apply ? "apply" : "dry-run"}\tcutoff=${result.cutoff}`,
+    );
+    for (const decision of result.decisions) {
+      io.stdout(
+        `run\t${decision.runId}\t${decision.decision}\t${decision.reason ?? "-"}\t${decision.status ?? "-"}\t${decision.runtimeOwnership ?? "-"}\t${decision.lastEventAt ?? "-"}`,
+      );
+    }
+    for (const error of result.errors) {
+      io.stdout(`error\t${error.runId}\t${error.message}`);
+    }
+    io.stdout(
+      `summary\tswept=${result.sweptRuns}\teligible=${result.eligibleRuns}\tkept=${result.keptRuns}\terrors=${result.errors.length}`,
+    );
+    if (!result.apply && result.eligibleRuns > 0) {
+      io.stdout("next\trerun with --apply to close the eligible runs");
+    }
+  }
+  return result.errors.length === 0 ? 0 : 1;
+}
+
 export async function main(
   args: readonly string[] = process.argv.slice(2),
   environment: NodeJS.ProcessEnv = process.env,
@@ -701,6 +749,42 @@ export async function main(
           ...(states.length === 0 ? {} : { states }),
           apply,
         },
+        json,
+        environment,
+        io,
+      );
+    }
+    if (args[0] === "runs" && args[1] === "sweep") {
+      let staleHours: number | undefined;
+      let apply = false;
+      let json = false;
+      let valid = true;
+      for (let index = 2; index < args.length; index += 1) {
+        const argument = args[index];
+        if (
+          argument === "--stale-hours" &&
+          staleHours === undefined &&
+          typeof args[index + 1] === "string"
+        ) {
+          staleHours = Number(args[index + 1]);
+          index += 1;
+        } else if (argument === "--apply" && !apply) {
+          apply = true;
+        } else if (argument === "--json" && !json) {
+          json = true;
+        } else {
+          valid = false;
+        }
+      }
+      const hours = staleHours ?? 24;
+      if (!valid || !Number.isFinite(hours) || hours < 0 || hours > 8760) {
+        throw new CueLineError(
+          "CLI_ARGUMENTS_INVALID",
+          "usage: cueline runs sweep [--stale-hours <0..8760>] [--apply] [--json]",
+        );
+      }
+      return await runsSweepCommand(
+        { staleMs: hours * 60 * 60 * 1000, apply },
         json,
         environment,
         io,

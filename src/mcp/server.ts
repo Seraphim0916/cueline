@@ -113,7 +113,12 @@ const runtimeProperties = {
     "Default timeout for one process job.",
     MAX_TIMER_DELAY_MS,
   ),
-  maxRounds: positiveIntegerProperty("Durable total controller round limit."),
+  maxRounds: positiveIntegerProperty(
+    "Optional durable total controller round limit; omitted means unlimited.",
+  ),
+  maxStagnantRounds: positiveIntegerProperty(
+    "Durable consecutive no-progress round limit.",
+  ),
   maxJobEvidenceChars: positiveIntegerProperty("Per-job controller evidence character limit."),
   maxRepairAttempts: {
     type: "integer",

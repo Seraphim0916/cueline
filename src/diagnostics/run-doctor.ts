@@ -143,6 +143,14 @@ const PHASE_DIAGNOSES: Record<CueLineRunPhase, PhaseDiagnosis> = {
     summary: "The configured controller round limit was exhausted.",
     action: "Return the recorded failure; do not silently add another round.",
   },
+  stagnation_detected: {
+    code: "STAGNATION_DETECTED",
+    severity: "error",
+    summary:
+      "The controller repeated rounds without observable progress until the stagnation fuse opened.",
+    action:
+      "Return the recorded terminal failure; inspect controller evidence before starting a new run.",
+  },
   resume_ready: {
     code: "RESUME_READY",
     severity: "warning",

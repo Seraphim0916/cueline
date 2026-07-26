@@ -42,6 +42,7 @@ const KNOWN_EVENT_TYPES = new Set([
   "controller_response_received",
   "controller_response_reconciled",
   "controller_response_rejected",
+  "controller_round_progress",
   "controller_submission_succeeded",
   "controller_turn_abandoned",
   "controller_turn_manual_submission_confirmed",
@@ -261,6 +262,14 @@ function summary(type: string, attributes: Record<string, string | number | bool
       return "Controller turn submission recorded.";
     case "controller_response_received":
       return "Matching controller response observed.";
+    case "controller_round_progress":
+      return attributes.progressed === true
+        ? "Controller round changed structured output or observed evidence."
+        : `Controller round made no observable progress${
+            typeof attributes.stagnant_rounds === "number"
+              ? ` (${attributes.stagnant_rounds} consecutive)`
+              : ""
+          }.`;
     case "controller_command_accepted":
       return `Controller command accepted${attributes.action ? `: ${attributes.action}` : ""}.`;
     case "controller_conversation_archive_started":

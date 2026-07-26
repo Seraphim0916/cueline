@@ -285,7 +285,11 @@ async function runStatusAtCommand(
     );
     io.stdout(`event\t${historical.asOf.type}\t${historical.asOf.timestamp}`);
     io.stdout(
-      `state\t${historical.state.status}\texecutor=${historical.state.executor}\tround=${historical.state.round}/${historical.state.maxRounds}`,
+      `state\t${historical.state.status}\texecutor=${historical.state.executor}\tround=${historical.state.round}/${
+        historical.state.maxRounds === null
+          ? "unlimited"
+          : historical.state.maxRounds
+      }\tstagnation=${historical.state.stagnantRounds}/${historical.state.maxStagnantRounds}`,
     );
     io.stdout(
       `controller\tpending=${historical.state.pendingControllerTurns}\tabandoned=${historical.state.abandonedControllerTurns}\taccepted=${historical.state.acceptedCommands}`,

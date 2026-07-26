@@ -34,7 +34,9 @@ export interface CueLineRunHandoffPacket {
     executor: CueLineRunState["executor"];
     phase: CueLineRunStatusSummary["phase"];
     round: number;
-    maxRounds: number;
+    maxRounds: number | null;
+    maxStagnantRounds: number;
+    stagnantRounds: number;
     eventSequence: number;
     continueAllowed: boolean;
     safeNextAction: CueLineSafeNextAction;
@@ -277,6 +279,8 @@ export function buildCueLineRunHandoff(
       phase: status.phase,
       round: state.round,
       maxRounds: state.maxRounds,
+      maxStagnantRounds: state.maxStagnantRounds,
+      stagnantRounds: state.stagnantRounds,
       eventSequence: status.lastEventSequence,
       continueAllowed: status.continueAllowed,
       safeNextAction: status.safeNextAction,
@@ -364,7 +368,10 @@ export function renderCueLineRunHandoffMarkdown(packet: CueLineRunHandoffPacket)
     `- Run: ${json(packet.run.runId)}`,
     `- Status: ${packet.run.status} / ${packet.run.phase}`,
     `- Executor: ${packet.run.executor}`,
-    `- Round: ${packet.run.round}/${packet.run.maxRounds}`,
+    `- Round: ${packet.run.round}/${
+      packet.run.maxRounds === null ? "unlimited" : packet.run.maxRounds
+    }`,
+    `- Stagnation: ${packet.run.stagnantRounds}/${packet.run.maxStagnantRounds}`,
     `- Event sequence: ${packet.run.eventSequence}`,
     `- Conversation: ${json(packet.conversation.url)}`,
     `- Controller archive: ${packet.conversation.archive.enabled ? packet.conversation.archive.status : "disabled"}`,

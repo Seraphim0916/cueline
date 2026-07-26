@@ -26,21 +26,21 @@
 
 CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane을 감싼 래퍼가 아닙니다.
 
-## 최신 릴리스: 0.6.4
+## 최신 릴리스: 0.7.0
 
-- ChatGPT 기록의 메시지 수를 읽을 수 없으면 전송은 클릭 전에 fail-closed되며, 정확한 클릭 대상을 영구 기록하고 한 번의 시도마다 Send 동작을 하나만 허용합니다. 영구 one-shot recovery는 동일한 round와 request identity를 재사용합니다. 영구 submitted 증거가 있으면 완전히 일치하는 Pro 응답이 오래된 not-sent 증거보다 우선되어 중복 전송이나 새 round 없이 수락됩니다. 715/715 테스트를 통과했습니다.
+- 컨트롤러 round는 이제 기본적으로 무제한입니다. 명시적인 양수 `maxRounds`는 여전히 run별 영구 상한으로 동작하며, 구조화된 컨트롤러 출력과 관측된 작업 증거가 12 round 연속으로 변하지 않으면 정체 퓨즈가 `stagnation_detected`로 fail-closed 종료합니다. 새로운 `cueline runs sweep`은 영구 증거가 끊긴 running run을 닫습니다. 각 종료는 기존 정산 프리미티브에 위임되어(프로세스 실행은 runtime reconciliation, caller 실행은 안전한 취소) 생존을 재검증하므로 살아 있는 run은 항상 보존됩니다. 기본은 dry-run이며 run 디렉터리는 절대 삭제하지 않습니다. 768/768 테스트를 통과했습니다.
 
-전체 내용은 [changelog](CHANGELOG.md#064---2026-07-26) 또는 버전이 지정된 [v0.6.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.4)에서 확인할 수 있습니다.
+전체 내용은 [changelog](CHANGELOG.md#070---2026-07-26) 또는 버전이 지정된 [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0)에서 확인할 수 있습니다.
 
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
 <img alt="Caller-first CueLine: ChatGPT가 텍스트 명령을 내리고 현재 Codex가 로컬 조언 작업을 수행하며 CueLine이 완료까지 제한된 증거를 반환합니다." src="docs/assets/cueline-loop-ko.svg" width="100%">
 
-매 라운드마다 CueLine은 관측 하나를 보내고 나중에 `<CueLineControl>` 엔벨로프를 **정확히 하나만** 읽습니다. 컨트롤러는 `dispatch`, `wait`, `inspect`, `complete`, `blocked` 중 하나를 고릅니다. 루프는 한 번의 영속적인 전송 뒤 `awaiting_controller`에서 일시 중지하며 caller 인계, `complete`, `blocked`, 또는 라운드 상한(기본 12회)에서도 멈춥니다.
+매 라운드마다 CueLine은 관측 하나를 보내고 나중에 `<CueLineControl>` 엔벨로프를 **정확히 하나만** 읽습니다. 컨트롤러는 `dispatch`, `wait`, `inspect`, `complete`, `blocked` 중 하나를 고릅니다. 루프는 한 번의 영속적인 전송 뒤 `awaiting_controller`에서 일시 중지하며 caller 인계, `complete`, `blocked`, 또는 연속 정체가 퓨즈 임계값에 도달하면 멈춥니다.
 
 컨트롤러 명령에는 fail-closed 자원 한도도 있습니다: 엔벨로프당 131,072자, dispatch당 최대 64개 작업, wait/inspect당 최대 256개의 명시적 job ID. 이 검사는 작업 등록이나 프로세스 시작 전에 수행됩니다.
 
-기본값이 아닌 `maxRounds`는 run 생성 시 고정되며 owner가 없는 일시 중지를 가로질러 컨트롤러 총 라운드 수를 셉니다. 이후 계속하기에서는 보통 생략해 지속 값을 재사용하고, 다른 값을 전달하면 예산을 몰래 재설정하거나 늘리지 않고 거부합니다.
+컨트롤러 라운드는 기본적으로 무제한입니다. 양의 정수 `maxRounds`를 전달할 때만 owner가 없는 일시 중지를 가로지르는 영속적인 총 라운드 상한이 run에 설정됩니다. 이후 계속하기에서는 보통 생략해 기존 값을 재사용하며, 다른 값은 거부됩니다. 기본 제동 장치는 영속적인 12라운드 정체 퓨즈입니다. CueLine은 식별 필드를 뺀 구조화 컨트롤러 명령과 해당 라운드에서 실제로 관찰한 작업 증거를 함께 지문화하고, 둘 중 하나가 바뀌면 카운트를 초기화합니다. 12회 연속 변화가 없으면 `stagnation_detected`로 run을 종료합니다.
 
 `startCueLineRun`과 `runCueLine`의 기본값은 `caller`입니다. 전송 뒤 `awaiting_controller`를 반환하고 lease를 해제하며, 계속하기는 재전송 없이 읽기 전용 관측 한 번만 수행합니다. `advise`는 `awaiting_caller`, `work`는 `awaiting_caller_work`를 반환합니다. work는 현재 Codex가 `claimCueLineCallerJob`과 `startCueLineCallerJob`을 성공시키기 전에는 시작되지 않습니다. claim은 run, job, task hash, 절대 workdir, caller identity, fencing token에 묶이며 시작된 work는 자동 재시도되지 않고 만료 시 `ambiguous`가 됩니다. Pro는 텍스트 명령을 제안하고 검토할 뿐 로컬 도구를 쓰지 않습니다.
 
@@ -71,15 +71,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.6.4
+npm install -g cueline@0.7.0
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.6.4 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.4)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.7.0 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.4/cueline-0.6.4.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.0/cueline-0.7.0.tgz
 cueline install
 cueline doctor
 ```
@@ -186,7 +186,7 @@ CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에
 
 ```console
 $ cueline doctor
-CueLine 0.6.4
+CueLine 0.7.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

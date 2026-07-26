@@ -50,7 +50,7 @@ The adapter should receive the current injected browser explicitly. Its fallback
 7. Snapshot the derived state.
 8. Repeat through ownerless controller/caller pauses until `complete`, `blocked`, or the round limit is reached. Neither terminal action is accepted while any required or optional job remains pending/running.
 
-The default limits are 12 controller rounds and two repair attempts per pending command. An explicit `maxRounds` is persisted with run creation and remains the total budget across split caller continuations; omitting it later reuses the persisted value, while a different value is rejected.
+Controller rounds are unlimited by default; two repair attempts still bound each pending command. A positive `maxRounds` is opt-in, persisted with run creation, and remains the total budget across split caller continuations. The default safety brake is `maxStagnantRounds = 12`. After each accepted non-terminal command, CueLine hashes the structured controller output without protocol/run/round/request identity together with the exact job evidence observed for that round. A changed command or changed evidence resets the counter; 12 unchanged comparisons append `run_failed` with `reason: "stagnation_detected"` and prohibit continuation.
 
 ### Execution modes, routing, and runners
 

@@ -28,7 +28,9 @@ export interface ControllerPendingObservationDiagnostic {
   composerPromptState: string | null;
   sourcesConsulted: string[];
 }
-export const DEFAULT_MAX_ROUNDS = 12;
+export const DEFAULT_MAX_ROUNDS: null = null;
+export const LEGACY_DEFAULT_MAX_ROUNDS = 12;
+export const DEFAULT_MAX_STAGNANT_ROUNDS = 12;
 export const DEFAULT_MAX_REPAIR_ATTEMPTS = 2;
 export type StoredJobStatus = JobObservation["status"];
 const STORED_JOB_STATUSES = new Set<StoredJobStatus>([
@@ -219,7 +221,10 @@ export interface CueLineRunState {
   request: string;
   executor: CueLineExecutor;
   allowProcessExecution: boolean;
-  maxRounds: number;
+  maxRounds: number | null;
+  maxStagnantRounds: number;
+  stagnantRounds: number;
+  lastProgressFingerprint: string | null;
   maxJobEvidenceChars: number;
   maxRepairAttempts: number;
   status: CueLineRunStatus;
@@ -361,11 +366,12 @@ export function initialRunState(
   runId: string,
   request: string,
   executor: CueLineExecutor = "caller",
-  maxRounds = DEFAULT_MAX_ROUNDS,
+  maxRounds: number | null = DEFAULT_MAX_ROUNDS,
   allowProcessExecution = false,
   archiveControllerConversationOnComplete = false,
   maxJobEvidenceChars = DEFAULT_MAX_JOB_EVIDENCE_CHARS,
   maxRepairAttempts = DEFAULT_MAX_REPAIR_ATTEMPTS,
+  maxStagnantRounds = DEFAULT_MAX_STAGNANT_ROUNDS,
 ): CueLineRunState {
   return {
     runId,
@@ -373,6 +379,9 @@ export function initialRunState(
     executor,
     allowProcessExecution,
     maxRounds,
+    maxStagnantRounds,
+    stagnantRounds: 0,
+    lastProgressFingerprint: null,
     maxJobEvidenceChars,
     maxRepairAttempts,
     status: "running",
@@ -427,11 +436,21 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       allowProcessExecution:
         payload.allow_process_execution === true || state.allowProcessExecution === true,
       maxRounds:
-        typeof payload.max_rounds === "number" &&
-        Number.isSafeInteger(payload.max_rounds) &&
-        payload.max_rounds >= 1
-          ? payload.max_rounds
-          : state.maxRounds ?? DEFAULT_MAX_ROUNDS,
+        payload.max_rounds === null
+          ? null
+          : typeof payload.max_rounds === "number" &&
+              Number.isSafeInteger(payload.max_rounds) &&
+              payload.max_rounds >= 1
+            ? payload.max_rounds
+            : state.maxRounds ?? LEGACY_DEFAULT_MAX_ROUNDS,
+      maxStagnantRounds:
+        typeof payload.max_stagnant_rounds === "number" &&
+        Number.isSafeInteger(payload.max_stagnant_rounds) &&
+        payload.max_stagnant_rounds >= 1
+          ? payload.max_stagnant_rounds
+          : state.maxStagnantRounds ?? DEFAULT_MAX_STAGNANT_ROUNDS,
+      stagnantRounds: state.stagnantRounds ?? 0,
+      lastProgressFingerprint: state.lastProgressFingerprint ?? null,
       maxJobEvidenceChars:
         typeof payload.max_job_evidence_chars === "number" &&
         Number.isSafeInteger(payload.max_job_evidence_chars) &&
@@ -1046,6 +1065,19 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           state.notSentRecovery.retryRequestId === requestId)
           ? null
           : state.notSentRecovery ?? null,
+    };
+  }
+  if (
+    event.type === "controller_round_progress" &&
+    typeof payload.progress_fingerprint === "string" &&
+    /^[0-9a-f]{64}$/.test(payload.progress_fingerprint)
+  ) {
+    const repeated =
+      state.lastProgressFingerprint === payload.progress_fingerprint;
+    return {
+      ...state,
+      stagnantRounds: repeated ? (state.stagnantRounds ?? 0) + 1 : 0,
+      lastProgressFingerprint: payload.progress_fingerprint,
     };
   }
   if (

@@ -54,9 +54,10 @@ export function capReplayedControllerEvidence(
 export function controllerEvidenceCapacityNotice(
   totalUnservedChars: number,
   round: number,
-  maxRounds: number,
+  maxRounds: number | null,
   perRoundBudget = MAX_CONTROLLER_EVIDENCE_CHARS,
 ): string | undefined {
+  if (maxRounds === null) return undefined;
   const remainingRounds = Math.max(0, maxRounds - round + 1);
   const remainingCapacity = remainingRounds * perRoundBudget;
   if (totalUnservedChars <= remainingCapacity) return undefined;

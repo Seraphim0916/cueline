@@ -26,21 +26,21 @@
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 的包裝層。
 
-## 最新版本：0.6.4
+## 最新版本：0.7.0
 
-- ChatGPT 送出流程現在會在歷史訊息數不可讀時，於點擊前採取 fail-closed；同時永久記錄精確的點擊前目標，且每次嘗試只允許一個 Send 動作。持久的一次性恢復會沿用同一輪與 request 身分。只要已有永久 submitted 證據，完全相符的 Pro 回覆就能優先於過期的 not-sent 證據被接收，不會重複送出或建立新一輪；715/715 測試通過。
+- 控制輪數預設不再設上限：明確給定的正整數 `maxRounds` 仍是每個 run 的持久上限；當結構化控制輸出與觀測到的工作證據連續 12 輪不變時，停滯保險絲會以 `stagnation_detected` fail-closed 收場。新增 `cueline runs sweep`，可收攏持久證據已斷訊的 running run，每次收攏都交由既有結算原語重新驗證存活——process 執行走 runtime reconciliation、caller 執行走安全取消——活著的 run 一律保留；預設 dry-run，且永不刪除 run 目錄；768/768 測試通過。
 
-完整內容請看 [changelog](CHANGELOG.md#064---2026-07-26) 或版本化的 [v0.6.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.4)。
+完整內容請看 [changelog](CHANGELOG.md#070---2026-07-26) 或版本化的 [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0)。
 
 ## 一次執行實際上怎麼跑
 
 <img alt="Caller-first CueLine 執行：ChatGPT 下文字命令，目前的 Codex 做本機唯讀查驗，CueLine 回送有界證據直到 complete。" src="docs/assets/cueline-loop-zh-TW.svg" width="100%">
 
-每一輪：CueLine 先把自己「即將問什麼」寫進紀錄，送出一份觀測（observation）到對話裡，之後再讀回**恰好一個** `<CueLineControl>` 封包。主控端從五個動作裡挑一個——`dispatch`、`wait`、`inspect`、`complete`、`blocked`——封包以外的任何文字都不會被執行。指令若寫錯 run、寫錯輪次，或工作定義有問題，會被退回去做有次數上限的修正，而不是靠猜。迴圈會在單次可靠送出後以 `awaiting_controller` 暫停，也會停在 caller 交接、`complete`、`blocked` 或輪數用完（預設 12 輪）。
+每一輪：CueLine 先把自己「即將問什麼」寫進紀錄，送出一份觀測（observation）到對話裡，之後再讀回**恰好一個** `<CueLineControl>` 封包。主控端從五個動作裡挑一個——`dispatch`、`wait`、`inspect`、`complete`、`blocked`——封包以外的任何文字都不會被執行。指令若寫錯 run、寫錯輪次，或工作定義有問題，會被退回去做有次數上限的修正，而不是靠猜。迴圈會在單次可靠送出後以 `awaiting_controller` 暫停，也會停在 caller 交接、`complete`、`blocked`，或連續停滯達到保險絲門檻時。
 
 主控指令另有 fail-closed 資源上限：每個封包 131,072 字元、每次 dispatch 最多 64 個工作、每次 wait 或 inspect 最多 256 個明確 job ID。這些檢查發生在註冊工作或啟動行程之前。
 
-非預設的 `maxRounds` 會在建立 run 時固定，並跨所有無 owner 的暫停累計主控總輪數。之後續跑通常省略它、沿用持久值；若傳入不同數字，CueLine 會拒絕，不會偷偷重設或放寬預算。
+主控輪數預設無上限。傳入正整數 `maxRounds` 才會替 run 選用一個跨所有無 owner 暫停的持久總輪數上限；之後續跑通常省略它並沿用既有值，傳入不同數字會被拒絕。預設煞車是持久的 12 輪停滯保險絲：CueLine 會把去除身分欄位的結構化主控命令，連同該輪實際觀測到的工作證據算成指紋；任一項有變化就歸零，連續 12 次沒有變化則以 `stagnation_detected` 關閉 run。
 
 `startCueLineRun` 與 `runCueLine` 都預設使用 `caller` executor。使用內建瀏覽器時，CueLine 只送一次、保存精確對話 URL，然後回傳 `awaiting_controller` 並釋放 runtime lease，不會讓單一工具呼叫卡著等 Pro 思考。之後的 `continueCueLineRun` 只做一次唯讀觀測；若仍未完成，就再次回傳 `awaiting_controller`，絕不重送。`advise` 派工回傳 `awaiting_caller`，沒有副作用 claim，需協調單一 session。`work` 派工回傳 `awaiting_caller_work`，在目前 Codex 呼叫 `claimCueLineCallerJob` 與 `startCueLineCallerWorkLease` 前，絕對尚未開始本機修改。claim 綁定 run、job、task hash、絕對 workdir、canonical 目錄身分、caller identity 與 fencing token；本機工作只能使用它回傳的 `resolvedWorkdir`。heartbeat 只證明 executor 還持有工作；另有持久進度 checkpoint 證明工具、落盤或驗證確實完成。已開始的工作不會自動重試；claim 逾期、連續一小時沒有新進度，或到達 24 小時絕對上限，都會成為 `ambiguous`，必須由 Pro 重新派出一份新工作後才能再修改。Pro 只提出與審查文字指令，沒有親自使用本機工具。
 
@@ -71,15 +71,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.6.4
+npm install -g cueline@0.7.0
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.6.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.4) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.4/cueline-0.6.4.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.0/cueline-0.7.0.tgz
 cueline install
 cueline doctor
 ```
@@ -208,7 +208,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.6.4
+CueLine 0.7.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

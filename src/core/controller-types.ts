@@ -24,6 +24,7 @@ export interface ControllerRuntimeOptions {
   validateJobSpec?: (job: ControllerJobSpec) => void;
   home?: string;
   maxRounds?: number;
+  maxStagnantRounds?: number;
   maxJobEvidenceChars?: number;
   maxRepairAttempts?: number;
   controllerInstructions?: readonly string[];
@@ -55,6 +56,7 @@ export interface CreateControllerRunOptions {
   executor?: CueLineExecutor;
   allowProcessExecution?: boolean;
   maxRounds?: number;
+  maxStagnantRounds?: number;
   maxJobEvidenceChars?: number;
   maxRepairAttempts?: number;
   archiveControllerConversationOnComplete?: boolean;

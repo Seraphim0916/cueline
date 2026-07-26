@@ -26,28 +26,30 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.6.4
+## Latest release: 0.7.0
 
-- ChatGPT submission now fails closed before the click when historical message
-  counts are unreadable, records the exact pre-click target, and permits only
-  one Send action per attempt. A durable one-shot recovery reuses the same
-  round and request identity. Once permanent submitted proof exists, an exact
-  Pro response wins over stale not-sent evidence without a duplicate send or
-  a new round; 715/715 tests pass.
+- Controller rounds are now unlimited by default: an explicit positive
+  `maxRounds` remains a durable per-run cap, and a 12-round stagnation fuse
+  fails closed with `stagnation_detected` when the structured controller
+  output and observed job evidence stop changing. A new `cueline runs sweep`
+  closes `running` runs whose durable evidence went silent, delegating every
+  closure to runtime reconciliation (process runs) or safe cancellation
+  (caller runs) so live owners and workers always survive; dry-run by
+  default, and run directories are never deleted; 768/768 tests pass.
 
-Read the complete [changelog](CHANGELOG.md#064---2026-07-26) or the versioned [v0.6.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.4).
+Read the complete [changelog](CHANGELOG.md#070---2026-07-26) or the versioned [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0).
 
 ## How a run actually goes
 
 <img alt="A caller-first CueLine run: ChatGPT emits text commands, the current Codex performs local advice, and CueLine returns bounded evidence until complete." src="docs/assets/cueline-loop-en.svg" width="100%">
 
-Each round: CueLine writes down what it is about to ask, sends one observation into the conversation, and later reads back exactly one `<CueLineControl>` envelope. The controller picks one of five actions — `dispatch`, `wait`, `inspect`, `complete`, `blocked` — and nothing outside that envelope is ever executed. A command that names the wrong run, the wrong round, or a malformed job is sent back for a bounded repair attempt rather than guessed at. The loop pauses at `awaiting_controller` after one durable send, at a caller handoff, or stops at `complete`, `blocked`, or the round limit (12 by default).
+Each round: CueLine writes down what it is about to ask, sends one observation into the conversation, and later reads back exactly one `<CueLineControl>` envelope. The controller picks one of five actions — `dispatch`, `wait`, `inspect`, `complete`, `blocked` — and nothing outside that envelope is ever executed. A command that names the wrong run, the wrong round, or a malformed job is sent back for a bounded repair attempt rather than guessed at. The loop pauses at `awaiting_controller` after one durable send, at a caller handoff, or stops at `complete`, `blocked`, or a fail-closed stagnation terminal.
 
 Controller commands also have fail-closed resource bounds: 131,072 characters
 per envelope, 64 jobs per dispatch, and 256 explicit job IDs per wait or
 inspect. These checks happen before job registration or process execution.
 
-A non-default `maxRounds` is fixed when the run is created and counts total controller rounds across every ownerless pause. Later continuations normally omit it and reuse the durable value; supplying a different value is rejected rather than silently resetting or widening the budget.
+Controller rounds are unlimited by default. Supplying a positive `maxRounds` opts the run into one durable total-run cap across every ownerless pause; later continuations normally omit it and reuse the persisted value, while a different value is rejected. The default brake is a durable 12-round stagnation fuse: CueLine hashes the identity-free structured controller command together with the job evidence observed that round, resets on either change, and fails closed with `stagnation_detected` after 12 consecutive unchanged comparisons.
 
 `caller` is the default executor for both `startCueLineRun` and `runCueLine`. With the built-in browser, CueLine submits once, captures the exact conversation URL, returns `awaiting_controller`, and releases the runtime lease instead of holding one tool call open while Pro thinks. A later `continueCueLineRun` performs one read-only observation: unfinished work returns `awaiting_controller` again without resending. When the narrow count-degraded accessibility recovery accepts a `dispatch`, that continuation returns `ready` before registering its jobs; the accepted command remains durable and only the next independent `continueCueLineRun` registers them. An ordinary fresh dispatch produces durable pending jobs in its current advancement. `advise` returns `awaiting_caller`; it has no side-effect claim, so coordinate one session. `work` returns `awaiting_caller_work` and remains unstarted until the current Codex calls `claimCueLineCallerJob` and `startCueLineCallerWorkLease`. The claim is bound to run, job, task hash, absolute workdir, canonical directory identity, caller identity, and a fencing token; callers execute only in its returned `resolvedWorkdir`. Started work is never automatically retried. Heartbeats prove executor ownership, while separate durable progress checkpoints prove completed tool, persistence, or verification activity. An expired started claim, a one-hour progress stall, or the 24-hour absolute limit becomes `ambiguous` and requires a fresh Pro dispatch before more mutation. ChatGPT proposed and reviewed the work—it did not use local tools or perform the work itself.
 
@@ -78,15 +80,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.6.4
+npm install -g cueline@0.7.0
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.6.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.4), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.4/cueline-0.6.4.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.0/cueline-0.7.0.tgz
 cueline install
 cueline doctor
 ```
@@ -230,7 +232,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.6.4
+CueLine 0.7.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

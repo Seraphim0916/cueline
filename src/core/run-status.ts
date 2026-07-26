@@ -1,5 +1,6 @@
 import { CueLineError } from "./errors.js";
 import {
+  DEFAULT_MAX_STAGNANT_ROUNDS,
   isControllerTurnProvenUnsent,
   type CueLineRunState,
   type StoredJobStatus,
@@ -46,6 +47,7 @@ export type CueLineRunPhase =
   | "reconciliation_required"
   | "job_recovery_required"
   | "round_limit_reached"
+  | "stagnation_detected"
   | "resume_ready"
   | "complete"
   | "blocked"
@@ -76,7 +78,10 @@ export interface CueLineRunStatusSummary {
   allowProcessExecution: boolean;
   phase: CueLineRunPhase;
   round: number;
-  maxRounds: number;
+  maxRounds: number | null;
+  maxStagnantRounds: number;
+  stagnantRounds: number;
+  lastProgressFingerprint: string | null;
   lastEventSequence: number;
   runtime: RuntimeLeaseObservation;
   cancellation: CancellationObservation;
@@ -259,7 +264,19 @@ function roundLimitReached(state: CueLineRunState): boolean {
     state.lastFailure?.code === "MAX_ROUNDS_EXCEEDED" &&
     state.pendingControllerTurns.length === 0 &&
     activeJobCount(state) === 0 &&
+    state.maxRounds !== null &&
     state.round >= state.maxRounds
+  );
+}
+
+function stagnationDetected(state: CueLineRunState): boolean {
+  return (
+    state.status === "failed" &&
+    state.lastFailure?.code === "STAGNATION_DETECTED" &&
+    state.pendingControllerTurns.length === 0 &&
+    activeJobCount(state) === 0 &&
+    (state.stagnantRounds ?? 0) >=
+      (state.maxStagnantRounds ?? DEFAULT_MAX_STAGNANT_ROUNDS)
   );
 }
 
@@ -407,7 +424,9 @@ function safeNextActionFor(
         : "observe"
       : "reconcile";
   }
-  if (roundLimitReached(state)) return "return_result";
+  if (roundLimitReached(state) || stagnationDetected(state)) {
+    return "return_result";
+  }
   if (isPristineRun(state) && state.status === "running") return "continue";
   if (state.executor === "caller" && state.status === "running") return "continue";
   if (state.status === "running") return "inspect_runtime";
@@ -440,6 +459,7 @@ export function cueLineRunPhase(
   if (state.status === "complete") return "complete";
   if (state.status === "blocked") return "blocked";
   if (state.status === "cancelled") return "cancelled";
+  if (stagnationDetected(state)) return "stagnation_detected";
   if (cancellation.runRequested) return "cancellation_pending";
   const deliveryTimeoutRecovery = relevantDeliveryTimeoutRecovery(state);
   if (
@@ -649,6 +669,7 @@ export function summarizeCueLineRunState(
         ? false
       : !cancellation.runRequested &&
         !roundLimitReached(state) &&
+        !stagnationDetected(state) &&
         (((runtime.ownership === "missing" || runtime.ownership === "released") &&
           ((state.status === "failed") ||
             (state.executor === "caller" && activeJobCount(state) === 0))) ||
@@ -716,6 +737,10 @@ export function summarizeCueLineRunState(
     phase,
     round: state.round,
     maxRounds: state.maxRounds,
+    maxStagnantRounds:
+      state.maxStagnantRounds ?? DEFAULT_MAX_STAGNANT_ROUNDS,
+    stagnantRounds: state.stagnantRounds ?? 0,
+    lastProgressFingerprint: state.lastProgressFingerprint ?? null,
     lastEventSequence,
     runtime,
     cancellation,

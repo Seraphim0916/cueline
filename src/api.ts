@@ -241,6 +241,9 @@ export async function startCueLineRun(
       ? {}
       : { allowProcessExecution: options.allowProcessExecution }),
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+    ...(options.maxStagnantRounds === undefined
+      ? {}
+      : { maxStagnantRounds: options.maxStagnantRounds }),
     ...(options.maxJobEvidenceChars === undefined
       ? {}
       : { maxJobEvidenceChars: options.maxJobEvidenceChars }),
@@ -279,6 +282,9 @@ export async function runCueLine(options: StartCueLineRunOptions): Promise<CueLi
         }),
     returnAfterControllerSubmission: (options.executor ?? "caller") === "caller",
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+    ...(options.maxStagnantRounds === undefined
+      ? {}
+      : { maxStagnantRounds: options.maxStagnantRounds }),
     ...(options.maxJobEvidenceChars === undefined
       ? {}
       : { maxJobEvidenceChars: options.maxJobEvidenceChars }),
@@ -497,6 +503,9 @@ export async function continueCueLineRun(
       ? {}
       : { abandonOtherPendingTurns: options.abandonOtherPendingTurns }),
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+    ...(options.maxStagnantRounds === undefined
+      ? {}
+      : { maxStagnantRounds: options.maxStagnantRounds }),
     ...(options.maxJobEvidenceChars === undefined
       ? {}
       : { maxJobEvidenceChars: options.maxJobEvidenceChars }),
@@ -625,6 +634,14 @@ export {
   type CueLineRunPruneResult,
   type PrunableRunState,
 } from "./api-run-prune.js";
+export {
+  sweepCueLineRuns,
+  type CueLineRunSweepDecision,
+  type CueLineRunSweepError,
+  type CueLineRunSweepKeptReason,
+  type CueLineRunSweepOptions,
+  type CueLineRunSweepResult,
+} from "./api-run-sweep.js";
 export {
   diagnoseCueLineRun,
   diagnoseCueLineRunStatus,

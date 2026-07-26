@@ -44,5 +44,5 @@
 
   <path d="M40 352H960" class="rule"/>
   <text x="40" y="378" class="foot">曖昧なものはすべて明示的な reconcile が必要——CueLine は再送も推測もしない。</text>
-  <text x="40" y="400" class="foot">ラウンド上限は既定 12。既定値以外の maxRounds は run 作成時に固定される。</text>
+  <text x="40" y="400" class="foot">ラウンドは既定で無制限。命令と証拠が 12 回連続で不変なら停滞ヒューズが作動する。</text>
 </svg>

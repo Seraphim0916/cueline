@@ -42,6 +42,9 @@
         "phase",
         "round",
         "maxRounds",
+        "maxStagnantRounds",
+        "stagnantRounds",
+        "lastProgressFingerprint",
         "lastEventSequence",
         "runtime",
         "cancellation",
@@ -59,7 +62,20 @@
         "allowProcessExecution": { "type": "boolean" },
         "phase": { "type": "string", "minLength": 1 },
         "round": { "type": "integer", "minimum": 0 },
-        "maxRounds": { "type": "integer", "minimum": 0 },
+        "maxRounds": {
+          "anyOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "null" }
+          ]
+        },
+        "maxStagnantRounds": { "type": "integer", "minimum": 1 },
+        "stagnantRounds": { "type": "integer", "minimum": 0 },
+        "lastProgressFingerprint": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            { "type": "null" }
+          ]
+        },
         "lastEventSequence": { "type": "integer", "minimum": 0 },
         "runtime": {
           "type": "object",

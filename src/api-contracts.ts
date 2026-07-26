@@ -19,6 +19,7 @@ export interface CueLineRuntimeOptions {
   environment?: NodeJS.ProcessEnv;
   defaultTimeoutMs?: number;
   maxRounds?: number;
+  maxStagnantRounds?: number;
   /** Maximum raw characters from one job evidence field exposed to the controller. */
   maxJobEvidenceChars?: number;
   maxRepairAttempts?: number;

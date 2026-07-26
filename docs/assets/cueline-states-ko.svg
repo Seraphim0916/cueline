@@ -44,5 +44,5 @@
 
   <path d="M40 352H960" class="rule"/>
   <text x="40" y="378" class="foot">모호한 것은 모두 명시적 reconcile이 필요합니다 — CueLine은 재전송도 추측도 하지 않습니다.</text>
-  <text x="40" y="400" class="foot">라운드 상한은 기본 12; 기본값이 아닌 maxRounds는 run 생성 시 고정됩니다.</text>
+  <text x="40" y="400" class="foot">라운드는 기본 무제한이며 명령과 증거가 12회 연속 같으면 정체 퓨즈가 작동합니다.</text>
 </svg>

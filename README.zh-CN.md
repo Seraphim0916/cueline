@@ -26,21 +26,21 @@
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 的包装层。
 
-## 最新版本：0.6.4
+## 最新版本：0.7.0
 
-- ChatGPT 发送流程现在会在历史消息数不可读时于点击前 fail-closed，同时永久记录精确的点击前目标，并且每次尝试只允许一个 Send 动作。持久的一次性恢复会沿用同一轮和 request 身份。只要已有永久 submitted 证据，完全匹配的 Pro 回复就能优先于过期的 not-sent 证据被接收，不会重复发送或建立新一轮；715/715 测试通过。
+- 控制轮数默认不再设上限：明确给定的正整数 `maxRounds` 仍是每个 run 的持久上限；当结构化控制输出与观测到的作业证据连续 12 轮不变时，停滞保险丝会以 `stagnation_detected` fail-closed 收场。新增 `cueline runs sweep`，可收拢持久证据已断讯的 running run，每次收拢都交由既有结算原语重新验证存活——process 执行走 runtime reconciliation、caller 执行走安全取消——活着的 run 一律保留；默认 dry-run，且永不删除 run 目录；768/768 测试通过。
 
-完整内容请查看 [changelog](CHANGELOG.md#064---2026-07-26) 或版本化的 [v0.6.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.4)。
+完整内容请查看 [changelog](CHANGELOG.md#070---2026-07-26) 或版本化的 [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0)。
 
 ## 一次运行实际是怎么走的
 
 <img alt="Caller-first CueLine 运行：ChatGPT 发出文本命令，当前 Codex 执行本地只读检查，CueLine 回传有界证据直至 complete。" src="docs/assets/cueline-loop-zh-CN.svg" width="100%">
 
-每一轮：CueLine 先把“接下来要问什么”写入记录，向会话发送一份观测（observation），之后再读回**恰好一个** `<CueLineControl>` 信封。控制器从五个动作中选一个——`dispatch`、`wait`、`inspect`、`complete`、`blocked`——信封之外的任何文本都不会被执行。循环会在一次可靠发送后以 `awaiting_controller` 暂停，也会停在 caller 交接、`complete`、`blocked` 或轮次上限（默认 12 轮）。
+每一轮：CueLine 先把“接下来要问什么”写入记录，向会话发送一份观测（observation），之后再读回**恰好一个** `<CueLineControl>` 信封。控制器从五个动作中选一个——`dispatch`、`wait`、`inspect`、`complete`、`blocked`——信封之外的任何文本都不会被执行。循环会在一次可靠发送后以 `awaiting_controller` 暂停，也会停在 caller 交接、`complete`、`blocked`，或连续停滞达到熔断门槛时。
 
 控制器命令还有 fail-closed 资源上限：每个信封 131,072 字符、每次 dispatch 最多 64 个作业、每次 wait 或 inspect 最多 256 个显式 job ID。这些检查发生在注册作业或启动进程之前。
 
-非默认的 `maxRounds` 会在创建 run 时固定，并跨所有无 owner 的暂停累计控制器总轮次。后续继续通常省略它并复用持久值；传入不同数值会被拒绝，不会暗中重置或放宽预算。
+控制器轮次默认不设上限。只有传入正整数 `maxRounds` 才会为 run 启用跨所有无 owner 暂停的持久总轮次上限；后续继续通常省略它并复用现有值，传入不同数值会被拒绝。默认制动器是持久的 12 轮停滞熔断器：CueLine 会把移除身份字段后的结构化控制器命令与该轮实际观察到的作业证据一起生成指纹；任一项变化就归零，连续 12 次没有变化则以 `stagnation_detected` 关闭 run。
 
 `startCueLineRun` 与 `runCueLine` 都默认使用 `caller`。CueLine 发送一次后返回 `awaiting_controller` 并释放 lease；继续只做一次只读观测，绝不重发。`advise` 返回 `awaiting_caller`，没有副作用 claim；`work` 返回 `awaiting_caller_work`，必须由当前 Codex 调用 `claimCueLineCallerJob` 与 `startCueLineCallerJob` 后才能修改。claim 绑定 run、job、task hash、绝对 workdir、caller identity 与 fencing token；已开始的工作不会自动重试，过期后成为 `ambiguous`。Pro 只提出和审查文本指令，不会使用本地工具。
 
@@ -71,15 +71,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.6.4
+npm install -g cueline@0.7.0
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.6.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.4) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.4/cueline-0.6.4.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.0/cueline-0.7.0.tgz
 cueline install
 cueline doctor
 ```
@@ -188,7 +188,7 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.6.4
+CueLine 0.7.0
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

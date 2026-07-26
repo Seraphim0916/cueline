@@ -27,7 +27,9 @@ export interface CueLineRunStatusAt {
     executor: string;
     allowProcessExecution: boolean;
     round: number;
-    maxRounds: number;
+    maxRounds: number | null;
+    maxStagnantRounds: number;
+    stagnantRounds: number;
     conversationBound: boolean;
     pendingControllerTurns: number;
     abandonedControllerTurns: number;
@@ -98,6 +100,8 @@ export async function loadCueLineRunStatusAt(
       allowProcessExecution: state.allowProcessExecution,
       round: state.round,
       maxRounds: state.maxRounds,
+      maxStagnantRounds: state.maxStagnantRounds,
+      stagnantRounds: state.stagnantRounds,
       conversationBound: state.conversationUrl !== null,
       pendingControllerTurns: state.pendingControllerTurns.length,
       abandonedControllerTurns: state.abandonedControllerTurns.length,

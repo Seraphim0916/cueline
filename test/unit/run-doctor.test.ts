@@ -15,6 +15,9 @@ function status(
     phase: "controller_response_pending",
     round: 2,
     maxRounds: 12,
+    maxStagnantRounds: 12,
+    stagnantRounds: 0,
+    lastProgressFingerprint: null,
     lastEventSequence: 17,
     runtime: { ownership: "released" },
     cancellation: { runRequested: false, jobRequests: [] },
@@ -207,4 +210,21 @@ test("does not call a controller-blocked terminal result healthy", () => {
 
   assert.equal(diagnosis.outcome, "blocked");
   assert.equal(diagnosis.findings[0]?.code, "RUN_BLOCKED");
+});
+
+test("diagnoses a stagnation fuse terminal failure with a dedicated finding", () => {
+  const diagnosis = diagnoseCueLineRunStatus(
+    status({
+      status: "failed",
+      phase:
+        "stagnation_detected" as CueLineRunStatusSummary["phase"],
+      continueAllowed: false,
+      safeNextAction: "return_result",
+    }),
+  );
+
+  assert.equal(diagnosis.outcome, "blocked");
+  assert.equal(diagnosis.nextAction, "return_result");
+  assert.equal(diagnosis.findings[0]?.code, "STAGNATION_DETECTED");
+  assert.match(diagnosis.findings[0]?.message ?? "", /observable progress/i);
 });

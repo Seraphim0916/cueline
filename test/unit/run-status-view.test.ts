@@ -13,6 +13,9 @@ test("the CLI run status view is an explicit metadata allowlist", () => {
     phase: "caller_work_claimed",
     round: 2,
     maxRounds: 12,
+    maxStagnantRounds: 12,
+    stagnantRounds: 0,
+    lastProgressFingerprint: null,
     lastEventSequence: 9,
     runtime: {
       ownership: "active",
@@ -98,6 +101,9 @@ test("the CLI run status view is an explicit metadata allowlist", () => {
     ageMs: 500,
     pid: "4242",
   });
+  assert.equal(safe.maxRounds, 12);
+  assert.equal(safe.maxStagnantRounds, 12);
+  assert.equal(safe.stagnantRounds, 0);
   assert.deepEqual(safe.jobs.items[0]?.workClaim, {
     claimed: true,
     claimedAt: "2026-07-15T00:00:00.000Z",
@@ -117,6 +123,9 @@ test("the CLI archive status never exposes a ChatGPT conversation URL", () => {
     phase: "complete",
     round: 1,
     maxRounds: 12,
+    maxStagnantRounds: 12,
+    stagnantRounds: 0,
+    lastProgressFingerprint: null,
     lastEventSequence: 5,
     runtime: { ownership: "released" },
     cancellation: { runRequested: false, jobRequests: [] },

@@ -46,5 +46,5 @@
 
   <path d="M40 352H960" class="rule"/>
   <text x="40" y="378" class="foot">Anything ambiguous requires explicit reconcile — CueLine never resends and never guesses.</text>
-  <text x="40" y="400" class="foot">Round limit 12 by default; a non-default maxRounds is fixed when the run is created.</text>
+  <text x="40" y="400" class="foot">Rounds are unlimited by default; 12 unchanged command/evidence comparisons trip stagnation.</text>
 </svg>

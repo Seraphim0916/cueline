@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-07-26
+
+### Added
+
+- Controller rounds are unlimited by default. An explicit positive `maxRounds`
+  still opts a run into one durable total-round cap enforced as
+  `MAX_ROUNDS_EXCEEDED`, and legacy snapshots persisted without the field keep
+  their original 12-round cap.
+- A durable stagnation fuse: each round hashes the identity-free structured
+  controller command together with the job evidence observed that round, resets
+  on any change, and fails closed with `stagnation_detected` after 12
+  consecutive unchanged rounds, with a matching run doctor finding.
+- `cueline runs sweep` closes `running` runs whose durable evidence is missing
+  or stale beyond a threshold (default 24 hours, `--stale-hours`). Every closure
+  is delegated to an existing settlement primitive that re-verifies liveness
+  before appending terminal evidence — runtime reconciliation for process
+  executors, safe cancellation for caller executors — so live runs always
+  survive. Dry-run by default; `--apply` appends the closure evidence; run
+  directories are never deleted.
+
+### Verification
+
+- `npm test` passes 768/768, including new coverage for unlimited-default
+  rounds, the explicit-cap regression, stagnation detection, process and
+  caller orphan closure, live-run exclusion, dry-run immutability, and the
+  sweep CLI contract.
+  `typecheck`, `validate:docs`, `validate:plugin`, and `validate:cli-contracts`
+  pass.
+
 ## 0.6.4 - 2026-07-26
 
 ### Fixed
