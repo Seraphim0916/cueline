@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.6.4 - 2026-07-26
+
+### Fixed
+
+- The delivery-timeout `Retry` click no longer depends on native DOM methods. The IAB DOM facade is read-only and exposes no `HTMLElement.click`, so the in-page call threw `TypeError: button.click is not a function` after the guard had already consumed the one-shot authorization — burning the grant without ever clicking. The page task now revalidates the complete no-resend guard and returns the pre-inspected coordinate; the single click is performed through the IAB coordinate surface. Without a click surface it reports `click_surface_unavailable` instead of falling back to a second click path.
+- An unused delivery-timeout authorization is restored by the new `controller_delivery_timeout_retry_rearmed` event, gated on proof that the failure happened strictly before any click: matching failure code, stage, and submission state, the exact `button.click is not a function` plus `__playwrightEvaluate` message shape, identical request, round, and evidence hash, the same bound conversation, and `zero_click_proven`. Any other failure keeps the consumed authorization spent.
+- A reloaded empty composer is accepted as `definitely_not_sent` when the staged attachment was provably never persisted: submitted attachment turn, empty composer, zero attachments, disabled Send, completed request-message scan, no accessibility request ID, no count regression, and an observed user-message count equal to the baseline.
+- A not-sent retry no longer hands the controller a stale `CONTROLLER_OBSERVATION_PENDING_STABLE` notice from the abandoned request.
+
+### Verification
+
+- `npm test` passes 756/756, including new coverage for the coordinate-surface click, the missing click surface, the rearm guard, and the reloaded empty-composer recovery. `typecheck`, `validate:docs`, `validate:plugin`, and `validate:cli-contracts` pass.
+
 ## 0.6.3 - 2026-07-24
 
 ### Fixed

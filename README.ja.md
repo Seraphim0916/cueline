@@ -26,11 +26,11 @@
 
 CueLine は独立した実装で、**ランタイムの npm 依存はゼロ**です。Omnilane のラッパーではありません。
 
-## 最新リリース：0.6.3
+## 最新リリース：0.6.4
 
 - ChatGPT の履歴メッセージ数を読めない場合、送信処理はクリック前に fail-closed となり、正確なクリック対象を永続記録し、1 回の試行につき Send は 1 回だけ許可します。永続的な one-shot recovery は同じ round と request identity を再利用します。永続的な submitted 証拠がある場合、完全一致する Pro 応答は古い not-sent 証拠より優先され、重複送信や新しい round を作らずに受理されます。715/715 テストに合格しました。
 
-詳細は [changelog](CHANGELOG.md#061---2026-07-22) またはバージョン指定の [v0.6.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.3) を参照してください。
+詳細は [changelog](CHANGELOG.md#064---2026-07-26) またはバージョン指定の [v0.6.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.4) を参照してください。
 
 ## 1 回の実行は実際にどう進むか
 
@@ -71,15 +71,15 @@ ChatGPT Pro のサブスクリプションと、選択された Pro モデルは
 npm レジストリからインストールします。
 
 ```bash
-npm install -g cueline@0.6.3
+npm install -g cueline@0.6.4
 cueline install
 cueline doctor
 ```
 
-フォールバックとして、[v0.6.3 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.3) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
+フォールバックとして、[v0.6.4 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.6.4) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.3/cueline-0.6.3.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.6.4/cueline-0.6.4.tgz
 cueline install
 cueline doctor
 ```
@@ -186,7 +186,7 @@ CLI はブラウザーを駆動しません。状態を書き込むコマンド�
 
 ```console
 $ cueline doctor
-CueLine 0.6.3
+CueLine 0.6.4
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
