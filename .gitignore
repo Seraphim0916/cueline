@@ -4,6 +4,7 @@ docs/superpowers/
 *.tgz
 .DS_Store
 .cueline/
+.codex/
 coverage/
 release-artifacts/
 *.log
