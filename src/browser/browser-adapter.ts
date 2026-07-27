@@ -45,6 +45,23 @@ export interface PendingObservationDiagnostic {
   sourcesConsulted: string[];
 }
 
+/**
+ * Proof that the submitted turn correlated by user-message count while the
+ * assistant leaf still carries an older round's envelope — the ChatGPT branch
+ * we can read is not the branch our request was answered on.
+ */
+export interface BranchLeafMismatchEvidence {
+  code: "CONTROLLER_OBSERVATION_BRANCH_LEAF_MISMATCH";
+  expectedRound: number;
+  expectedRequestId: string;
+  observedRunId: string | null;
+  observedRound: number | null;
+  observedRequestId: string | null;
+  branchSearchPerformed: boolean;
+  branchSearchSource: "accessibility_snapshot" | null;
+  branchSearchFoundExactEnvelope: boolean;
+}
+
 export interface ControllerTurn {
   text: string;
   conversationUrl?: string;
@@ -67,6 +84,7 @@ export interface BrowserSubmittedTurnEvidence {
   requestMessageScanComplete?: boolean;
   accessibilityRequestIdFound?: boolean | null;
   pendingDiagnostic?: PendingObservationDiagnostic;
+  branchLeafMismatch?: BranchLeafMismatchEvidence;
   assistantTextFoundBy?: "last_message" | "exact_envelope_scan" | "accessibility_exact_envelope";
   isAnswering: boolean | null;
   /** Redacted composer evidence used to prove that the exact staged turn remains unsent. */

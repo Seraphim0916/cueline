@@ -31,6 +31,7 @@ import {
 import { CueLineError } from "../../core/errors.js";
 import { commandHash } from "../../core/ids.js";
 import {
+  readAccessibilityExactEnvelope,
   readAccessibilityRequestIdPresence,
   readPageChatState,
   readPageComposerState,
@@ -51,6 +52,7 @@ import {
   hasExactControllerEnvelopeIdentity,
   isProLabel,
   isProModelSlug,
+  latestControllerEnvelopeIdentity,
   normalizedMessageText,
 } from "./recovery-evidence.js";
 import { captureConversationUrlAfterSubmit } from "./submission-url.js";
@@ -1606,6 +1608,8 @@ class CodexIabAdapter implements BrowserAdapter {
       ? baselineUserMessageCount!
       : null;
     let countRegressionDetected = false;
+    let branchSearchPerformed = false;
+    let branchSearchEnvelope: string | null = null;
     const expectedIdentity: ExpectedControllerIdentity = {
       runId: input.runId,
       round: input.round,
@@ -1820,6 +1824,26 @@ class CodexIabAdapter implements BrowserAdapter {
         hasExactCurrentEnvelope ||
         hasReliablePostClickUserTurn;
 
+      // A user-count step of exactly one is the weakest of the three
+      // correlations above: it also matches the case where our prompt landed on
+      // a ChatGPT branch we cannot read, leaving an older round's envelope as
+      // the visible leaf. Naming that case keeps it out of the generic pending
+      // path, which would otherwise wait forever for a leaf that never updates.
+      const currentEnvelopeIdentity = latestControllerEnvelopeIdentity(
+        state.assistantText,
+      );
+      const branchLeafMismatchDetected =
+        baselineLoaded &&
+        !state.isAnswering &&
+        requestMessageFound !== true &&
+        !hasExactCurrentEnvelope &&
+        hasReliablePostClickUserTurn &&
+        state.lastMessageRole === "assistant" &&
+        currentEnvelopeIdentity !== null &&
+        currentEnvelopeIdentity.runId === input.runId &&
+        (currentEnvelopeIdentity.round !== input.round ||
+          currentEnvelopeIdentity.requestId !== input.requestId);
+
       const deliveryFailureCorrelated =
         baselineLoaded &&
         currentRequestCorrelated &&
@@ -1897,6 +1921,54 @@ class CodexIabAdapter implements BrowserAdapter {
         };
       }
 
+      if (branchLeafMismatchDetected) {
+        if (!branchSearchPerformed) {
+          branchSearchPerformed = true;
+          branchSearchEnvelope = await withBrowserOperationTimeout(
+            () => readAccessibilityExactEnvelope(tab, expectedIdentity),
+            operationTimeoutMs,
+            input.signal,
+            () =>
+              new CueLineError(
+                "CONTROLLER_RECONCILIATION_READ_TIMEOUT",
+                `ChatGPT's response-branch envelope scan did not finish within ${operationTimeoutMs} ms.`,
+              ),
+          );
+        }
+        evidence.branchLeafMismatch = {
+          code: "CONTROLLER_OBSERVATION_BRANCH_LEAF_MISMATCH",
+          expectedRound: input.round,
+          expectedRequestId: input.requestId,
+          observedRunId: currentEnvelopeIdentity.runId,
+          observedRound: currentEnvelopeIdentity.round,
+          observedRequestId: currentEnvelopeIdentity.requestId,
+          branchSearchPerformed,
+          branchSearchSource: "accessibility_snapshot",
+          branchSearchFoundExactEnvelope: branchSearchEnvelope !== null,
+        };
+        if (branchSearchEnvelope === null) {
+          return this.#pendingObservation(
+            input,
+            evidence,
+            pendingSignature,
+            `branch_leaf_mismatch: assistant leaf holds round ${currentEnvelopeIdentity.round} (${currentEnvelopeIdentity.requestId}) while round ${input.round} (${input.requestId}) has no readable response branch`,
+          );
+        }
+        const completed: PageChatState = {
+          ...state,
+          assistantText: branchSearchEnvelope,
+          lastMessageRole: "assistant",
+          assistantTextSource: "accessibility_exact_envelope",
+          assistantTextFoundBy: "accessibility_exact_envelope",
+        };
+        const turn = await this.#resultFromCompletedTurn(
+          tab,
+          selectedModelLabel,
+          completed,
+        );
+        this.#clearPendingObservation(input);
+        return { status: "response", turn, evidence };
+      }
       if (baselineLoaded && currentRequestCorrelated && !state.isAnswering) {
         const turn = await this.#readExistingTurn(input, false);
         if (turn === undefined) return pendingObservation();

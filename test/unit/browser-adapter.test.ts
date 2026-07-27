@@ -7366,3 +7366,160 @@ test("reports session mismatch when agent iab backend is unavailable with turn m
     },
   );
 });
+
+function branchLeafMismatchFixture(options: {
+  runId: string;
+  conversationUrl: string;
+  staleEnvelope: string;
+  accessibilitySnapshot: string;
+}) {
+  return fakeBrowser({
+    initialUrl: options.conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [
+      {
+        isAnswering: false,
+        assistantText: options.staleEnvelope,
+        assistantTextSource: "message_dom",
+        assistantTextFoundBy: "last_message",
+        userMessageCount: 449,
+        assistantMessageCount: 449,
+        assistantModelSlug: "gpt-5-6-pro",
+        lastMessageRole: "assistant",
+        requestMessageFound: false,
+        requestMessageFoundBy: null,
+        requestMessageScanComplete: true,
+      },
+    ],
+    composerStates: [
+      {
+        state: "empty",
+        inlineTextLength: 0,
+        attachmentCount: 0,
+        sendButtonEnabled: false,
+      },
+    ],
+    accessibilitySnapshots: [options.accessibilitySnapshot],
+  });
+}
+
+function staleRoundTwoEnvelope(runId: string): string {
+  return `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 2,
+    request_id: "msg_6dc195a75a31b938436cfa1b58317531",
+    action: "wait",
+  })}</CueLineControl>`;
+}
+
+function assistantArticleSnapshot(envelope: string): string {
+  return `- main:\n  - article:\n    - heading "ChatGPT said:"\n    - paragraph: ${JSON.stringify(envelope)}`;
+}
+
+test("submitted-turn observation names branch_leaf_mismatch when baseline+1 correlates but the leaf holds an older round", async () => {
+  const conversationUrl = "https://chatgpt.com/c/branch-leaf-mismatch-frozen";
+  const runId = "run_branch_leaf_mismatch_frozen";
+  const staleEnvelope = staleRoundTwoEnvelope(runId);
+  const fixture = branchLeafMismatchFixture({
+    runId,
+    conversationUrl,
+    staleEnvelope,
+    accessibilitySnapshot: assistantArticleSnapshot(staleEnvelope),
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    pendingDiagnosticMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 5,
+    requestId: "msg_fc053647e94f54b2a5de96a3a00b11fd",
+    prompt: "round five prompt",
+    baselineUserMessageCount: 448,
+    baselineAssistantMessageCount: 448,
+  });
+
+  assert.equal(observation.status, "pending");
+  const mismatch =
+    observation.status === "pending"
+      ? observation.evidence?.branchLeafMismatch
+      : undefined;
+  assert.equal(mismatch?.code, "CONTROLLER_OBSERVATION_BRANCH_LEAF_MISMATCH");
+  assert.equal(mismatch?.expectedRound, 5);
+  assert.equal(
+    mismatch?.expectedRequestId,
+    "msg_fc053647e94f54b2a5de96a3a00b11fd",
+  );
+  assert.equal(mismatch?.observedRunId, runId);
+  assert.equal(mismatch?.observedRound, 2);
+  assert.equal(
+    mismatch?.observedRequestId,
+    "msg_6dc195a75a31b938436cfa1b58317531",
+  );
+  assert.equal(mismatch?.branchSearchPerformed, true);
+  assert.equal(mismatch?.branchSearchSource, "accessibility_snapshot");
+  assert.equal(mismatch?.branchSearchFoundExactEnvelope, false);
+  assert.match(
+    observation.status === "pending"
+      ? observation.evidence?.pendingDiagnostic?.failedCondition ?? ""
+      : "",
+    /branch_leaf_mismatch/,
+  );
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("submitted-turn observation adopts the round-exact envelope found by the read-only branch search", async () => {
+  const conversationUrl = "https://chatgpt.com/c/branch-leaf-mismatch-adopted";
+  const runId = "run_branch_leaf_mismatch_adopted";
+  const requestId = "msg_fc053647e94f54b2a5de96a3a00b11fd";
+  const currentEnvelope = `<CueLineControl>${JSON.stringify({
+    protocol: "cueline/0.1",
+    run_id: runId,
+    round: 5,
+    request_id: requestId,
+    action: "wait",
+  })}</CueLineControl>`;
+  const fixture = branchLeafMismatchFixture({
+    runId,
+    conversationUrl,
+    staleEnvelope: staleRoundTwoEnvelope(runId),
+    accessibilitySnapshot: assistantArticleSnapshot(currentEnvelope),
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 5,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    pendingDiagnosticMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 5,
+    requestId,
+    prompt: "round five prompt",
+    baselineUserMessageCount: 448,
+    baselineAssistantMessageCount: 448,
+  });
+
+  assert.equal(observation.status, "response");
+  assert.match(
+    observation.status === "response" ? observation.turn.text : "",
+    /"round":5/,
+  );
+  assert.equal(
+    observation.status === "response"
+      ? observation.evidence?.branchLeafMismatch?.branchSearchFoundExactEnvelope
+      : null,
+    true,
+  );
+  assert.equal(fixture.sendSubmissions(), 0);
+});

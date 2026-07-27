@@ -438,6 +438,22 @@ export async function readAccessibilityRequestIdPresence(
   return typeof snapshot === "string" ? snapshot.includes(requestId) : null;
 }
 
+/**
+ * Read-only whole-snapshot search for an exact controller envelope. Unlike the
+ * fallback inside readPageChatState, this does not require a degraded DOM, so a
+ * response that exists outside the rendered branch leaf can still be located
+ * without clicking ChatGPT's branch controls.
+ */
+export async function readAccessibilityExactEnvelope(
+  tab: IabTab,
+  expected: ExpectedControllerIdentity,
+): Promise<string | null> {
+  const snapshot = await tab.playwright.domSnapshot();
+  return typeof snapshot === "string"
+    ? exactAccessibilityControllerEnvelopeText(snapshot, expected)
+    : null;
+}
+
 export async function readPageComposerState(
   tab: IabTab,
   expectedPrompt: string,

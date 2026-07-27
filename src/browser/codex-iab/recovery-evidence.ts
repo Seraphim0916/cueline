@@ -27,13 +27,10 @@ export function hasExactControllerEnvelopeIdentity(
   return exactControllerEnvelopeText(text, expected) !== null;
 }
 
-export function exactControllerEnvelopeText(
-  text: string,
-  expected: ExpectedControllerIdentity,
-): string | null {
+function lastEnvelopeCandidates(text: string): string[] {
   let body: string | undefined;
   for (const match of text.matchAll(CONTROL_ENVELOPE)) body = match[1];
-  if (body === undefined) return null;
+  if (body === undefined) return [];
 
   const rawBody = body.trim();
   const candidates = [rawBody];
@@ -48,8 +45,14 @@ export function exactControllerEnvelopeText(
     // A normal DOM response is already raw JSON; only accessibility snapshots
     // that quote the scalar need the one-level decode above.
   }
+  return candidates;
+}
 
-  for (const candidate of candidates) {
+export function exactControllerEnvelopeText(
+  text: string,
+  expected: ExpectedControllerIdentity,
+): string | null {
+  for (const candidate of lastEnvelopeCandidates(text)) {
     try {
       const parsed = JSON.parse(candidate) as Record<string, unknown>;
       if (
@@ -59,6 +62,37 @@ export function exactControllerEnvelopeText(
         parsed.request_id === expected.requestId
       ) {
         return `<CueLineControl>${candidate}</CueLineControl>`;
+      }
+    } catch {
+      // Try the accessibility-decoded candidate, if one exists.
+    }
+  }
+  return null;
+}
+
+/**
+ * Identity of the newest controller envelope, whatever round it belongs to.
+ * Distinguishes "no controller response yet" from "the branch leaf still shows
+ * an older round", which the exact-identity readers collapse into one null.
+ */
+export function latestControllerEnvelopeIdentity(
+  text: string,
+): ExpectedControllerIdentity | null {
+  for (const candidate of lastEnvelopeCandidates(text)) {
+    try {
+      const parsed = JSON.parse(candidate) as Record<string, unknown>;
+      if (
+        parsed.protocol === "cueline/0.1" &&
+        typeof parsed.run_id === "string" &&
+        typeof parsed.round === "number" &&
+        Number.isSafeInteger(parsed.round) &&
+        typeof parsed.request_id === "string"
+      ) {
+        return {
+          runId: parsed.run_id,
+          round: parsed.round,
+          requestId: parsed.request_id,
+        };
       }
     } catch {
       // Try the accessibility-decoded candidate, if one exists.
