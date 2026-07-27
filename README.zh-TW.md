@@ -26,11 +26,11 @@
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 的包裝層。
 
-## 最新版本：0.7.0
+## 最新版本：0.7.1
 
-- 控制輪數預設不再設上限：明確給定的正整數 `maxRounds` 仍是每個 run 的持久上限；當結構化控制輸出與觀測到的工作證據連續 12 輪不變時，停滯保險絲會以 `stagnation_detected` fail-closed 收場。新增 `cueline runs sweep`，可收攏持久證據已斷訊的 running run，每次收攏都交由既有結算原語重新驗證存活——process 執行走 runtime reconciliation、caller 執行走安全取消——活著的 run 一律保留；預設 dry-run，且永不刪除 run 目錄；768/768 測試通過。
+- 送出後的觀測不會再卡在意義不明的 `pending`：當使用者訊息數以 `baseline + 1` 對上、但讀得到的 assistant 分支葉節點仍掛著舊 round 的封包時，這個情況現在明確命名為 `branch_leaf_mismatch`，並回報觀測到的 run、round 與 request id；接著以唯讀方式掃描一次 accessibility snapshot 尋找該 round 的精確封包——找到才接收為控制回應，找不到就維持凍結。兩條路徑都不會點擊 ChatGPT 的分支控制項，也不會新建 round；770/770 測試通過。
 
-完整內容請看 [changelog](CHANGELOG.md#070---2026-07-26) 或版本化的 [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0)。
+完整內容請看 [changelog](CHANGELOG.md#071---2026-07-28) 或版本化的 [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1)。
 
 ## 一次執行實際上怎麼跑
 
@@ -71,15 +71,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.7.0
+npm install -g cueline@0.7.1
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.0/cueline-0.7.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.1/cueline-0.7.1.tgz
 cueline install
 cueline doctor
 ```
@@ -208,7 +208,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.7.0
+CueLine 0.7.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

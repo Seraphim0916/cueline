@@ -26,11 +26,11 @@
 
 CueLine は独立した実装で、**ランタイムの npm 依存はゼロ**です。Omnilane のラッパーではありません。
 
-## 最新リリース：0.7.0
+## 最新リリース：0.7.1
 
-- コントローラー round は既定で無制限になりました。明示的な正の `maxRounds` は引き続き run ごとの永続上限として働き、構造化されたコントローラー出力と観測されたジョブ証拠が 12 round 連続で変化しない場合、停滞ヒューズが `stagnation_detected` で fail-closed に停止します。新しい `cueline runs sweep` は永続証拠が途絶えた running run を閉じます。各クローズは既存の決着プリミティブに委譲され（process 実行は runtime reconciliation、caller 実行は安全なキャンセル）、生存を再検証するため、生きている run は必ず残ります。既定は dry-run で、run ディレクトリを削除することはありません。768/768 テストに合格しました。
+- 送信済み turn の観測が、意味の不明瞭な `pending` で止まり続けることはなくなりました。ユーザーメッセージ数が `baseline + 1` で一致しているのに、読み取れる assistant のリーフが古い round のエンベロープを保持している場合、そのケースを `branch_leaf_mismatch` として明示的に命名し、観測された run・round・request id を証拠として報告します。続いて accessibility snapshot を 1 回だけ読み取り専用でスキャンし、その round の厳密なエンベロープを探します。見つかった場合のみコントローラー応答として採用し、見つからなければ turn を凍結したままにします。いずれの経路でも分岐コントロールをクリックせず、新しい round も作成しません。770/770 テストに合格しました。
 
-詳細は [changelog](CHANGELOG.md#070---2026-07-26) またはバージョン指定の [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0) を参照してください。
+詳細は [changelog](CHANGELOG.md#071---2026-07-28) またはバージョン指定の [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1) を参照してください。
 
 ## 1 回の実行は実際にどう進むか
 
@@ -71,15 +71,15 @@ ChatGPT Pro のサブスクリプションと、選択された Pro モデルは
 npm レジストリからインストールします。
 
 ```bash
-npm install -g cueline@0.7.0
+npm install -g cueline@0.7.1
 cueline install
 cueline doctor
 ```
 
-フォールバックとして、[v0.7.0 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
+フォールバックとして、[v0.7.1 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.0/cueline-0.7.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.1/cueline-0.7.1.tgz
 cueline install
 cueline doctor
 ```
@@ -186,7 +186,7 @@ CLI はブラウザーを駆動しません。状態を書き込むコマンド�
 
 ```console
 $ cueline doctor
-CueLine 0.7.0
+CueLine 0.7.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

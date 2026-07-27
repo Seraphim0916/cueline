@@ -26,18 +26,18 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.7.0
+## Latest release: 0.7.1
 
-- Controller rounds are now unlimited by default: an explicit positive
-  `maxRounds` remains a durable per-run cap, and a 12-round stagnation fuse
-  fails closed with `stagnation_detected` when the structured controller
-  output and observed job evidence stop changing. A new `cueline runs sweep`
-  closes `running` runs whose durable evidence went silent, delegating every
-  closure to runtime reconciliation (process runs) or safe cancellation
-  (caller runs) so live owners and workers always survive; dry-run by
-  default, and run directories are never deleted; 768/768 tests pass.
+- A submitted-turn observation no longer waits forever on an opaque `pending`
+  when the user-message count correlates at `baseline + 1` while the readable
+  assistant leaf still carries an older round's envelope. That case is now
+  named `branch_leaf_mismatch` and reports the observed run, round and request
+  id, then performs one read-only accessibility-snapshot scan for the
+  round-exact envelope: a hit is adopted as the controller response, a miss
+  keeps the turn frozen. No branch control is clicked and no new round is
+  created on either path; 770/770 tests pass.
 
-Read the complete [changelog](CHANGELOG.md#070---2026-07-26) or the versioned [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0).
+Read the complete [changelog](CHANGELOG.md#071---2026-07-28) or the versioned [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1).
 
 ## How a run actually goes
 
@@ -80,15 +80,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.7.0
+npm install -g cueline@0.7.1
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.7.0 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.0), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.0/cueline-0.7.0.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.1/cueline-0.7.1.tgz
 cueline install
 cueline doctor
 ```
@@ -232,7 +232,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.7.0
+CueLine 0.7.1
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

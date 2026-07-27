@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.7.1 - 2026-07-28
+
+### Fixed
+
+- A submitted-turn observation no longer waits forever on an opaque `pending` when the user-message count correlates at `baseline + 1` while the readable assistant leaf still carries an older round's envelope. The exact-identity readers returned the same empty result for "no controller response yet" and for "the branch we can read answered a different round", so the second case fell into the generic pending path and never recovered.
+- That second case is now named `branch_leaf_mismatch` and reports the observed run id, round and request id as evidence, proving which branch the visible leaf belongs to.
+- On a mismatch the observation performs one read-only accessibility-snapshot scan for the round-exact envelope. A hit is adopted as the controller response; a miss keeps the turn frozen. Neither path clicks a ChatGPT branch control and neither creates a new round. 770/770 tests pass.
+
 ## 0.7.0 - 2026-07-26
 
 ### Added
