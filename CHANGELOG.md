@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.7.2 - 2026-07-28
+
+### Fixed
+
+- Submitted-turn not-sent recovery now separates aggregate DOM user counts from current-leaf evidence. A stable assistant leaf, exact request absence, Pro-idle state, empty composer, and unchanged branch-local baseline can confirm not-sent even when sibling branches inflate the aggregate count.
+- Exact CueLine envelopes found only by a cross-branch accessibility scan are diagnostic evidence and are no longer accepted as the current branch response.
+- Durable not-sent evidence records aggregate user count, branch-local user count, and branch-local assistant count. The one-shot retry preflight revalidates unchanged aggregate/assistant counts plus dual-source request absence before Send.
+
+### Verification
+
+- `npm test` passes 777/777. `typecheck`, `build`, `npm pack --dry-run --json`, `cueline doctor --json`, and `git diff --check` pass.
+
 ## 0.7.1 - 2026-07-28
 
 ### Fixed
