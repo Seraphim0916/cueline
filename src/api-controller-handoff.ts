@@ -624,8 +624,36 @@ export async function confirmControllerTurnNotSent(
         "Not-sent recovery lacks exact Pro composer model evidence.",
       );
     }
-    const recoveryBaselineUserMessageCount =
-      submittedEvidence?.baselineUserMessageCount ?? derivedBaselineUserMessageCount;
+  const recoveryBaselineUserMessageCount =
+    submittedEvidence?.baselineUserMessageCount ?? derivedBaselineUserMessageCount;
+  const branchLocalEvidencePayload =
+    submittedEvidence?.branchLeafMismatch === undefined
+      ? {}
+      : {
+          branch_local_user_message_count:
+            submittedEvidence.branchLeafMismatch.branchLocalUserMessageCount,
+          aggregate_user_message_count:
+            submittedEvidence.observedUserMessageCount,
+          ...(typeof submittedEvidence.assistantMessageCount === "number"
+            ? {
+                branch_local_assistant_message_count:
+                  submittedEvidence.assistantMessageCount,
+              }
+            : {}),
+          branch_leaf_mismatch: {
+            expected_round: submittedEvidence.branchLeafMismatch.expectedRound,
+            expected_request_id:
+              submittedEvidence.branchLeafMismatch.expectedRequestId,
+            observed_round: submittedEvidence.branchLeafMismatch.observedRound,
+            observed_request_id:
+              submittedEvidence.branchLeafMismatch.observedRequestId,
+            branch_search_performed:
+              submittedEvidence.branchLeafMismatch.branchSearchPerformed,
+            branch_search_found_exact_envelope:
+              submittedEvidence.branchLeafMismatch
+                .branchSearchFoundExactEnvelope,
+          },
+        };
     if (existingRecovery === null) {
       await store.append("controller_turn_not_sent_confirmed", {
         round: turn.round,
@@ -642,6 +670,7 @@ export async function confirmControllerTurnNotSent(
           : {
               observed_user_message_count:
                 submittedEvidence.observedUserMessageCount,
+              ...branchLocalEvidencePayload,
               request_message_found: false,
               is_answering: false,
               page_hydrated: true,
@@ -677,6 +706,7 @@ export async function confirmControllerTurnNotSent(
           : {
               observed_user_message_count:
                 submittedEvidence.observedUserMessageCount,
+              ...branchLocalEvidencePayload,
               request_message_found: false,
               is_answering: false,
               page_hydrated: true,

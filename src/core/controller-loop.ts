@@ -1002,9 +1002,15 @@ async function reconcilePendingControllerTurn(
             abandonedRequestId: state.notSentRecovery.abandonedRequestId,
             promptHash: state.notSentRecovery.promptHash,
             conversationUrl: state.notSentRecovery.conversationUrl,
-            baselineUserMessageCount:
-              state.notSentRecovery.baselineUserMessageCount ?? 0,
-          },
+              baselineUserMessageCount:
+                state.notSentRecovery.baselineUserMessageCount ?? 0,
+              branchLocalUserMessageCount:
+                state.notSentRecovery.branchLocalUserMessageCount ?? null,
+              aggregateUserMessageCount:
+                state.notSentRecovery.aggregateUserMessageCount ?? null,
+              branchLocalAssistantMessageCount:
+                state.notSentRecovery.branchLocalAssistantMessageCount ?? null,
+            },
         }),
     ...(pending.repairAttempt === 0 ? {} : { repairAttempt: pending.repairAttempt }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),

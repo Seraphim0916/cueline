@@ -1164,14 +1164,36 @@ class CodexIabAdapter implements BrowserAdapter {
             context.baseline.isAnswering === false &&
             (await readAccessibilityRequestIdPresence(tab, input.requestId)) === false
           : true;
+      const hasBranchLocalRetryProof =
+        input.notSentRecovery.branchLocalUserMessageCount ===
+          input.notSentRecovery.baselineUserMessageCount &&
+        Number.isSafeInteger(
+          input.notSentRecovery.aggregateUserMessageCount,
+        );
+      const branchLocalRequestAbsent = hasBranchLocalRetryProof
+        ? context.baseline.requestMessageScanComplete === true &&
+          context.baseline.requestMessageFound !== true &&
+          context.baseline.isAnswering === false &&
+          (await readAccessibilityRequestIdPresence(tab, input.requestId)) ===
+            false
+        : true;
       const userCountConflicts =
-        input.postFixRetryReauthorized === true
+        hasBranchLocalRetryProof
+          ? userMessageCount !==
+              input.notSentRecovery.aggregateUserMessageCount ||
+            (Number.isSafeInteger(
+              input.notSentRecovery.branchLocalAssistantMessageCount,
+            ) &&
+              context.baseline.assistantMessageCount !==
+                input.notSentRecovery.branchLocalAssistantMessageCount)
+          : input.postFixRetryReauthorized === true
           ? userMessageCount < input.notSentRecovery.baselineUserMessageCount
           : userMessageCount !== input.notSentRecovery.baselineUserMessageCount;
       if (
         !sameChatGptConversationUrl(currentUrl, input.notSentRecovery.conversationUrl) ||
         userCountConflicts ||
-        !reauthorizedRequestAbsent
+        !reauthorizedRequestAbsent ||
+        !branchLocalRequestAbsent
       ) {
         throw new CueLineError(
           "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT",
@@ -1585,6 +1607,7 @@ class CodexIabAdapter implements BrowserAdapter {
   ): Promise<BrowserSubmittedTurnObservation> {
     const legacyPreSubmissionRecovery = input.legacyPreSubmissionRecovery === true;
     const baselineUserMessageCount = input.baselineUserMessageCount;
+    const baselineAssistantMessageCount = input.baselineAssistantMessageCount;
     if (
       !legacyPreSubmissionRecovery &&
       (!Number.isSafeInteger(baselineUserMessageCount) ||
@@ -1784,7 +1807,10 @@ class CodexIabAdapter implements BrowserAdapter {
       ].join(":");
       const pendingObservation = () =>
         this.#pendingObservation(input, evidence, pendingSignature, failedCondition);
-      if (notSentCandidate) {
+      if (
+        notSentCandidate &&
+        (stagedPromptRemains || observedUserMessageCount === baseline)
+      ) {
         const signature = `${observedUserMessageCount}:${state.assistantMessageCount}:${state.lastMessageRole}:${state.lastUserText ?? ""}:${composerState.state}:${composerState.attachmentCount}:${composerState.sendButtonEnabled}`;
         if (signature !== stableSignature) {
           stableSignature = signature;
@@ -1803,7 +1829,16 @@ class CodexIabAdapter implements BrowserAdapter {
       // 0 baseline may hydrate into the full conversation history; parsing the
       // last assistant message here would misclassify that stale response as the
       // pending turn and could authorize a repair send.
-      if (composerProvesNoActiveSubmission) {
+      const requiresBranchLocalNotSentAnalysis =
+        input.emptyComposerNotSentRecovery === true &&
+        notSentCandidate &&
+        baseline !== null &&
+        observedUserMessageCount !== null &&
+        observedUserMessageCount > baseline;
+      if (
+        composerProvesNoActiveSubmission &&
+        !requiresBranchLocalNotSentAnalysis
+      ) {
         if (baselineLoaded && (requestMessageFound === true || state.isAnswering)) {
           return pendingObservation();
         }
@@ -1819,10 +1854,11 @@ class CodexIabAdapter implements BrowserAdapter {
         baseline !== null &&
         baseline > 0 &&
         observedUserMessageCount === baseline + 1;
-      const currentRequestCorrelated =
-        requestMessageFound === true ||
-        hasExactCurrentEnvelope ||
-        hasReliablePostClickUserTurn;
+      const hasAggregatePostBaselineUserCount =
+        baseline !== null &&
+        baseline > 0 &&
+        observedUserMessageCount !== null &&
+        observedUserMessageCount > baseline;
 
       // A user-count step of exactly one is the weakest of the three
       // correlations above: it also matches the case where our prompt landed on
@@ -1832,17 +1868,27 @@ class CodexIabAdapter implements BrowserAdapter {
       const currentEnvelopeIdentity = latestControllerEnvelopeIdentity(
         state.assistantText,
       );
+      const hasOlderCueLineLeaf =
+        currentEnvelopeIdentity !== null &&
+        currentEnvelopeIdentity.runId === input.runId &&
+        (currentEnvelopeIdentity.round !== input.round ||
+          currentEnvelopeIdentity.requestId !== input.requestId);
+      const hasStableAssistantLeaf =
+        Number.isSafeInteger(baselineAssistantMessageCount) &&
+        state.assistantMessageCount === baselineAssistantMessageCount &&
+        state.lastMessageRole === "assistant";
       const branchLeafMismatchDetected =
         baselineLoaded &&
         !state.isAnswering &&
         requestMessageFound !== true &&
         !hasExactCurrentEnvelope &&
-        hasReliablePostClickUserTurn &&
+        hasAggregatePostBaselineUserCount &&
         state.lastMessageRole === "assistant" &&
-        currentEnvelopeIdentity !== null &&
-        currentEnvelopeIdentity.runId === input.runId &&
-        (currentEnvelopeIdentity.round !== input.round ||
-          currentEnvelopeIdentity.requestId !== input.requestId);
+        (hasOlderCueLineLeaf || hasStableAssistantLeaf);
+      const currentRequestCorrelated =
+        requestMessageFound === true ||
+        hasExactCurrentEnvelope ||
+        (hasReliablePostClickUserTurn && !branchLeafMismatchDetected);
 
       const deliveryFailureCorrelated =
         baselineLoaded &&
@@ -1939,35 +1985,34 @@ class CodexIabAdapter implements BrowserAdapter {
           code: "CONTROLLER_OBSERVATION_BRANCH_LEAF_MISMATCH",
           expectedRound: input.round,
           expectedRequestId: input.requestId,
-          observedRunId: currentEnvelopeIdentity.runId,
-          observedRound: currentEnvelopeIdentity.round,
-          observedRequestId: currentEnvelopeIdentity.requestId,
+          observedRunId: currentEnvelopeIdentity?.runId ?? null,
+          observedRound: currentEnvelopeIdentity?.round ?? null,
+          observedRequestId: currentEnvelopeIdentity?.requestId ?? null,
           branchSearchPerformed,
           branchSearchSource: "accessibility_snapshot",
           branchSearchFoundExactEnvelope: branchSearchEnvelope !== null,
+          branchLocalUserMessageCount: baseline,
         };
         if (branchSearchEnvelope === null) {
+          if (input.emptyComposerNotSentRecovery === true && notSentCandidate) {
+            this.#clearPendingObservation(input);
+            return { status: "definitely_not_sent", evidence };
+          }
           return this.#pendingObservation(
             input,
             evidence,
             pendingSignature,
-            `branch_leaf_mismatch: assistant leaf holds round ${currentEnvelopeIdentity.round} (${currentEnvelopeIdentity.requestId}) while round ${input.round} (${input.requestId}) has no readable response branch`,
+            currentEnvelopeIdentity === null
+              ? `branch_leaf_mismatch: assistant count remains baseline ${baselineAssistantMessageCount ?? "unknown"} while aggregate user count increased and round ${input.round} (${input.requestId}) is absent`
+              : `branch_leaf_mismatch: assistant leaf holds round ${currentEnvelopeIdentity.round} (${currentEnvelopeIdentity.requestId}) while round ${input.round} (${input.requestId}) has no readable response branch`,
           );
         }
-        const completed: PageChatState = {
-          ...state,
-          assistantText: branchSearchEnvelope,
-          lastMessageRole: "assistant",
-          assistantTextSource: "accessibility_exact_envelope",
-          assistantTextFoundBy: "accessibility_exact_envelope",
-        };
-        const turn = await this.#resultFromCompletedTurn(
-          tab,
-          selectedModelLabel,
-          completed,
+        return this.#pendingObservation(
+          input,
+          evidence,
+          pendingSignature,
+          `branch_leaf_mismatch: exact envelope for round ${input.round} (${input.requestId}) exists outside the current assistant leaf`,
         );
-        this.#clearPendingObservation(input);
-        return { status: "response", turn, evidence };
       }
       if (baselineLoaded && currentRequestCorrelated && !state.isAnswering) {
         const turn = await this.#readExistingTurn(input, false);
@@ -2599,7 +2644,9 @@ class CodexIabAdapter implements BrowserAdapter {
       input.manualSendConfirmed !== true &&
       !durableSubmittedExactResponse &&
       (completed.userMessageCount ?? 0) >
-        input.notSentRecovery.baselineUserMessageCount + 1
+        (input.notSentRecovery.aggregateUserMessageCount ??
+          input.notSentRecovery.baselineUserMessageCount) +
+          1
     ) {
       throw new CueLineError(
         "CONTROLLER_NOT_SENT_CONFIRMATION_CONFLICT",

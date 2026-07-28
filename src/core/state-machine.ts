@@ -114,6 +114,9 @@ export interface ControllerNotSentRecoveryState {
   promptHash: string;
   conversationUrl: string;
   baselineUserMessageCount: number | null;
+  branchLocalUserMessageCount?: number | null;
+  aggregateUserMessageCount?: number | null;
+  branchLocalAssistantMessageCount?: number | null;
   selectedModelLabel: string;
   status: "confirmed" | "retry_pending" | "conflict";
   retryRequestId: string | null;
@@ -924,6 +927,18 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
         baselineUserMessageCount:
           typeof payload.baseline_user_message_count === "number"
             ? payload.baseline_user_message_count
+            : null,
+        branchLocalUserMessageCount:
+          typeof payload.branch_local_user_message_count === "number"
+            ? payload.branch_local_user_message_count
+            : null,
+        aggregateUserMessageCount:
+          typeof payload.aggregate_user_message_count === "number"
+            ? payload.aggregate_user_message_count
+            : null,
+        branchLocalAssistantMessageCount:
+          typeof payload.branch_local_assistant_message_count === "number"
+            ? payload.branch_local_assistant_message_count
             : null,
         selectedModelLabel: payload.selected_model_label,
         status: "confirmed",

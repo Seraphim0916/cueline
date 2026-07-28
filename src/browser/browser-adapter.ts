@@ -23,6 +23,9 @@ export interface BrowserTurnInput {
     promptHash: string;
     conversationUrl: string;
     baselineUserMessageCount: number;
+    branchLocalUserMessageCount?: number | null;
+    aggregateUserMessageCount?: number | null;
+    branchLocalAssistantMessageCount?: number | null;
   };
   signal?: AbortSignal;
 }
@@ -60,6 +63,8 @@ export interface BranchLeafMismatchEvidence {
   branchSearchPerformed: boolean;
   branchSearchSource: "accessibility_snapshot" | null;
   branchSearchFoundExactEnvelope: boolean;
+  /** User-message count on the current assistant leaf, excluding sibling branches. */
+  branchLocalUserMessageCount: number | null;
 }
 
 export interface ControllerTurn {

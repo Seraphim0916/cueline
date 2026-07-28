@@ -221,6 +221,7 @@ function confirmedMisdirectedObservation(
 async function createSubmittedTurnWedge(
   home: string,
   runId: string = submittedTurnWedgeFixture.fixtureRunId,
+  composerPromptState: "inline_ready" | "attachment_ready" = "inline_ready",
 ): Promise<{ requestId: string }> {
   const fixture = submittedTurnWedgeFixture;
   const store = await RunStore.create({
@@ -299,7 +300,7 @@ async function createSubmittedTurnWedge(
       requestId = input.requestId;
       await hooks?.onCheckpoint?.({
         submissionState: "submitting",
-        composerPromptState: "inline_ready",
+        composerPromptState,
         conversationUrl: fixture.conversationUrl,
         selectedModelLabel: "Pro",
         baselineUserMessageCount: fixture.baselineUserMessageCount,
@@ -308,7 +309,7 @@ async function createSubmittedTurnWedge(
       });
       await hooks?.onCheckpoint?.({
         submissionState: "submitted",
-        composerPromptState: "inline_ready",
+        composerPromptState,
         conversationUrl: fixture.conversationUrl,
         selectedModelLabel: "Pro",
         baselineUserMessageCount: fixture.baselineUserMessageCount,
@@ -2570,6 +2571,72 @@ test("confirmControllerTurnNotSent accepts the evidence-gated submitted wedge sh
     requestId,
   );
   assert.equal(state.notSentRecovery?.retryRequestId, null);
+});
+
+test("confirmControllerTurnNotSent accepts branch-local baseline evidence despite aggregate uplift", async () => {
+  const home = await temporaryHome();
+  const runId = `${submittedTurnWedgeFixture.fixtureRunId}_branch_local_confirmation`;
+  const { requestId } = await createSubmittedTurnWedge(
+    home,
+    runId,
+    "attachment_ready",
+  );
+  const baseline = submittedTurnWedgeFixture.baselineUserMessageCount;
+  const browser = submittedObservationBrowser(
+    definitelyNotSentObservation({
+      observedUserMessageCount: baseline + 4,
+      assistantMessageCount: 3,
+      requestMessageScanComplete: true,
+      accessibilityRequestIdFound: false,
+      composerPromptState: "empty",
+      composerAttachmentCount: 0,
+      composerPastedTextAttachmentPresent: false,
+      composerSendButtonEnabled: false,
+      branchLeafMismatch: {
+        code: "CONTROLLER_OBSERVATION_BRANCH_LEAF_MISMATCH",
+        expectedRound: submittedTurnWedgeFixture.round,
+        expectedRequestId: requestId,
+        observedRunId: runId,
+        observedRound: submittedTurnWedgeFixture.round - 1,
+        observedRequestId: "msg_previous_round",
+        branchSearchPerformed: true,
+        branchSearchSource: "accessibility_snapshot",
+        branchSearchFoundExactEnvelope: false,
+        branchLocalUserMessageCount: baseline,
+      },
+    }),
+  );
+
+  const confirmation = await confirmControllerTurnNotSent(runId, {
+    home,
+    requestId,
+    conversationUrl: submittedTurnWedgeFixture.conversationUrl,
+    browser,
+  } as Parameters<typeof confirmControllerTurnNotSent>[1] & {
+    browser: SubmittedObservationBrowser;
+  });
+
+  assert.equal(confirmation.outcome, "confirmed");
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.pendingControllerTurns.length, 0);
+  assert.equal(state.notSentRecovery?.abandonedRequestId, requestId);
+  assert.equal(state.notSentRecovery?.retryRequestId, null);
+  const events = await readEvents(runPaths(home, runId).events);
+  const confirmed = events.findLast(
+    (event) => event.type === "controller_turn_not_sent_confirmed",
+  );
+  const confirmedPayload = confirmed?.payload as Record<string, unknown>;
+  assert.equal(confirmedPayload.branch_local_user_message_count, baseline);
+  assert.equal(confirmedPayload.aggregate_user_message_count, baseline + 4);
+  assert.equal(confirmedPayload.branch_local_assistant_message_count, 3);
+  assert.deepEqual(confirmedPayload.branch_leaf_mismatch, {
+    expected_round: submittedTurnWedgeFixture.round,
+    expected_request_id: requestId,
+    observed_round: submittedTurnWedgeFixture.round - 1,
+    observed_request_id: "msg_previous_round",
+    branch_search_performed: true,
+    branch_search_found_exact_envelope: false,
+  });
 });
 
 test("live events 2459-2478 authorize one new recovery after the prior one-shot was consumed", async () => {

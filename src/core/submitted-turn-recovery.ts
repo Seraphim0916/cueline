@@ -58,9 +58,18 @@ export function isDefinitelyNotSentObservation(
         (evidence.composerAttachmentCount ?? 0) > 0 &&
         evidence.composerSendButtonEnabled === true
       : turn.composerPromptState === "inline_ready"
-        ? evidence.composerPromptState === "inline_ready" &&
-          evidence.composerSendButtonEnabled === true
-        : false;
+      ? evidence.composerPromptState === "inline_ready" &&
+        evidence.composerSendButtonEnabled === true
+      : false;
+  const branchLocalBaselineEqual =
+    evidence.branchLeafMismatch?.code ===
+      "CONTROLLER_OBSERVATION_BRANCH_LEAF_MISMATCH" &&
+    evidence.branchLeafMismatch.expectedRound === turn.round &&
+    evidence.branchLeafMismatch.expectedRequestId === turn.requestId &&
+    evidence.branchLeafMismatch.branchSearchPerformed === true &&
+    evidence.branchLeafMismatch.branchSearchFoundExactEnvelope === false &&
+    evidence.branchLeafMismatch.branchLocalUserMessageCount ===
+      turn.baselineUserMessageCount;
   const emptyComposerProvesReloadedAttachmentWasNotPersisted =
     turn.submissionState === "submitted" &&
     turn.composerPromptState === "attachment_ready" &&
@@ -71,7 +80,8 @@ export function isDefinitelyNotSentObservation(
     evidence.requestMessageScanComplete === true &&
     evidence.accessibilityRequestIdFound === false &&
     evidence.countRegressionDetected !== true &&
-    evidence.observedUserMessageCount === turn.baselineUserMessageCount;
+    (evidence.observedUserMessageCount === turn.baselineUserMessageCount ||
+      branchLocalBaselineEqual);
   return (
     recoveryCandidate &&
     (stagedComposerMatches ||
