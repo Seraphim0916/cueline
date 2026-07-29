@@ -1017,10 +1017,24 @@ async function reconcilePendingControllerTurn(
   };
   let turn;
   let deferRecoveredDispatch = false;
+  const operatorConfirmedSubmittedTurn =
+    pending.manualSendConfirmed === true &&
+    pending.submissionState === "submitted" &&
+    pending.submissionCheckpointContract === "write_ahead_v1" &&
+    Number.isSafeInteger(pending.baselineUserMessageCount) &&
+    (pending.baselineUserMessageCount ?? -1) >= 0 &&
+    /^[0-9a-f]{64}$/.test(pending.promptHash) &&
+    pending.selectedModelLabel !== null &&
+    /^Pro(?:\s|$)/i.test(pending.selectedModelLabel) &&
+    expectedConversationUrl !== null &&
+    isExactChatGptConversationUrl(expectedConversationUrl) &&
+    (pending.retryOfRequestId === undefined ||
+      pending.retryOfRequestId === null);
   if (
     observeSubmittedTurn !== undefined &&
     expectedConversationUrl !== null &&
-    isSubmittedTurnRecoveryCandidate(pending, expectedConversationUrl)
+    (isSubmittedTurnRecoveryCandidate(pending, expectedConversationUrl) ||
+      operatorConfirmedSubmittedTurn)
   ) {
     const submittedObservation = await observeSubmittedTurn.call(
       options.browser,

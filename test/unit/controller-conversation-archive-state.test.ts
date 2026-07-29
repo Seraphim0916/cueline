@@ -82,3 +82,46 @@ test("archive evidence must match the exact completed conversation", () => {
   );
   assert.equal(archived.controllerConversationArchive.status, "archived");
 });
+
+test("pin evidence is accepted only for the exact bound conversation", () => {
+  const conversationUrl = "https://chatgpt.com/c/pin-state-evidence";
+  let state = initialRunState("run_pin_state_evidence", "pin while Pro works");
+  state = reduceRunState(
+    state,
+    event("controller_conversation_bound", { conversation_url: conversationUrl }, 1),
+  );
+
+  const wrongConversation = reduceRunState(
+    state,
+    event(
+      "controller_conversation_pinned",
+      {
+        conversation_url: "https://chatgpt.com/c/other-conversation",
+        proof: "unpin_menuitem_observed",
+        result: "pinned",
+      },
+      2,
+    ),
+  );
+  assert.equal(wrongConversation.controllerConversationPin.status, "pending");
+
+  const pinned = reduceRunState(
+    state,
+    event(
+      "controller_conversation_pinned",
+      {
+        conversation_url: conversationUrl,
+        proof: "unpin_menuitem_observed",
+        result: "already_pinned",
+      },
+      2,
+    ),
+  );
+  assert.deepEqual(pinned.controllerConversationPin, {
+    status: "pinned",
+    proof: "unpin_menuitem_observed",
+    result: "already_pinned",
+    code: null,
+    message: null,
+  });
+});

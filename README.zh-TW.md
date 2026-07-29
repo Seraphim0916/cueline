@@ -71,7 +71,7 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.7.1
+npm install -g cueline@0.7.2
 cueline install
 cueline doctor
 ```
@@ -79,7 +79,7 @@ cueline doctor
 作為備援，也可以安裝 [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.1/cueline-0.7.1.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.2/cueline-0.7.2.tgz
 cueline install
 cueline doctor
 ```
@@ -208,7 +208,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.7.1
+CueLine 0.7.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

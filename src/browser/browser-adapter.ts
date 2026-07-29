@@ -309,6 +309,17 @@ export interface BrowserConversationArchiveHooks {
   onBeforeArchiveClick?: () => Promise<void>;
 }
 
+export interface BrowserConversationPinInput {
+  conversationUrl: string;
+  signal?: AbortSignal;
+}
+
+export interface BrowserConversationPinEvidence {
+  conversationUrl: string;
+  proof: "unpin_menuitem_observed";
+  result: "pinned" | "already_pinned";
+}
+
 export interface BrowserAdapter {
   /**
    * Declares that `controller_turn_requested` is durably recorded before any
@@ -339,4 +350,8 @@ export interface BrowserAdapter {
     input: BrowserConversationArchiveInput,
     hooks?: BrowserConversationArchiveHooks,
   ): Promise<BrowserConversationArchiveEvidence>;
+  /** Ensure one exact controller conversation is pinned. Safe to repeat. */
+  pinConversation?(
+    input: BrowserConversationPinInput,
+  ): Promise<BrowserConversationPinEvidence>;
 }

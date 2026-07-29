@@ -297,13 +297,16 @@ export async function readPageChatState(
       );
       const selectedAssistant = exactAssistant ?? lastAssistant;
       const assistantText = normalizeMessageText(visibleMessageText(selectedAssistant));
+      const deliveryAssistantText = normalizeMessageText(
+        visibleMessageText(lastAssistant),
+      );
       const deliveryTimeoutMessage =
         "Message delivery timed out. Please try again." as const;
       const retryScope =
-        selectedAssistant !== undefined &&
-        typeof selectedAssistant.closest === "function"
-          ? selectedAssistant.closest("article") ?? selectedAssistant
-          : selectedAssistant;
+        lastAssistant !== undefined &&
+        typeof lastAssistant.closest === "function"
+          ? lastAssistant.closest("article") ?? lastAssistant
+          : lastAssistant;
       const retryButtons =
         retryScope === undefined ||
         typeof retryScope.querySelectorAll !== "function"
@@ -315,8 +318,8 @@ export async function readPageChatState(
             return /^retry$/i.test(label) && isVisibleActionButton(button);
           });
       const deliveryFailure =
-        selectedAssistant === lastAssistant &&
-        assistantText.includes(deliveryTimeoutMessage)
+        lastAssistant !== undefined &&
+        deliveryAssistantText.includes(deliveryTimeoutMessage)
           ? {
               code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT" as const,
               message: deliveryTimeoutMessage,

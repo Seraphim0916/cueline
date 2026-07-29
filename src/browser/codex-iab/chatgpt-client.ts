@@ -3,6 +3,8 @@ import type {
   BrowserConversationArchiveEvidence,
   BrowserConversationArchiveHooks,
   BrowserConversationArchiveInput,
+  BrowserConversationPinEvidence,
+  BrowserConversationPinInput,
   BrowserDeliveryRetryHooks,
   BrowserDeliveryRetryInput,
   BrowserDeliveryRetryResult,
@@ -46,7 +48,9 @@ import {
   ARCHIVE_MENUITEM_NAMES,
   CHATGPT_URL,
   COMPOSER_TEXTBOX_NAMES,
+  PIN_MENUITEM_NAMES,
   SEND_BUTTON_NAMES,
+  UNPIN_MENUITEM_NAMES,
 } from "./selectors.js";
 import {
   hasExactControllerEnvelopeIdentity,
@@ -95,6 +99,7 @@ const SUBMISSION_ACTION_TIMEOUT_MS = 10_000;
 const POST_CLICK_ACKNOWLEDGEMENT_TIMEOUT_MS = 10_000;
 const CONVERSATION_OPTIONS_SELECTOR = '[data-testid="conversation-options-button"]';
 const ARCHIVE_PROOF_TIMEOUT_MS = 10_000;
+const PIN_PROOF_TIMEOUT_MS = 10_000;
 type TurnStage = "pre_submit" | "submitting" | "submitted";
 
 interface TurnAttemptContext {
@@ -1889,10 +1894,13 @@ class CodexIabAdapter implements BrowserAdapter {
         requestMessageFound === true ||
         hasExactCurrentEnvelope ||
         (hasReliablePostClickUserTurn && !branchLeafMismatchDetected);
+      const deliveryFailureRequestCorrelated =
+        currentRequestCorrelated ||
+        (input.manualSendConfirmed === true && hasReliablePostClickUserTurn);
 
       const deliveryFailureCorrelated =
         baselineLoaded &&
-        currentRequestCorrelated &&
+        deliveryFailureRequestCorrelated &&
         state.deliveryFailure !== undefined &&
         state.deliveryFailure !== null &&
         state.isAnswering === false &&
@@ -2717,6 +2725,123 @@ class CodexIabAdapter implements BrowserAdapter {
     } catch (error) {
       throw this.#reconciliationFailure(error, input);
     }
+  }
+
+  async pinConversation(
+    input: BrowserConversationPinInput,
+  ): Promise<BrowserConversationPinEvidence> {
+    throwIfCancelled(input.signal);
+    if (!isConversationUrl(input.conversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_PIN_URL_REQUIRED",
+        "Pinning requires one exact ChatGPT /c/<conversation-id> URL.",
+      );
+    }
+    if (
+      this.#conversationUrl !== undefined &&
+      !sameChatGptConversationUrl(this.#conversationUrl, input.conversationUrl)
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_PIN_MISMATCH",
+        "The pin request does not match the adapter's bound controller conversation.",
+      );
+    }
+    this.#conversationUrl = input.conversationUrl;
+    const tab = await this.#getTab();
+    const pageUrl = (await tab.url()) ?? "";
+    if (!sameChatGptConversationUrl(pageUrl, input.conversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_PIN_MISMATCH",
+        "The active ChatGPT tab is not the controller conversation to pin.",
+      );
+    }
+    if (!tab.playwright.locator) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_PIN_UNAVAILABLE",
+        "The browser cannot locate ChatGPT's conversation options button.",
+      );
+    }
+    const optionsButton = tab.playwright.locator(CONVERSATION_OPTIONS_SELECTOR);
+    if (!(await isActionableLocator(optionsButton))) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_PIN_UNAVAILABLE",
+        "ChatGPT's conversation options button is missing, hidden, disabled, or ambiguous.",
+      );
+    }
+    await optionsButton.click({ timeoutMs: 10_000 });
+    const alreadyPinned = await findUniqueLocator(
+      tab,
+      "menuitem",
+      UNPIN_MENUITEM_NAMES,
+    );
+    if (alreadyPinned && (await isActionableLocator(alreadyPinned))) {
+      return {
+        conversationUrl: input.conversationUrl,
+        proof: "unpin_menuitem_observed",
+        result: "already_pinned",
+      };
+    }
+    const pinItem = await findUniqueLocator(tab, "menuitem", PIN_MENUITEM_NAMES);
+    if (!pinItem || !(await isActionableLocator(pinItem))) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_PIN_UNAVAILABLE",
+        "ChatGPT's Pin chat menu item is missing, hidden, disabled, or ambiguous.",
+      );
+    }
+    const finalPageUrl = (await tab.url()) ?? "";
+    if (!sameChatGptConversationUrl(finalPageUrl, input.conversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_PIN_MISMATCH",
+        "The ChatGPT page changed before Pin chat click.",
+      );
+    }
+    throwIfCancelled(input.signal);
+    let clickFailure: unknown;
+    try {
+      await pinItem.click({ timeoutMs: 10_000 });
+    } catch (error) {
+      clickFailure = error;
+    }
+    const deadline = Date.now() + Math.min(this.#options.timeoutMs, PIN_PROOF_TIMEOUT_MS);
+    let proofMenuReopened = false;
+    while (true) {
+      throwIfCancelled(input.signal);
+      const currentUrl = (await tab.url().catch(() => undefined)) ?? "";
+      if (!sameChatGptConversationUrl(currentUrl, input.conversationUrl)) {
+        throw new CueLineError(
+          "CONTROLLER_CONVERSATION_PIN_MISMATCH",
+          "The ChatGPT page changed while verifying Pin chat.",
+          { cause: clickFailure },
+        );
+      }
+      const unpinItem = await findUniqueLocator(
+        tab,
+        "menuitem",
+        UNPIN_MENUITEM_NAMES,
+      );
+      if (unpinItem && (await isActionableLocator(unpinItem))) {
+        return {
+          conversationUrl: input.conversationUrl,
+          proof: "unpin_menuitem_observed",
+          result: "pinned",
+        };
+      }
+      if (!proofMenuReopened && (await isActionableLocator(optionsButton))) {
+        await optionsButton.click({ timeoutMs: 10_000 });
+        proofMenuReopened = true;
+        continue;
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      await tab.playwright.waitForTimeout(
+        Math.min(this.#options.pollIntervalMs, remainingMs),
+      );
+    }
+    throw new CueLineError(
+      "CONTROLLER_CONVERSATION_PIN_UNVERIFIED",
+      "ChatGPT did not expose proof the controller conversation is pinned.",
+      { cause: clickFailure },
+    );
   }
 
   async archiveConversation(

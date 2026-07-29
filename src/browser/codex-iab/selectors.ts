@@ -17,4 +17,6 @@ export const SEND_BUTTON_NAMES = [
 
 export const ARCHIVE_MENUITEM_NAMES = ["Archive", "封存"] as const;
 
+export const PIN_MENUITEM_NAMES = ["Pin chat", "釘選對話"] as const;
+export const UNPIN_MENUITEM_NAMES = ["Unpin chat", "取消釘選對話"] as const;
 export const CHATGPT_URL = "https://chatgpt.com/";

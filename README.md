@@ -80,7 +80,7 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.7.1
+npm install -g cueline@0.7.2
 cueline install
 cueline doctor
 ```
@@ -88,7 +88,7 @@ cueline doctor
 As a fallback, install the packaged tarball from the [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.1/cueline-0.7.1.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.2/cueline-0.7.2.tgz
 cueline install
 cueline doctor
 ```
@@ -220,6 +220,10 @@ ChatGPT's exact `Message delivery timed out. Please try again.` assistant state 
 
 Inside Codex's runtime, import the absolute module that `cueline api path` prints — that is the built API of the package you installed.
 
+### Pinned ChatGPT controller conversations
+
+CueLine automatically ensures each exact ChatGPT Pro controller conversation appears in the web sidebar's Pinned section after its `/c/<conversation-id>` URL is durably bound. The operation is idempotent: an existing `Unpin chat` item proves the conversation is already pinned, while a new Pin click must produce that same proof. Pin state is run-scoped, so concurrent runs pin their own conversations independently. CueLine does not automatically unpin completed conversations or disturb a chat that was pinned manually.
+
 ## The CLI
 
 The CLI does not drive the browser. Run `cueline help` for every positional argument and option before using a state-changing command.
@@ -232,7 +236,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.7.1
+CueLine 0.7.2
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

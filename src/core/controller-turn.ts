@@ -429,6 +429,49 @@ function repairPrompt(
   ].join("\n");
 }
 
+async function ensureControllerConversationPinned(
+  store: RunStore<CueLineRunState>,
+  browser: BrowserAdapter,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (
+    browser.pinConversation === undefined ||
+    store.state.controllerConversationPin?.status === "pinned" ||
+    !isExactChatGptConversationUrl(store.state.conversationUrl)
+  ) {
+    return;
+  }
+  const conversationUrl = store.state.conversationUrl;
+  try {
+    const evidence = await browser.pinConversation({
+      conversationUrl,
+      ...(signal === undefined ? {} : { signal }),
+    });
+    if (
+      !sameChatGptConversationUrl(evidence.conversationUrl, conversationUrl) ||
+      evidence.proof !== "unpin_menuitem_observed" ||
+      (evidence.result !== "pinned" && evidence.result !== "already_pinned")
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_PIN_EVIDENCE_INVALID",
+        "ChatGPT pin evidence does not match the exact controller conversation.",
+      );
+    }
+    await store.append("controller_conversation_pinned", {
+      conversation_url: conversationUrl,
+      proof: evidence.proof,
+      result: evidence.result,
+    });
+  } catch (error) {
+    const failure = asCueLineError(error, "CONTROLLER_CONVERSATION_PIN_FAILED");
+    await store.append("controller_conversation_pin_failed", {
+      conversation_url: conversationUrl,
+      code: failure.code,
+      message: truncate(failure.message, 2_000),
+    });
+  }
+}
+
 export async function requestControllerCommand(
   store: RunStore<CueLineRunState>,
   browser: BrowserAdapter,
@@ -620,10 +663,12 @@ export async function requestControllerCommand(
         browser.observeTurn !== undefined
       ) {
         await browser.submitTurn(input, hooks);
+        await ensureControllerConversationPinned(store, browser, signal);
         return undefined;
       }
       turn = await browser.sendTurn(input, hooks);
     }
+    await ensureControllerConversationPinned(store, browser, signal);
     try {
       assertControllerTurnEvidence(
         turn,
@@ -654,6 +699,7 @@ export async function requestControllerCommand(
             model_evidence_source: turn.model.source,
           }),
     });
+    await ensureControllerConversationPinned(store, browser, signal);
     try {
       const command = parseControllerCommand(turn.text, expected);
       await validateCommand?.(command);

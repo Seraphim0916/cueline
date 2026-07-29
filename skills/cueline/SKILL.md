@@ -182,6 +182,10 @@ try {
 
 Submit real terminal evidence only. A duplicate submit returns `already_terminal`; do not invent or replace the first result. Continue through controller-observation and caller pauses until the controller returns `complete`, `blocked`, or `cancelled`. CueLine rejects both `complete` and `blocked` while any required or optional job is still pending/running; settle, inspect, or cancel every job first.
 
+### Pinned ChatGPT controller conversations
+
+After an exact ChatGPT Pro `/c/<conversation-id>` URL is durably bound, CueLine idempotently ensures that conversation is in the web sidebar Pinned section. Each run owns only its exact conversation identity; concurrent runs may remain pinned together. Existing `Unpin chat` menu evidence means success without another click. Pin failure is recorded but never turns a durably submitted controller turn into a resend. CueLine never auto-unpins on completion.
+
 ## Continue a run
 
 When an interrupted or locally failed run already has a `runId`, resume it instead of starting over:

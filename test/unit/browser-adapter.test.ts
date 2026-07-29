@@ -153,6 +153,9 @@ function fakeBrowser(options: {
   archiveClickChangesUrlBeforeThrow?: boolean;
   archiveButtonAvailable?: boolean;
   archiveMenuItemAvailable?: boolean;
+  initiallyPinned?: boolean;
+  pinMenuItemAvailable?: boolean;
+  pinClickError?: string;
   accessibilitySnapshots?: string[];
   documentHasFocus?: boolean | null;
 }) {
@@ -175,7 +178,10 @@ function fakeBrowser(options: {
   });
   const missingProOption = new FakeLocator();
   missingProOption.countResult = 0;
-  const conversationOptionsButton = new FakeLocator();
+  let conversationMenuOpen = false;
+  const conversationOptionsButton = new FakeLocator(() => {
+    conversationMenuOpen = !conversationMenuOpen;
+  });
   const missingConversationOptionsButton = new FakeLocator();
   missingConversationOptionsButton.countResult = 0;
   const archiveMenuItem = new FakeLocator(() => {
@@ -183,6 +189,20 @@ function fakeBrowser(options: {
   });
   const missingArchiveMenuItem = new FakeLocator();
   missingArchiveMenuItem.countResult = 0;
+  let pinned = options.initiallyPinned ?? false;
+  const pinMenuItem = new FakeLocator(() => {
+    pinned = true;
+    conversationMenuOpen = false;
+  });
+  const missingPinMenuItem = new FakeLocator();
+  missingPinMenuItem.countResult = 0;
+  const unpinMenuItem = new FakeLocator();
+  const missingUnpinMenuItem = new FakeLocator();
+  missingUnpinMenuItem.countResult = 0;
+  if (options.pinClickError) {
+    pinMenuItem.failFirstClick = true;
+    pinMenuItem.firstClickError = options.pinClickError;
+  }
   if (options.archiveClickError) {
     archiveMenuItem.failFirstClick = true;
     archiveMenuItem.firstClickError = options.archiveClickError;
@@ -229,11 +249,22 @@ function fakeBrowser(options: {
       if (role === "menuitemradio" && query.name === "Pro") {
         return options.proOptionAvailable === false ? missingProOption : proOption;
       }
-      if (role === "menuitem" && (query.name === "Archive" || query.name === "封存")) {
-        return options.archiveMenuItemAvailable === false
-          ? missingArchiveMenuItem
-          : archiveMenuItem;
-      }
+    if (role === "menuitem" && (query.name === "Archive" || query.name === "封存")) {
+      return options.archiveMenuItemAvailable === false || !conversationMenuOpen
+        ? missingArchiveMenuItem
+        : archiveMenuItem;
+    }
+    if (role === "menuitem" && (query.name === "Pin chat" || query.name === "釘選對話")) {
+      return options.pinMenuItemAvailable === false || pinned || !conversationMenuOpen
+        ? missingPinMenuItem
+        : pinMenuItem;
+    }
+    if (
+      role === "menuitem" &&
+      (query.name === "Unpin chat" || query.name === "取消釘選對話")
+    ) {
+      return pinned && conversationMenuOpen ? unpinMenuItem : missingUnpinMenuItem;
+    }
       if (options.sendButtonAvailable === false) {
         return missingSendButton;
       }
@@ -468,6 +499,9 @@ function fakeBrowser(options: {
     sendButtons,
     conversationOptionsButton,
     archiveMenuItem,
+    pinMenuItem,
+    unpinMenuItem,
+    isPinned: () => pinned,
     hangFutureUrlReads: () => {
       hangUrlReads = true;
     },
@@ -512,6 +546,122 @@ test("accepts an explicit zero stabilization window for deterministic tests", ()
   assert.doesNotThrow(() =>
     createCodexIabAdapter({ timeoutMs: 1, pollIntervalMs: 1, stableMs: 0 }),
   );
+});
+
+test("pins one exact controller conversation and proves the resulting menu state", async () => {
+  const conversationUrl = "https://chatgpt.com/c/pin-browser-adapter";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: true,
+        assistantText: "working",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+  });
+
+  const evidence = await adapter.pinConversation!({ conversationUrl });
+
+  assert.equal(fixture.conversationOptionsButton.clicks, 2);
+  assert.equal(fixture.pinMenuItem.clicks, 1);
+  assert.equal(fixture.isPinned(), true);
+  assert.deepEqual(evidence, {
+    conversationUrl,
+    proof: "unpin_menuitem_observed",
+    result: "pinned",
+  });
+});
+
+test("pin ensure is idempotent for an already pinned conversation", async () => {
+  const conversationUrl = "https://chatgpt.com/c/pin-browser-already";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initiallyPinned: true,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({ browser: fixture.browser, conversationUrl });
+
+  const evidence = await adapter.pinConversation!({ conversationUrl });
+
+  assert.equal(fixture.pinMenuItem.clicks, 0);
+  assert.equal(evidence.result, "already_pinned");
+});
+
+test("multiple adapters pin their exact conversations independently", async () => {
+  const urls = [
+    "https://chatgpt.com/c/pin-browser-run-a",
+    "https://chatgpt.com/c/pin-browser-run-b",
+  ];
+  const fixtures = urls.map((conversationUrl) =>
+    fakeBrowser({
+      initialUrl: conversationUrl,
+      states: [
+        {
+          pageUrl: conversationUrl,
+          isAnswering: true,
+          assistantText: "working",
+          assistantMessageCount: 1,
+        },
+      ],
+    }),
+  );
+  const adapters = fixtures.map((fixture, index) =>
+    createCodexIabAdapter({
+      browser: fixture.browser,
+      conversationUrl: urls[index]!,
+    }),
+  );
+
+  await Promise.all(
+    adapters.map((adapter, index) =>
+      adapter.pinConversation!({ conversationUrl: urls[index]! }),
+    ),
+  );
+
+  assert.deepEqual(fixtures.map((fixture) => fixture.isPinned()), [true, true]);
+  assert.deepEqual(fixtures.map((fixture) => fixture.pinMenuItem.clicks), [1, 1]);
+});
+
+test("pin ensure never opens controls for a different bound conversation", async () => {
+  const conversationUrl = "https://chatgpt.com/c/pin-browser-bound";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "complete",
+        assistantMessageCount: 1,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({ browser: fixture.browser, conversationUrl });
+
+  await assert.rejects(
+    adapter.pinConversation!({
+      conversationUrl: "https://chatgpt.com/c/pin-browser-other",
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_PIN_MISMATCH",
+  );
+  assert.equal(fixture.conversationOptionsButton.clicks, 0);
+  assert.equal(fixture.pinMenuItem.clicks, 0);
 });
 
 test("archives one exact completed conversation with one Archive click", async () => {
@@ -1315,7 +1465,22 @@ test("page chat state recognizes delivery timeout only with one visible Retry in
       return selector === "article" ? article : null;
     },
   });
+  const expectedIdentity = {
+    runId: "run_delivery_timeout_old_envelope",
+    round: 34,
+    requestId: "msg_delivery_timeout_old_envelope",
+  };
   const messages = [
+    message(
+      "assistant",
+      `<CueLineControl>${JSON.stringify({
+        protocol: "cueline/0.1",
+        run_id: expectedIdentity.runId,
+        round: expectedIdentity.round,
+        request_id: expectedIdentity.requestId,
+        action: "wait",
+      })}</CueLineControl>`,
+    ),
     message("user", "Pasted text(326).txt Document"),
     message(
       "assistant",
@@ -1331,7 +1496,9 @@ test("page chat state recognizes delivery timeout only with one visible Retry in
       querySelectorAll(selector: string) {
         if (selector === "button") return scopedButtons;
         if (selector === "[data-message-author-role]") return messages;
-        if (selector === "[data-message-model-slug]") return [messages[1]];
+        if (selector === "[data-message-model-slug]") {
+          return [messages[0], messages[2]];
+        }
         return [];
       },
     },
@@ -1358,7 +1525,7 @@ test("page chat state recognizes delivery timeout only with one visible Retry in
   } as unknown as IabTab;
 
   try {
-    const state = await readPageChatState(tab);
+    const state = await readPageChatState(tab, expectedIdentity);
     assert.deepEqual(state.deliveryFailure, {
       code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT",
       message: "Message delivery timed out. Please try again.",
@@ -1366,7 +1533,7 @@ test("page chat state recognizes delivery timeout only with one visible Retry in
     });
 
     scopedButtons = [retryButton, { ...retryButton }];
-    const ambiguous = await readPageChatState(tab);
+    const ambiguous = await readPageChatState(tab, expectedIdentity);
     assert.equal(ambiguous.deliveryFailure?.retryActionAvailable, false);
   } finally {
     for (const [name, descriptor] of [
@@ -3381,7 +3548,13 @@ test("submitted-turn recovery classifies ChatGPT delivery timeout without clicki
     cuaAvailable: true,
     states: [{
       isAnswering: false,
-      assistantText: "Message delivery timed out. Please try again.\nRetry",
+      assistantText: `<CueLineControl>${JSON.stringify({
+        protocol: "cueline/0.1",
+        run_id: runId,
+        round: 197,
+        request_id: "msg_delivery_timeout_older_envelope",
+        action: "wait",
+      })}</CueLineControl>`,
       assistantMessageCount: 4,
       userMessageCount: 212,
       lastUserText: "Pasted text(326).txt Document",
@@ -3418,6 +3591,7 @@ test("submitted-turn recovery classifies ChatGPT delivery timeout without clicki
     prompt: "round 198 attachment prompt",
     attachmentPromptExpected: true,
     durableSubmittedCheckpoint: true,
+    manualSendConfirmed: true,
     baselineUserMessageCount: 211,
     baselineAssistantMessageCount: 3,
   });

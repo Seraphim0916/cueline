@@ -30,6 +30,8 @@ const KNOWN_EVENT_TYPES = new Set([
   "controller_conversation_archive_started",
   "controller_conversation_archived",
   "controller_conversation_bound",
+  "controller_conversation_pin_failed",
+  "controller_conversation_pinned",
   "controller_delivery_timeout_observed",
   "controller_delivery_timeout_operator_attested",
   "controller_delivery_timeout_retry_authorized",
@@ -282,6 +284,10 @@ function summary(type: string, attributes: Record<string, string | number | bool
       return `Controller conversation archive preflight failed${attributes.code ? `: ${attributes.code}` : ""}.`;
     case "controller_conversation_archive_preflight_failed":
       return `Controller conversation archive remains retryable after a pre-click failure${attributes.code ? `: ${attributes.code}` : ""}.`;
+    case "controller_conversation_pinned":
+      return `Controller conversation pinned${attributes.result === "already_pinned" ? " (already pinned)" : ""}.`;
+    case "controller_conversation_pin_failed":
+      return `Controller conversation pin deferred${attributes.code ? `: ${attributes.code}` : ""}.`;
     case "job_registered":
       return "Local job registered.";
     case "job_status":

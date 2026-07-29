@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- ChatGPT Pro controller conversations are pinned after their exact `/c/<conversation-id>` URL is durably bound. Pinning is idempotent, records `Unpin chat` menu proof, remains isolated per run, and never auto-unpins another active or manually pinned conversation.
+
+### Fixed
+
+- Submitted-turn recovery now recognizes the newest ChatGPT delivery-timeout assistant leaf even when an older exact CueLine envelope remains selected, and permits read-only observation of strongly evidenced operator-confirmed submitted turns without resending.
+
 ## 0.7.2 - 2026-07-28
 
 ### Fixed

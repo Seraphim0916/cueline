@@ -73,6 +73,14 @@ export interface ControllerConversationArchiveState {
   postActionUrl: string | null;
 }
 
+export interface ControllerConversationPinState {
+  status: "pending" | "pinned";
+  proof: "unpin_menuitem_observed" | null;
+  result: "pinned" | "already_pinned" | null;
+  code: string | null;
+  message: string | null;
+}
+
 export interface PendingControllerTurn {
   round: number;
   requestId: string;
@@ -233,6 +241,7 @@ export interface CueLineRunState {
   status: CueLineRunStatus;
   round: number;
   conversationUrl: string | null;
+  controllerConversationPin: ControllerConversationPinState;
   controllerConversationArchive: ControllerConversationArchiveState;
   pendingControllerTurns: PendingControllerTurn[];
   abandonedControllerTurns: PendingControllerTurn[];
@@ -359,6 +368,22 @@ function initialControllerConversationArchive(
   };
 }
 
+function initialControllerConversationPin(): ControllerConversationPinState {
+  return {
+    status: "pending",
+    proof: null,
+    result: null,
+    code: null,
+    message: null,
+  };
+}
+
+function controllerConversationPin(
+  state: CueLineRunState,
+): ControllerConversationPinState {
+  return state.controllerConversationPin ?? initialControllerConversationPin();
+}
+
 function controllerConversationArchive(
   state: CueLineRunState,
 ): ControllerConversationArchiveState {
@@ -390,6 +415,7 @@ export function initialRunState(
     status: "running",
     round: 0,
     conversationUrl: null,
+    controllerConversationPin: initialControllerConversationPin(),
     controllerConversationArchive: initialControllerConversationArchive(
       archiveControllerConversationOnComplete,
     ),
@@ -427,6 +453,41 @@ export function isControllerTurnProvenUnsent(
 
 export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLineRunState {
   const payload = recordPayload(event);
+
+  if (
+    event.type === "controller_conversation_pinned" &&
+    typeof payload.conversation_url === "string" &&
+    state.conversationUrl !== null &&
+    sameChatGptConversationUrl(payload.conversation_url, state.conversationUrl) &&
+    payload.proof === "unpin_menuitem_observed" &&
+    (payload.result === "pinned" || payload.result === "already_pinned")
+  ) {
+    return {
+      ...state,
+      controllerConversationPin: {
+        status: "pinned",
+        proof: "unpin_menuitem_observed",
+        result: payload.result,
+        code: null,
+        message: null,
+      },
+    };
+  }
+  if (
+    event.type === "controller_conversation_pin_failed" &&
+    controllerConversationPin(state).status === "pending" &&
+    typeof payload.code === "string" &&
+    typeof payload.message === "string"
+  ) {
+    return {
+      ...state,
+      controllerConversationPin: {
+        ...controllerConversationPin(state),
+        code: payload.code,
+        message: payload.message,
+      },
+    };
+  }
   if (event.type === "run_created" && typeof payload.request === "string") {
     const archiveEnabled = payload.archive_controller_conversation_on_complete === true;
     return {

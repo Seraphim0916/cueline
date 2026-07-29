@@ -236,6 +236,8 @@ test("controller dispatches one job, observes it, then completes", async () => {
   assert.equal(result.conversationUrl, "https://chatgpt.com/c/cueline-test");
   assert.equal(browser.calls.length, 2);
   assert.equal(browser.archiveCalls.length, 0);
+  assert.deepEqual(browser.pinCalls, ["https://chatgpt.com/c/cueline-test"]);
+  assert.equal(result.state.controllerConversationPin.status, "pinned");
   assert.equal(supervisor.starts.length, 1);
   assert.match(browser.calls[1]?.prompt ?? "", /WORKER_OK/);
   const modelEvents = (await readEvents(runPaths(stateHome, runId).events))
