@@ -1690,8 +1690,24 @@ export async function runControllerLoop(options: ControllerLoopOptions): Promise
       });
     }
     const result = await driveControllerLoop(store, cancellation.options);
+    if (
+      store.state.controllerConversationRollover?.status === "opened" &&
+      store.state.conversationUrl !== null
+    ) {
+      await store.append("controller_conversation_rotation_activated", {
+        conversation_url: store.state.conversationUrl,
+        generation: store.state.conversationGeneration ?? 1,
+      });
+      await store.snapshot();
+    }
     lease.assertHealthy();
-    return result;
+    return {
+      ...result,
+      ...(store.state.conversationUrl === null
+        ? {}
+        : { conversationUrl: store.state.conversationUrl }),
+      state: store.state,
+    };
   } catch (error) {
     return await handleControllerFailure(store, options.jobSupervisor, error);
   } finally {
@@ -1881,6 +1897,107 @@ export async function continueControllerLoop(
     ) {
       return awaitingCallerResult(store.state);
     }
+    const requestedRotation = options.rotateControllerConversation;
+    if (requestedRotation !== undefined) {
+      const evidence = requestedRotation.evidence.trim();
+      if (
+        requestedRotation.trigger !== "operator_confirmed_context_exhausted" ||
+        evidence.length === 0 ||
+        evidence.length > 2_000 ||
+        /[\u0000-\u001f\u007f]/.test(evidence)
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_CONVERSATION_ROTATION_EVIDENCE_INVALID",
+          "Rotation requires 1-2000 characters of exact, non-secret context-exhaustion Web evidence.",
+        );
+      }
+      if (options.reconcileRequestId !== undefined) {
+        throw new CueLineError(
+          "CONTROLLER_CONVERSATION_ROTATION_RECONCILIATION_CONFLICT",
+          "Rotation and manual reconciliation cannot be requested in the same continuation.",
+        );
+      }
+      const pendingTurns = store.state.pendingControllerTurns ?? [];
+      if (
+        pendingTurns.length !== 1 ||
+        pendingTurns[0]!.submissionState !== "submitted" ||
+        store.state.conversationUrl === null
+      ) {
+        throw new CueLineError(
+          "CONTROLLER_CONVERSATION_ROTATION_BOUNDARY_UNSAFE",
+          "Rotation requires exactly one durably submitted controller turn on one exact conversation URL.",
+        );
+      }
+      const pending = pendingTurns[0]!;
+      await store.append("controller_conversation_rotation_requested", {
+        trigger: requestedRotation.trigger,
+        evidence,
+        predecessor_conversation_url: store.state.conversationUrl,
+        predecessor_request_id: pending.requestId,
+        predecessor_round: pending.round,
+      });
+    }
+    const rollover = store.state.controllerConversationRollover;
+    if (
+      rollover?.status === "opened" &&
+      store.state.conversationUrl !== null
+    ) {
+      await store.append("controller_conversation_rotation_activated", {
+        conversation_url: store.state.conversationUrl,
+        generation: store.state.conversationGeneration ?? 1,
+      });
+    } else if (
+      rollover?.status === "opening" ||
+      (rollover?.status === "opened" && store.state.conversationUrl === null)
+    ) {
+      if (options.browser.openNewConversation === undefined) {
+        if (rollover.status === "opening") {
+          await store.append("controller_conversation_rotation_failed", {
+            code: "CONTROLLER_CONVERSATION_ROTATION_UNSUPPORTED",
+            message: "The active browser adapter cannot open a dedicated new conversation.",
+          });
+        }
+        await store.snapshot();
+        return awaitingControllerResult(store.state);
+      }
+      try {
+        const opened = await options.browser.openNewConversation({
+          predecessorConversationUrl: rollover.predecessorConversationUrl,
+          signal: cancellation.options.signal,
+        });
+        if (
+          !sameChatGptConversationUrl(
+            opened.predecessorConversationUrl,
+            rollover.predecessorConversationUrl,
+          ) ||
+          opened.openedUrl !== "https://chatgpt.com/"
+        ) {
+          throw new CueLineError(
+            "CONTROLLER_CONVERSATION_ROTATION_EVIDENCE_INVALID",
+            "The browser did not prove a dedicated ChatGPT root conversation for the expected predecessor.",
+          );
+        }
+        if (rollover.status === "opening") {
+          await store.append("controller_conversation_replacement_opened", {
+            predecessor_conversation_url: rollover.predecessorConversationUrl,
+            opened_url: opened.openedUrl,
+          });
+        }
+      } catch (error) {
+        const failure = asCueLineError(
+          error,
+          "CONTROLLER_CONVERSATION_ROTATION_FAILED",
+        );
+        if (rollover.status === "opening") {
+          await store.append("controller_conversation_rotation_failed", {
+            code: failure.code,
+            message: failure.message.slice(0, 2_000),
+          });
+        }
+        await store.snapshot();
+        return awaitingControllerResult(store.state);
+      }
+    }
     if ((store.state.pendingControllerTurns ?? []).length > 0) {
       const outcome = await reconcilePendingControllerTurn(store, {
         ...options,
@@ -1897,14 +2014,33 @@ export async function continueControllerLoop(
       ) {
         return readyResult(store.state);
       }
-    } else if (options.conversationUrl) {
+    } else if (
+      options.conversationUrl &&
+      store.state.controllerConversationRollover?.status !== "opened"
+    ) {
       await store.append("controller_conversation_bound", {
         conversation_url: options.conversationUrl,
       });
     }
     const result = await driveControllerLoop(store, cancellation.options);
+    if (
+      store.state.controllerConversationRollover?.status === "opened" &&
+      store.state.conversationUrl !== null
+    ) {
+      await store.append("controller_conversation_rotation_activated", {
+        conversation_url: store.state.conversationUrl,
+        generation: store.state.conversationGeneration ?? 1,
+      });
+      await store.snapshot();
+    }
     lease.assertHealthy();
-    return result;
+    return {
+      ...result,
+      ...(store.state.conversationUrl === null
+        ? {}
+        : { conversationUrl: store.state.conversationUrl }),
+      state: store.state,
+    };
   } catch (error) {
     return await handleControllerFailure(store, options.jobSupervisor, error);
   } finally {

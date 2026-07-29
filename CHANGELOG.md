@@ -1,14 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.7.3 - 2026-07-30
 
 ### Added
+
+- Operator-confirmed context exhaustion can rotate one durably submitted pending controller turn into a dedicated successor conversation without creating a new run. CueLine records intent, fences the predecessor, preserves the same round and job ledger, binds and pins the successor independently, and keeps predecessor and concurrent-run Pins untouched.
+- Added durable per-run conversation generation, rollover state, fenced lineage, crash-safe replacement retry, focused integration coverage, and an LLM-facing rollover contract in the bundled CueLine skill.
 
 - ChatGPT Pro controller conversations are pinned after their exact `/c/<conversation-id>` URL is durably bound. Pinning is idempotent, records `Unpin chat` menu proof, remains isolated per run, and never auto-unpins another active or manually pinned conversation.
 
 ### Fixed
 
+- Long ChatGPT Pro conversations no longer require abandoning the CueLine run. Explicit rollover evidence opens one fresh controller conversation; a failed open leaves the predecessor URL and pending turn authoritative and performs no resend.
+
 - Submitted-turn recovery now recognizes the newest ChatGPT delivery-timeout assistant leaf even when an older exact CueLine envelope remains selected, and permits read-only observation of strongly evidenced operator-confirmed submitted turns without resending.
+
+### Verification
+
+- Release preflight passes 787/787 tests, typecheck, plugin and documentation validation, fresh tarball install/reinstall/uninstall checks, package-content inspection, and `git diff --check`.
+- A real ChatGPT Web browser smoke opened exactly one dedicated root tab from the completed pinned predecessor, preserved the predecessor exact URL, and removed only the empty smoke tab afterward.
 
 ## 0.7.2 - 2026-07-28
 

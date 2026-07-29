@@ -664,6 +664,34 @@ test("pin ensure never opens controls for a different bound conversation", async
   assert.equal(fixture.pinMenuItem.clicks, 0);
 });
 
+test("conversation rollover never opens a successor while Pro is answering", async () => {
+  const conversationUrl = "https://chatgpt.com/c/rollover-pro-active";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: true,
+        assistantText: "",
+        assistantMessageCount: 0,
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+  });
+
+  await assert.rejects(
+    adapter.openNewConversation!({
+      predecessorConversationUrl: conversationUrl,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_CONVERSATION_ROTATION_PRO_ACTIVE",
+  );
+});
+
 test("archives one exact completed conversation with one Archive click", async () => {
   const conversationUrl = "https://chatgpt.com/c/archive-browser-adapter";
   const fixture = fakeBrowser({

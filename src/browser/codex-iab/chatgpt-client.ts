@@ -5,6 +5,8 @@ import type {
   BrowserConversationArchiveInput,
   BrowserConversationPinEvidence,
   BrowserConversationPinInput,
+  BrowserNewConversationEvidence,
+  BrowserNewConversationInput,
   BrowserDeliveryRetryHooks,
   BrowserDeliveryRetryInput,
   BrowserDeliveryRetryResult,
@@ -2725,6 +2727,63 @@ class CodexIabAdapter implements BrowserAdapter {
     } catch (error) {
       throw this.#reconciliationFailure(error, input);
     }
+  }
+
+  async openNewConversation(
+    input: BrowserNewConversationInput,
+  ): Promise<BrowserNewConversationEvidence> {
+    throwIfCancelled(input.signal);
+    if (!isConversationUrl(input.predecessorConversationUrl)) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ROTATION_URL_REQUIRED",
+        "CueLine rotation requires the exact predecessor ChatGPT /c/<conversation-id> URL.",
+      );
+    }
+    if (
+      this.#conversationUrl !== undefined &&
+      !sameChatGptConversationUrl(
+        this.#conversationUrl,
+        input.predecessorConversationUrl,
+      )
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ROTATION_MISMATCH",
+        "The browser adapter is not bound to the predecessor conversation requested for rotation.",
+      );
+    }
+    const browser = await this.#getBrowser();
+    const predecessorTab =
+      this.#conversationUrl === undefined
+        ? await acquireChatGptTab(browser, input.predecessorConversationUrl)
+        : await this.#getTab();
+    const predecessorUrl = (await predecessorTab.url()) ?? "";
+    if (
+      !sameChatGptConversationUrl(
+        predecessorUrl,
+        input.predecessorConversationUrl,
+      )
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ROTATION_MISMATCH",
+        "The active browser tab no longer matches the predecessor conversation.",
+      );
+    }
+    const predecessorState = await readPageChatState(predecessorTab);
+    if (predecessorState.isAnswering) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ROTATION_PRO_ACTIVE",
+        "ChatGPT Pro is still answering in the predecessor conversation.",
+      );
+    }
+    throwIfCancelled(input.signal);
+    const successorTab = await browser.tabs.new();
+    await successorTab.goto(CHATGPT_URL);
+    this.#tab = successorTab;
+    this.#conversationUrl = undefined;
+    return {
+      predecessorConversationUrl: input.predecessorConversationUrl,
+      openedUrl: CHATGPT_URL,
+    };
   }
 
   async pinConversation(

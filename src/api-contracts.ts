@@ -98,6 +98,11 @@ export interface ContinueCueLineRunOptions extends CueLineRuntimeOptions {
   reconcileRequestId?: string;
   abandonOtherPendingTurns?: boolean;
   manualSendConfirmed?: boolean;
+  rotateControllerConversation?: {
+    trigger: "operator_confirmed_context_exhausted";
+    /** Exact observed Web evidence; generic timeout, usage, policy, auth, or service errors are invalid. */
+    evidence: string;
+  };
 }
 
 export interface ManualControllerSubmissionConfirmation {

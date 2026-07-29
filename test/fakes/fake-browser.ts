@@ -9,6 +9,7 @@ export class FakeBrowserAdapter implements BrowserAdapter {
   readonly calls: BrowserTurnInput[] = [];
   readonly archiveCalls: string[] = [];
   readonly pinCalls: string[] = [];
+  readonly newConversationCalls: string[] = [];
   archiveError: Error | null = null;
   readonly #turns: Array<ControllerTurn | ((input: BrowserTurnInput) => ControllerTurn)>;
 
@@ -68,6 +69,19 @@ export class FakeBrowserAdapter implements BrowserAdapter {
       conversationUrl: input.conversationUrl,
       proof: "unpin_menuitem_observed",
       result: "pinned",
+    };
+  }
+
+  async openNewConversation(input: {
+    predecessorConversationUrl: string;
+  }): Promise<{
+    predecessorConversationUrl: string;
+    openedUrl: "https://chatgpt.com/";
+  }> {
+    this.newConversationCalls.push(input.predecessorConversationUrl);
+    return {
+      predecessorConversationUrl: input.predecessorConversationUrl,
+      openedUrl: "https://chatgpt.com/",
     };
   }
 }

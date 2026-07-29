@@ -182,7 +182,29 @@ try {
 
 Submit real terminal evidence only. A duplicate submit returns `already_terminal`; do not invent or replace the first result. Continue through controller-observation and caller pauses until the controller returns `complete`, `blocked`, or `cancelled`. CueLine rejects both `complete` and `blocked` while any required or optional job is still pending/running; settle, inspect, or cancel every job first.
 
-### Pinned ChatGPT controller conversations
+### Controller conversation lifecycle
+
+#### Rotate an exhausted controller conversation
+
+Never infer exhaustion from token estimates such as 90K or 400K, API context limits, elapsed time, turn count, slow rendering, or model prose. Generic delivery timeout, usage/rate limit, policy refusal, authentication failure, model/service error, missing selector, or `Something went wrong` also do not qualify.
+
+When the exact bound ChatGPT Web conversation is idle and the Web UI explicitly reports that this conversation has exhausted its context, continue the same `runId` and same browser adapter with bounded, non-secret evidence:
+
+```js
+result = await cueline.continueCueLineRun({
+  runId: result.runId,
+  browser: cuelineBrowser,
+  cwd: process.cwd(),
+  rotateControllerConversation: {
+    trigger: "operator_confirmed_context_exhausted",
+    evidence: "Exact context-exhaustion notice observed on the bound conversation URL",
+  },
+});
+```
+
+CueLine requires exactly one durably submitted pending controller turn. It writes rotation intent first, verifies Pro is not answering on the exact predecessor URL, opens a dedicated ChatGPT root tab, permanently fences that predecessor turn, and submits one fresh controller observation in the same durable run and round. The replacement gets its own exact URL and Pin claim. The predecessor remains pinned and is never auto-archived or auto-unpinned; concurrent runs are untouched. A failed or unsupported open leaves the predecessor binding and pending turn intact and returns `awaiting_controller` with durable rollover failure evidence. Never combine rotation with `reconcileRequestId`, never resend manually, and never start a replacement run.
+
+#### Pin behavior
 
 After an exact ChatGPT Pro `/c/<conversation-id>` URL is durably bound, CueLine idempotently ensures that conversation is in the web sidebar Pinned section. Each run owns only its exact conversation identity; concurrent runs may remain pinned together. Existing `Unpin chat` menu evidence means success without another click. Pin failure is recorded but never turns a durably submitted controller turn into a resend. CueLine never auto-unpins on completion.
 

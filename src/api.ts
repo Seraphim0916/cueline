@@ -309,6 +309,22 @@ export async function runCueLine(options: StartCueLineRunOptions): Promise<CueLi
 export async function continueCueLineRun(
   options: ContinueCueLineRunOptions,
 ): Promise<CueLineResult> {
+  if (options.rotateControllerConversation !== undefined) {
+    const rotation = options.rotateControllerConversation as unknown;
+    if (
+      typeof rotation !== "object" ||
+      rotation === null ||
+      Array.isArray(rotation) ||
+      (rotation as Record<string, unknown>).trigger !==
+        "operator_confirmed_context_exhausted" ||
+      typeof (rotation as Record<string, unknown>).evidence !== "string"
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_CONVERSATION_ROTATION_EVIDENCE_INVALID",
+        "rotateControllerConversation requires the exact trigger and a bounded evidence string.",
+      );
+    }
+  }
   if (options.browser !== undefined) assertBrowserAdapterContract(options.browser);
   const environment = options.environment ?? runtimeEnvironment();
   const home = options.home ?? defaultCueLineHome(environment);
@@ -499,10 +515,16 @@ export async function continueCueLineRun(
     ...(options.reconcileRequestId === undefined
       ? {}
       : { reconcileRequestId: options.reconcileRequestId }),
-    ...(options.abandonOtherPendingTurns === undefined
-      ? {}
-      : { abandonOtherPendingTurns: options.abandonOtherPendingTurns }),
-    ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+      ...(options.abandonOtherPendingTurns === undefined
+        ? {}
+        : { abandonOtherPendingTurns: options.abandonOtherPendingTurns }),
+      ...(options.rotateControllerConversation === undefined
+        ? {}
+        : {
+            rotateControllerConversation:
+              options.rotateControllerConversation,
+          }),
+      ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
     ...(options.maxStagnantRounds === undefined
       ? {}
       : { maxStagnantRounds: options.maxStagnantRounds }),

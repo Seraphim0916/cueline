@@ -66,6 +66,11 @@ export interface ContinueControllerLoopOptions extends ControllerRuntimeOptions 
   runId: string;
   reconcileRequestId?: string;
   abandonOtherPendingTurns?: boolean;
+  rotateControllerConversation?: {
+    trigger: "operator_confirmed_context_exhausted";
+    /** Bounded, non-secret Web evidence; never a guessed token threshold. */
+    evidence: string;
+  };
 }
 
 export interface CueLineResult {

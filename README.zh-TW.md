@@ -26,11 +26,13 @@
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 的包裝層。
 
-## 最新版本：0.7.1
+## 最新版本：0.7.3
+
+- 新增 run-scoped ChatGPT Pin 管理，以及操作端確認的對話脈絡耗盡輪替；不必放棄原 run，也不會干擾並行對話。
 
 - 送出後的觀測不會再卡在意義不明的 `pending`：當使用者訊息數以 `baseline + 1` 對上、但讀得到的 assistant 分支葉節點仍掛著舊 round 的封包時，這個情況現在明確命名為 `branch_leaf_mismatch`，並回報觀測到的 run、round 與 request id；接著以唯讀方式掃描一次 accessibility snapshot 尋找該 round 的精確封包——找到才接收為控制回應，找不到就維持凍結。兩條路徑都不會點擊 ChatGPT 的分支控制項，也不會新建 round；770/770 測試通過。
 
-完整內容請看 [changelog](CHANGELOG.md#071---2026-07-28) 或版本化的 [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1)。
+完整內容請看 [changelog](CHANGELOG.md#073---2026-07-30) 或版本化的 [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3)。
 
 ## 一次執行實際上怎麼跑
 
@@ -71,15 +73,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.7.2
+npm install -g cueline@0.7.3
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.2/cueline-0.7.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.3/cueline-0.7.3.tgz
 cueline install
 cueline doctor
 ```
@@ -196,6 +198,10 @@ ChatGPT 顯示精確的 `Message delivery timed out. Please try again.` assistan
 
 `startCueLineRun` 只建立持久 run 並回傳 `ready`；`runCueLine` 會建立並推進到持久 controller 觀測暫停、caller 交接或終態。續跑前先執行 `cueline run status <run-id> --json`。單一正常送出、非人工、具精確 URL、無 job／pending command／取消的 stale caller observer 可被 fencing 後唯讀恢復；其他 stale 狀態仍須正式接管。`caller_work_pending`、`caller_work_claimed`、`caller_work_running` 分別只允許 `claim_caller_work`、`start_caller_work`、`continue_caller_work`，主控的 `dispatch` 本身不代表本機工作已開始。CLI 的 `run status` 只輸出交接所需 metadata，不包含 task 內文、caller 身分、task hash、workdir 或 runtime owner ID；完成正式 claim 後，API 才會把精確 task 與 workdir 交給獲授權的 caller。
 
+### 對話脈絡耗盡時輪替
+
+CueLine 不會猜 90K／400K 軟門檻，也不會把 API context window 當成 ChatGPT 網頁版證據。只有精確綁定的網頁對話已停止回答，而且操作端確認看見脈絡耗盡專屬提示時，才用 `rotateControllerConversation: { trigger: "operator_confirmed_context_exhausted", evidence: "..." }` 繼續同一個 run。CueLine 會要求恰好一個已持久提交、仍待回覆的 controller turn，先記錄輪替意圖，再開專用新對話、封鎖舊 turn，並在同一個 run 與 round 只提交一次新的觀察。新對話有自己的精確 URL 與 Pin；舊對話和其他並行 run 的 Pin 都保留。一般 timeout、用量／速率限制、政策拒絕、驗證失敗、服務／模型錯誤、selector 遺失或 `Something went wrong` 都不是輪替觸發條件。給 LLM 看的完整呼叫契約在 `skills/cueline/SKILL.md`。
+
 ## CLI
 
 CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 核對完整參數。
@@ -208,7 +214,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.7.2
+CueLine 0.7.3
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

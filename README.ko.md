@@ -26,11 +26,13 @@
 
 CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane을 감싼 래퍼가 아닙니다.
 
-## 최신 릴리스: 0.7.1
+## 최신 릴리스: 0.7.3
+
+- run 단위 ChatGPT Pin 관리와 운영자 확인 기반 컨텍스트 소진 전환을 추가했습니다. 기존 run을 버리거나 병렬 대화를 방해하지 않습니다.
 
 - 제출된 turn 관측이 의미가 불분명한 `pending` 상태로 무한정 대기하지 않습니다. 사용자 메시지 수가 `baseline + 1`로 일치하는데도 읽을 수 있는 assistant 리프가 이전 round의 엔벨로프를 그대로 담고 있는 경우, 이제 이 상황을 `branch_leaf_mismatch`로 명확히 명명하고 관측된 run, round, request id를 증거로 보고합니다. 이어서 accessibility snapshot을 한 번만 읽기 전용으로 스캔하여 해당 round의 정확한 엔벨로프를 찾습니다. 찾으면 컨트롤러 응답으로 채택하고, 찾지 못하면 turn을 동결 상태로 유지합니다. 어느 경로에서도 분기 컨트롤을 클릭하지 않으며 새 round도 만들지 않습니다. 770/770 테스트를 통과했습니다.
 
-전체 내용은 [changelog](CHANGELOG.md#071---2026-07-28) 또는 버전이 지정된 [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1)에서 확인할 수 있습니다.
+전체 내용은 [changelog](CHANGELOG.md#073---2026-07-30) 또는 버전이 지정된 [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3)에서 확인할 수 있습니다.
 
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
@@ -71,15 +73,15 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 npm 레지스트리에서 설치합니다:
 
 ```bash
-npm install -g cueline@0.7.2
+npm install -g cueline@0.7.3
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.7.1 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로, [v0.7.3 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.2/cueline-0.7.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.3/cueline-0.7.3.tgz
 cueline install
 cueline doctor
 ```
@@ -174,6 +176,10 @@ Codex 런타임에서는 `cueline api path`가 출력하는 절대 경로 모듈
 
 `startCueLineRun`은 지속 run을 만들고 `ready`만 반환합니다. `runCueLine`은 생성 후 지속 controller 관측 대기, caller 인계 또는 종료 상태까지 진행합니다. owner가 없는 `controller_response_pending`에 정상 전송된 턴이 정확히 하나이고 `safeNextAction: observe`가 표시되면 같은 Pro 응답을 읽기 전용으로 관측하기 위한 대기입니다. 잠시 뒤 계속하고 재전송하지 마세요. `safeNextAction: reconcile`은 모호하거나 수동 전송되었거나 보류 턴이 여러 개인 경우에 사용합니다. owner가 없는 `caller_jobs_pending`은 정상적인 로컬 인계이며 orphan이나 ChatGPT 대기가 아닙니다. CLI의 `run status`는 인계에 필요한 metadata만 출력하며 task 본문, caller identity, task hash, workdir, runtime owner ID를 포함하지 않습니다. 정식 claim 뒤에만 API가 정확한 task와 workdir를 승인된 caller에게 반환합니다.
 
+### 대화 컨텍스트 소진 시 전환
+
+CueLine은 90K／400K 임계값을 추측하지 않으며 API context window를 ChatGPT Web 증거로 사용하지 않습니다. 정확히 바인딩된 대화가 응답 중이 아니고 운영자가 컨텍스트 소진 전용 표시를 확인한 경우에만 같은 run을 `rotateControllerConversation: { trigger: "operator_confirmed_context_exhausted", evidence: "..." }`로 계속합니다. 후속 대화는 자체 정확한 URL과 Pin을 가지며 이전 대화와 병렬 run의 Pin은 유지됩니다. 일반 timeout, 사용량 제한, 정책 거부, 인증, 서비스／모델 또는 selector 오류는 전환을 유발하지 않습니다. LLM용 전체 호출 계약은 `skills/cueline/SKILL.md`를 참조하십시오.
+
 ## CLI
 
 CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에는 `cueline help`로 전체 인수를 확인하세요.
@@ -186,7 +192,7 @@ CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에
 
 ```console
 $ cueline doctor
-CueLine 0.7.2
+CueLine 0.7.3
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

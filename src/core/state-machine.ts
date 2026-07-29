@@ -81,6 +81,28 @@ export interface ControllerConversationPinState {
   message: string | null;
 }
 
+export interface ControllerConversationLineageEntry {
+  generation: number;
+  conversationUrl: string;
+  status: "fenced";
+  requestId: string;
+  round: number;
+  trigger: "operator_confirmed_context_exhausted";
+  evidence: string;
+}
+
+export interface ControllerConversationRolloverState {
+  generation: number;
+  status: "opening" | "opened" | "active" | "failed";
+  predecessorConversationUrl: string;
+  predecessorRequestId: string;
+  predecessorRound: number;
+  trigger: "operator_confirmed_context_exhausted";
+  evidence: string;
+  code: string | null;
+  message: string | null;
+}
+
 export interface PendingControllerTurn {
   round: number;
   requestId: string;
@@ -241,6 +263,9 @@ export interface CueLineRunState {
   status: CueLineRunStatus;
   round: number;
   conversationUrl: string | null;
+  conversationGeneration?: number;
+  controllerConversationLineage?: ControllerConversationLineageEntry[];
+  controllerConversationRollover?: ControllerConversationRolloverState | null;
   controllerConversationPin: ControllerConversationPinState;
   controllerConversationArchive: ControllerConversationArchiveState;
   pendingControllerTurns: PendingControllerTurn[];
@@ -415,6 +440,9 @@ export function initialRunState(
     status: "running",
     round: 0,
     conversationUrl: null,
+    conversationGeneration: 1,
+    controllerConversationLineage: [],
+    controllerConversationRollover: null,
     controllerConversationPin: initialControllerConversationPin(),
     controllerConversationArchive: initialControllerConversationArchive(
       archiveControllerConversationOnComplete,
@@ -453,6 +481,115 @@ export function isControllerTurnProvenUnsent(
 
 export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLineRunState {
   const payload = recordPayload(event);
+  if (
+    event.type === "controller_conversation_rotation_requested" &&
+    payload.trigger === "operator_confirmed_context_exhausted" &&
+    typeof payload.evidence === "string" &&
+    typeof payload.predecessor_conversation_url === "string" &&
+    typeof payload.predecessor_request_id === "string" &&
+    typeof payload.predecessor_round === "number"
+  ) {
+    const pending = (state.pendingControllerTurns ?? []).find(
+      (turn) => turn.requestId === payload.predecessor_request_id,
+    );
+    if (
+      pending === undefined ||
+      state.conversationUrl === null ||
+      !sameChatGptConversationUrl(
+        payload.predecessor_conversation_url,
+        state.conversationUrl,
+      )
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      controllerConversationRollover: {
+        generation: (state.conversationGeneration ?? 1) + 1,
+        status: "opening",
+        predecessorConversationUrl: state.conversationUrl,
+        predecessorRequestId: pending.requestId,
+        predecessorRound: pending.round,
+        trigger: "operator_confirmed_context_exhausted",
+        evidence: payload.evidence,
+        code: null,
+        message: null,
+      },
+    };
+  }
+  if (
+    event.type === "controller_conversation_replacement_opened" &&
+    state.controllerConversationRollover?.status === "opening"
+  ) {
+    const rollover = state.controllerConversationRollover;
+    const pending = (state.pendingControllerTurns ?? []).find(
+      (turn) => turn.requestId === rollover.predecessorRequestId,
+    );
+    if (pending === undefined) return state;
+    return {
+      ...state,
+      round: Math.max(0, rollover.predecessorRound - 1),
+      conversationUrl: null,
+      conversationGeneration: rollover.generation,
+      controllerConversationLineage: [
+        ...(state.controllerConversationLineage ?? []),
+        {
+          generation: rollover.generation - 1,
+          conversationUrl: rollover.predecessorConversationUrl,
+          status: "fenced",
+          requestId: rollover.predecessorRequestId,
+          round: rollover.predecessorRound,
+          trigger: rollover.trigger,
+          evidence: rollover.evidence,
+        },
+      ],
+      controllerConversationRollover: {
+        ...rollover,
+        status: "opened",
+      },
+      controllerConversationPin: initialControllerConversationPin(),
+      pendingControllerTurns: (state.pendingControllerTurns ?? []).filter(
+        (turn) => turn.requestId !== rollover.predecessorRequestId,
+      ),
+      abandonedControllerTurns: [
+        ...(state.abandonedControllerTurns ?? []),
+        pending,
+      ],
+      notices: [
+        ...(state.notices ?? []),
+        `Controller conversation generation ${rollover.generation - 1} was fenced after operator-confirmed context exhaustion.`,
+      ],
+    };
+  }
+  if (
+    event.type === "controller_conversation_rotation_activated" &&
+    state.controllerConversationRollover?.status === "opened" &&
+    state.conversationUrl !== null
+  ) {
+    return {
+      ...state,
+      controllerConversationRollover: {
+        ...state.controllerConversationRollover,
+        status: "active",
+      },
+    };
+  }
+  if (
+    event.type === "controller_conversation_rotation_failed" &&
+    state.controllerConversationRollover?.status === "opening" &&
+    typeof payload.code === "string" &&
+    typeof payload.message === "string"
+  ) {
+    return {
+      ...state,
+      controllerConversationRollover: {
+        ...state.controllerConversationRollover,
+        status: "failed",
+        code: payload.code,
+        message: payload.message,
+      },
+    };
+  }
 
   if (
     event.type === "controller_conversation_pinned" &&

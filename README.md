@@ -26,7 +26,9 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.7.1
+## Latest release: 0.7.3
+
+- Adds run-scoped ChatGPT Pin management and operator-confirmed context-exhaustion rollover without abandoning the run or disturbing concurrent conversations.
 
 - A submitted-turn observation no longer waits forever on an opaque `pending`
   when the user-message count correlates at `baseline + 1` while the readable
@@ -37,7 +39,7 @@ CueLine is a standalone implementation with **no runtime npm dependencies**. It 
   keeps the turn frozen. No branch control is clicked and no new round is
   created on either path; 770/770 tests pass.
 
-Read the complete [changelog](CHANGELOG.md#071---2026-07-28) or the versioned [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1).
+Read the complete [changelog](CHANGELOG.md#073---2026-07-30) or the versioned [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3).
 
 ## How a run actually goes
 
@@ -80,15 +82,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.7.2
+npm install -g cueline@0.7.3
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.2/cueline-0.7.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.3/cueline-0.7.3.tgz
 cueline install
 cueline doctor
 ```
@@ -224,6 +226,10 @@ Inside Codex's runtime, import the absolute module that `cueline api path` print
 
 CueLine automatically ensures each exact ChatGPT Pro controller conversation appears in the web sidebar's Pinned section after its `/c/<conversation-id>` URL is durably bound. The operation is idempotent: an existing `Unpin chat` item proves the conversation is already pinned, while a new Pin click must produce that same proof. Pin state is run-scoped, so concurrent runs pin their own conversations independently. CueLine does not automatically unpin completed conversations or disturb a chat that was pinned manually.
 
+### Context-exhausted conversation rollover
+
+CueLine does not guess a 90K/400K soft limit or reuse an API context window as ChatGPT Web evidence. When the exact bound Web conversation is idle and an operator has confirmed a context-specific exhaustion notice, continue the same run with `rotateControllerConversation: { trigger: "operator_confirmed_context_exhausted", evidence: "..." }`. CueLine requires one durably submitted pending turn, records intent, opens a dedicated new chat, fences the predecessor, and submits one fresh observation in the same run and round. The successor receives its own exact URL and Pin claim; predecessor and concurrent-run Pins remain untouched. Generic timeout, usage/rate limit, policy, authentication, service/model, selector, or `Something went wrong` failures are not rollover triggers. See the bundled `skills/cueline/SKILL.md` for the LLM-facing call contract.
+
 ## The CLI
 
 The CLI does not drive the browser. Run `cueline help` for every positional argument and option before using a state-changing command.
@@ -236,7 +242,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.7.2
+CueLine 0.7.3
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -334,6 +340,7 @@ See [compatibility](docs/compatibility.md) for the full matrix.
 | [controller protocol](docs/controller-protocol.md) | The `<CueLineControl>` envelope, the five actions, and repair rules |
 | [runner contract](docs/runner-contract.md) | What a registered process worker must and must not do |
 | [state and recovery](docs/state-and-recovery.md) | Durable state layout, ownership, and every recovery path |
+| [context rollover](docs/context-exhaustion-rollover.md) | Conversation generations, operator-confirmed exhaustion, fencing, and no-resend invariants |
 | [multi-model routing](docs/multi-model-routing.md) | Registering additional process workers and what the controller can actually see |
 | [compatibility](docs/compatibility.md) | Supported platforms, runtimes, and UI assumptions |
 | [provenance](docs/provenance.md) | Where the design comes from and what it is not |

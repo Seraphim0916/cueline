@@ -320,6 +320,18 @@ export interface BrowserConversationPinEvidence {
   result: "pinned" | "already_pinned";
 }
 
+export interface BrowserNewConversationInput {
+  /** Exact predecessor URL this run is rotating away from. */
+  predecessorConversationUrl: string;
+  signal?: AbortSignal;
+}
+
+export interface BrowserNewConversationEvidence {
+  predecessorConversationUrl: string;
+  /** A fresh ChatGPT root tab was opened; the canonical /c/ URL is captured on submit. */
+  openedUrl: "https://chatgpt.com/";
+}
+
 export interface BrowserAdapter {
   /**
    * Declares that `controller_turn_requested` is durably recorded before any
@@ -354,4 +366,8 @@ export interface BrowserAdapter {
   pinConversation?(
     input: BrowserConversationPinInput,
   ): Promise<BrowserConversationPinEvidence>;
+  /** Open a dedicated blank ChatGPT conversation without navigating the predecessor tab. */
+  openNewConversation?(
+    input: BrowserNewConversationInput,
+  ): Promise<BrowserNewConversationEvidence>;
 }

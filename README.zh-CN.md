@@ -26,11 +26,13 @@
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 的包装层。
 
-## 最新版本：0.7.1
+## 最新版本：0.7.3
+
+- 新增 run-scoped ChatGPT Pin 管理，以及操作端确认的对话上下文耗尽轮换；无需放弃原 run，也不会干扰并发对话。
 
 - 提交后的观测不会再卡在含义不明的 `pending`：当用户消息数以 `baseline + 1` 对上、但可读到的 assistant 分支叶节点仍挂着旧 round 的信封时，该情况现在明确命名为 `branch_leaf_mismatch`，并回报观测到的 run、round 与 request id；随后以只读方式扫描一次 accessibility snapshot 寻找该 round 的精确信封——找到才接收为控制响应，找不到就保持冻结。两条路径都不会点击 ChatGPT 的分支控件，也不会新建 round；770/770 测试通过。
 
-完整内容请查看 [changelog](CHANGELOG.md#071---2026-07-28) 或版本化的 [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1)。
+完整内容请查看 [changelog](CHANGELOG.md#073---2026-07-30) 或版本化的 [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3)。
 
 ## 一次运行实际是怎么走的
 
@@ -71,15 +73,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.7.2
+npm install -g cueline@0.7.3
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.7.1 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.1) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.2/cueline-0.7.2.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.3/cueline-0.7.3.tgz
 cueline install
 cueline doctor
 ```
@@ -176,6 +178,10 @@ if (result.status === "complete") {
 
 `startCueLineRun` 只创建持久 run 并返回 `ready`；`runCueLine` 创建并推进到持久 controller 观测暂停、caller 交接或终态。缺少 owner 的 `controller_response_pending` 若只有一个正常发送的回合且显示 `safeNextAction: observe`，表示同一个 Pro 回复仍待只读观测；稍后继续即可且不得重发。`safeNextAction: reconcile` 只用于模糊、人工发送或多个待对账回合。缺少 owner 的 `caller_jobs_pending` 是正常本地交接，并非 orphan，也不是仍在等 ChatGPT。CLI 的 `run status` 只输出交接所需元数据，不包含 task 正文、caller 身份、task hash、workdir 或 runtime owner ID；正式 claim 后，API 才把精确 task 与 workdir 交给获授权的 caller。
 
+### 对话上下文耗尽时轮换
+
+CueLine 不猜测 90K／400K 软阈值，也不会把 API context window 当成 ChatGPT 网页证据。只有精确绑定的网页对话已停止回答，并且操作端确认看到了上下文耗尽专用提示时，才使用 `rotateControllerConversation: { trigger: "operator_confirmed_context_exhausted", evidence: "..." }` 继续同一个 run。新对话会获得独立的精确 URL 和 Pin；旧对话以及其他并发 run 的 Pin 都会保留。普通 timeout、用量／速率限制、政策拒绝、认证、服务／模型或 selector 错误都不会触发轮换。面向 LLM 的完整调用契约见 `skills/cueline/SKILL.md`。
+
 ## CLI
 
 CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 核对完整参数。
@@ -188,7 +194,7 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.7.2
+CueLine 0.7.3
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
