@@ -26,13 +26,13 @@
 
 CueLine は独立した実装で、**ランタイムの npm 依存はゼロ**です。Omnilane のラッパーではありません。
 
-## 最新リリース：0.7.3
+## 最新リリース：0.7.4
 
 - run 単位の ChatGPT Pin 管理と、オペレーター確認済みのコンテキスト枯渇ローテーションを追加しました。run を破棄せず、並行会話にも干渉しません。
 
 - 送信済み turn の観測が、意味の不明瞭な `pending` で止まり続けることはなくなりました。ユーザーメッセージ数が `baseline + 1` で一致しているのに、読み取れる assistant のリーフが古い round のエンベロープを保持している場合、そのケースを `branch_leaf_mismatch` として明示的に命名し、観測された run・round・request id を証拠として報告します。続いて accessibility snapshot を 1 回だけ読み取り専用でスキャンし、その round の厳密なエンベロープを探します。見つかった場合のみコントローラー応答として採用し、見つからなければ turn を凍結したままにします。いずれの経路でも分岐コントロールをクリックせず、新しい round も作成しません。770/770 テストに合格しました。
 
-詳細は [changelog](CHANGELOG.md#073---2026-07-30) またはバージョン指定の [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3) を参照してください。
+詳細は [changelog](CHANGELOG.md#073---2026-07-30) またはバージョン指定の [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4) を参照してください。
 
 ## 1 回の実行は実際にどう進むか
 
@@ -73,15 +73,15 @@ ChatGPT Pro のサブスクリプションと、選択された Pro モデルは
 npm レジストリからインストールします。
 
 ```bash
-npm install -g cueline@0.7.3
+npm install -g cueline@0.7.4
 cueline install
 cueline doctor
 ```
 
-フォールバックとして、[v0.7.3 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
+フォールバックとして、[v0.7.4 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.3/cueline-0.7.3.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.4/cueline-0.7.4.tgz
 cueline install
 cueline doctor
 ```
@@ -192,7 +192,7 @@ CLI はブラウザーを駆動しません。状態を書き込むコマンド�
 
 ```console
 $ cueline doctor
-CueLine 0.7.3
+CueLine 0.7.4
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

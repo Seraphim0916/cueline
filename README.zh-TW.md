@@ -26,13 +26,13 @@
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 的包裝層。
 
-## 最新版本：0.7.3
+## 最新版本：0.7.4
 
 - 新增 run-scoped ChatGPT Pin 管理，以及操作端確認的對話脈絡耗盡輪替；不必放棄原 run，也不會干擾並行對話。
 
 - 送出後的觀測不會再卡在意義不明的 `pending`：當使用者訊息數以 `baseline + 1` 對上、但讀得到的 assistant 分支葉節點仍掛著舊 round 的封包時，這個情況現在明確命名為 `branch_leaf_mismatch`，並回報觀測到的 run、round 與 request id；接著以唯讀方式掃描一次 accessibility snapshot 尋找該 round 的精確封包——找到才接收為控制回應，找不到就維持凍結。兩條路徑都不會點擊 ChatGPT 的分支控制項，也不會新建 round；770/770 測試通過。
 
-完整內容請看 [changelog](CHANGELOG.md#073---2026-07-30) 或版本化的 [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3)。
+完整內容請看 [changelog](CHANGELOG.md#073---2026-07-30) 或版本化的 [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4)。
 
 ## 一次執行實際上怎麼跑
 
@@ -73,15 +73,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.7.3
+npm install -g cueline@0.7.4
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.3/cueline-0.7.3.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.4/cueline-0.7.4.tgz
 cueline install
 cueline doctor
 ```
@@ -214,7 +214,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.7.3
+CueLine 0.7.4
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

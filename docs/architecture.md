@@ -91,6 +91,8 @@ An exact ChatGPT delivery-timeout assistant state is not controller output and i
 
 CueLine does not intentionally inspect or export cookies, tokens, environment secrets, or browser session material. The IAB uses the user's already authenticated page.
 
+An exact current `Thinking failed` assistant leaf follows a separate response-failure state machine. Fresh read-only evidence binds run, round, request, conversation, Pro label, message counts, idle state, and empty composer into a stable hash. Explicit one-shot authorization is consumed before mutation. With no scoped Retry control, CueLine abandons only the failed transport attempt, decrements the durable round checkpoint, regenerates the exact persisted prompt with one request ID, records `retry_of_request_id` plus transport attempt 2, and submits once. A crash after consumption is fail-closed; a crash after submission resumes observation of the linked retry turn.
+
 ## Dependency model
 
 The published JavaScript has zero runtime npm dependencies and uses Node built-ins. TypeScript and Node type definitions are development dependencies only. Live ChatGPT orchestration additionally depends on Codex's IAB runtime and ChatGPT's current web UI; the bundled default local route also expects the `codex` CLI on `PATH`. The core state, protocol, router, and fake tests run in plain Node.

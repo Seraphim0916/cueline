@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   authorizeControllerDeliveryTimeoutRetry,
+  authorizeControllerResponseRetry,
   cancelCueLineJob,
   cancelCueLineRun,
   confirmControllerTurnMisdirected,
@@ -44,7 +45,7 @@ const processIo: CliIo = {
 };
 
 function usage(): string {
-  return "usage: cueline <install|uninstall|doctor|self-test|upgrade preflight|routing|routing explain|jobs|runs|runs prune|runs sweep|protocol lint|mcp serve|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run audit-secrets|run export|run reconcile|run authorize-delivery-retry|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
+  return "usage: cueline <install|uninstall|doctor|self-test|upgrade preflight|routing|routing explain|jobs|runs|runs prune|runs sweep|protocol lint|mcp serve|run status|run status-at|run diff|run doctor|run watch|run handoff|run timeline|run graph|run verify|run audit-secrets|run export|run reconcile|run authorize-delivery-retry|run authorize-response-retry|run takeover|run reconcile-runtime|run cancel|run stop|job cancel|api path|config path|help|version>";
 }
 
 function help(): string {
@@ -80,6 +81,7 @@ function help(): string {
     "  run export     emit one sanitized support bundle (status, verify, doctor, timeline)",
     "  run reconcile  confirm one manually sent, not-sent, or misdirected controller turn",
     "  run authorize-delivery-retry  authorize one exact existing ChatGPT Retry action",
+    "  run authorize-response-retry  authorize one exact failed controller response resend",
     "  run takeover   explicitly retire one exact stale runtime owner",
     "  run reconcile-runtime  settle dead ownerless workers from persisted evidence",
     "  run cancel     request safe cancellation; ownerless work becomes ambiguous",
@@ -119,6 +121,7 @@ function help(): string {
     "  cueline run reconcile <run-id> --request-id <request-id> --not-sent-confirmed [--conversation-url <url>] [--json]",
     "  cueline run reconcile <run-id> --request-id <request-id> --misdirected-conversation-url <url> [--json]",
     "  cueline run authorize-delivery-retry <run-id> --request-id <request-id> --round <n> --conversation-url <url> --evidence-hash <sha256> [--json]",
+    "  cueline run authorize-response-retry <run-id> --request-id <request-id> --round <n> --conversation-url <url> --evidence-hash <sha256> [--json]",
     "  cueline run takeover <run-id> [--json]",
     "  cueline run reconcile-runtime <run-id> [--json]",
     "  cueline run cancel <run-id> [--json]",
@@ -828,7 +831,8 @@ export async function main(
     }
     if (
       args[0] === "run" &&
-      args[1] === "authorize-delivery-retry" &&
+      (args[1] === "authorize-delivery-retry" ||
+        args[1] === "authorize-response-retry") &&
       typeof args[2] === "string"
     ) {
       let requestId: string | undefined;
@@ -885,10 +889,13 @@ export async function main(
       ) {
         throw new CueLineError(
           "CLI_ARGUMENTS_INVALID",
-          "usage: cueline run authorize-delivery-retry <run-id> --request-id <request-id> --round <n> --conversation-url <url> --evidence-hash <sha256> [--json]",
+          `usage: cueline run ${args[1]} <run-id> --request-id <request-id> --round <n> --conversation-url <url> --evidence-hash <sha256> [--json]`,
         );
       }
-      const result = await authorizeControllerDeliveryTimeoutRetry(args[2], {
+      const authorize = args[1] === "authorize-response-retry"
+        ? authorizeControllerResponseRetry
+        : authorizeControllerDeliveryTimeoutRetry;
+      const result = await authorize(args[2], {
         environment,
         requestId,
         round,

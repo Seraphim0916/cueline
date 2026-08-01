@@ -137,6 +137,15 @@ export interface ControllerDeliveryTimeoutRetryAuthorization {
   outcome: "authorized" | "already_authorized";
 }
 
+export interface ControllerResponseRetryAuthorization {
+  runId: string;
+  requestId: string;
+  round: number;
+  conversationUrl: string;
+  evidenceHash: string;
+  outcome: "authorized" | "already_authorized";
+}
+
 export interface ControllerDeliveryTimeoutAttestationResult {
   runId: string;
   requestId: string;

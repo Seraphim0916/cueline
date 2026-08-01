@@ -53,6 +53,12 @@ const PHASE_DIAGNOSES: Record<CueLineRunPhase, PhaseDiagnosis> = {
     summary: "ChatGPT explicitly reported that the submitted controller turn timed out during delivery.",
     action: "Inspect the permanent evidence and require explicit operator authorization before one Retry click.",
   },
+  controller_response_failed: {
+    code: "CONTROLLER_RESPONSE_FAILED",
+    severity: "warning",
+    summary: "ChatGPT reported an exact submitted controller response failure.",
+    action: "Inspect exact evidence and require one-shot operator authorization before retry.",
+  },
   controller_response_pending: {
     code: "CONTROLLER_RESPONSE_PENDING",
     severity: "info",

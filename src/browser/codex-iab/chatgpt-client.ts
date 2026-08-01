@@ -29,6 +29,10 @@ import {
   deliveryTimeoutEvidenceHash,
 } from "../delivery-timeout.js";
 import {
+  CHATGPT_THINKING_FAILED_CODE,
+  CHATGPT_THINKING_FAILED_MESSAGE,
+} from "../controller-response-failure.js";
+import {
   isExactChatGptConversationUrl as isConversationUrl,
   sameChatGptConversationUrl,
 } from "../../core/conversation-url.js";
@@ -1739,7 +1743,7 @@ class CodexIabAdapter implements BrowserAdapter {
         composerSendButtonEnabled: composerState.sendButtonEnabled,
         assistantMessageCount: state.assistantMessageCount,
         lastMessageRole: state.lastMessageRole,
-        ...(state.deliveryFailure === undefined || state.deliveryFailure === null
+      ...(state.deliveryFailure === undefined || state.deliveryFailure === null
           ? {}
           : {
               deliveryFailure: {
@@ -1750,8 +1754,20 @@ class CodexIabAdapter implements BrowserAdapter {
                 ),
                 retryActionAvailable:
                   state.deliveryFailure.retryActionAvailable === true,
-              },
-            }),
+            },
+          }),
+      ...(state.responseFailure === undefined || state.responseFailure === null
+        ? {}
+        : {
+            responseFailure: {
+              code: CHATGPT_THINKING_FAILED_CODE,
+              message: CHATGPT_THINKING_FAILED_MESSAGE,
+              assistantTextHash: commandHash(
+                normalizedMessageText(state.assistantText),
+              ),
+              retryActionAvailable: false as const,
+            },
+          }),
       };
       const stagedPromptRemains = legacyPreSubmissionRecovery
         ? true
@@ -1916,10 +1932,29 @@ class CodexIabAdapter implements BrowserAdapter {
         this.#clearPendingObservation(input);
         return { status: "delivery_failed", evidence };
       }
+      const responseFailureCorrelated =
+        baselineLoaded &&
+        currentRequestCorrelated &&
+        state.responseFailure?.code === CHATGPT_THINKING_FAILED_CODE &&
+        state.responseFailure.message === CHATGPT_THINKING_FAILED_MESSAGE &&
+        state.isAnswering === false &&
+        state.lastMessageRole === "assistant" &&
+        composerState.state === "empty" &&
+        composerState.inlineTextLength === 0 &&
+        composerState.attachmentCount === 0 &&
+        composerState.pastedTextAttachmentPresent !== true &&
+        composerState.sendButtonEnabled === false;
+      if (responseFailureCorrelated) {
+        this.#clearPendingObservation(input);
+        return { status: "response_failed", evidence };
+      }
       // The exact ChatGPT error text is not a controller response even when the
       // Retry action is unavailable or ambiguous. Keep observing, but never feed
       // the error string into the controller protocol repair path.
       if (state.deliveryFailure !== undefined && state.deliveryFailure !== null) {
+        return pendingObservation();
+      }
+      if (state.responseFailure !== undefined && state.responseFailure !== null) {
         return pendingObservation();
       }
 

@@ -84,6 +84,113 @@ class FakeLocator implements IabLocator {
   }
 }
 
+test("submitted-turn observation correlates exact Thinking failed without retry action", async () => {
+  const exactConversationUrl = "https://chatgpt.com/c/thinking-failed-adapter";
+  const exactRunId = "run_thinking_failed_adapter";
+  const exactRequestId = "msg_thinking_failed_adapter";
+  const exactPrompt = `controller request ${exactRequestId}`;
+  const fixture = fakeBrowser({
+    initialUrl: exactConversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [{
+      isAnswering: false,
+      assistantText: "Thinking failed",
+      assistantMessageCount: 24,
+      userMessageCount: 32,
+      lastMessageRole: "assistant",
+      requestMessageFound: true,
+      requestMessageFoundBy: "last_text",
+      requestMessageScanComplete: true,
+      deliveryFailure: null,
+      responseFailure: {
+        code: "CHATGPT_THINKING_FAILED",
+        message: "Thinking failed",
+        retryActionAvailable: false,
+      },
+    }],
+    composerStates: [{
+      state: "empty",
+      inlineTextLength: 0,
+      attachmentCount: 0,
+      sendButtonEnabled: false,
+    }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl: exactConversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+  const observed = await adapter.observeSubmittedTurn!({
+    runId: exactRunId,
+    round: 24,
+    requestId: exactRequestId,
+    prompt: exactPrompt,
+    durableSubmittedCheckpoint: true,
+    baselineUserMessageCount: 31,
+    baselineAssistantMessageCount: 23,
+    expectedConversationUrl: exactConversationUrl,
+  });
+  assert.equal(observed.status, "response_failed");
+  assert.equal(observed.evidence.responseFailure?.code, "CHATGPT_THINKING_FAILED");
+  assert.equal(observed.evidence.responseFailure?.retryActionAvailable, false);
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("Thinking failed while Pro is still answering remains read-only pending", async () => {
+  const exactConversationUrl = "https://chatgpt.com/c/thinking-failed-answering";
+  const exactRequestId = "msg_thinking_failed_answering";
+  const fixture = fakeBrowser({
+    initialUrl: exactConversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [{
+      isAnswering: true,
+      assistantText: "Thinking failed",
+      assistantMessageCount: 24,
+      userMessageCount: 32,
+      lastMessageRole: "assistant",
+      requestMessageFound: true,
+      requestMessageScanComplete: true,
+      deliveryFailure: null,
+      responseFailure: {
+        code: "CHATGPT_THINKING_FAILED",
+        message: "Thinking failed",
+        retryActionAvailable: false,
+      },
+    }],
+    composerStates: [{
+      state: "empty",
+      inlineTextLength: 0,
+      attachmentCount: 0,
+      sendButtonEnabled: false,
+    }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl: exactConversationUrl,
+    timeoutMs: 1,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+  const observed = await adapter.observeSubmittedTurn!({
+    runId: "run_thinking_failed_answering",
+    round: 24,
+    requestId: exactRequestId,
+    prompt: `controller request ${exactRequestId}`,
+    durableSubmittedCheckpoint: true,
+    baselineUserMessageCount: 31,
+    baselineAssistantMessageCount: 23,
+    expectedConversationUrl: exactConversationUrl,
+  });
+  assert.equal(observed.status, "pending");
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
 test("rejects a non-conversation URL before touching the Browser runtime", () => {
   let browserTouched = false;
   const browser: IabBrowser = {

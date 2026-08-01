@@ -8,6 +8,7 @@ import type {
 } from "./api-contracts.js";
 import {
   authorizeControllerDeliveryTimeoutRetry,
+  authorizeControllerResponseRetry,
   confirmControllerTurnMisdirected,
   confirmControllerTurnNotSent,
   confirmManualControllerSubmission,
@@ -615,6 +616,7 @@ export async function continueGoalbraidDecision(
 
 export {
   authorizeControllerDeliveryTimeoutRetry,
+  authorizeControllerResponseRetry,
   confirmManualControllerSubmission,
   confirmControllerTurnMisdirected,
   confirmControllerTurnNotSent,
@@ -716,6 +718,7 @@ export type {
   ContinueCueLineRunOptions,
   ControllerDeliveryTimeoutAttestationResult,
   ControllerDeliveryTimeoutRetryAuthorization,
+  ControllerResponseRetryAuthorization,
   CueLineCallerJobResultInput,
   CueLineCallerJobSubmissionOptions,
   CueLineCallerJobSubmissionResult,

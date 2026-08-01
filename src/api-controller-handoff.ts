@@ -6,6 +6,7 @@ import type {
   ControllerMisdirectedConfirmation,
   ControllerDeliveryTimeoutAttestationResult,
   ControllerDeliveryTimeoutRetryAuthorization,
+  ControllerResponseRetryAuthorization,
   ControllerNotSentConfirmation,
   ControllerPostFixRetryReauthorization,
   CueLineRuntimeOptions,
@@ -1242,6 +1243,126 @@ export async function authorizeControllerDeliveryTimeoutRetry(
       };
     }
     await store.append("controller_delivery_timeout_retry_authorized", {
+      round: options.round,
+      request_id: options.requestId,
+      prompt_hash: pending.promptHash,
+      conversation_url: options.conversationUrl,
+      evidence_hash: options.evidenceHash,
+      authorization_source: "operator_explicit",
+      one_shot: true,
+    });
+    await store.snapshot();
+    return {
+      runId,
+      requestId: options.requestId,
+      round: options.round,
+      conversationUrl: options.conversationUrl,
+      evidenceHash: options.evidenceHash,
+      outcome: "authorized",
+    };
+  } finally {
+    await lease.release();
+  }
+}
+
+/** Durable one-shot operator authorization for an exact controller response failure. */
+export async function authorizeControllerResponseRetry(
+  runId: string,
+  options: Pick<CueLineRuntimeOptions, "home" | "environment" | "now"> & {
+    requestId: string;
+    round: number;
+    conversationUrl: string;
+    evidenceHash: string;
+  },
+): Promise<ControllerResponseRetryAuthorization> {
+  if (!/^[0-9a-f]{64}$/.test(options.evidenceHash)) {
+    throw new CueLineError(
+      "CONTROLLER_RESPONSE_RETRY_STATE_INVALID",
+      "Controller response retry authorization requires an exact lowercase SHA-256 evidence hash.",
+    );
+  }
+  const environment = options.environment ?? runtimeEnvironment();
+  const home = options.home ?? defaultCueLineHome(environment);
+  await loadPersistedRunStore(home, runId);
+  const lease = await RuntimeLease.claim({
+    home,
+    runId,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  try {
+    const store = await loadPersistedRunStore(home, runId);
+    store.bindRuntimeOwner(lease.ownerId);
+    const recovery = store.state.controllerResponseFailureRecovery;
+    const pending = (store.state.pendingControllerTurns ?? []).find(
+      (turn) =>
+        turn.requestId === options.requestId && turn.round === options.round,
+    );
+    const exactState =
+      (store.state.pendingControllerTurns ?? []).length === 1 &&
+      pending !== undefined &&
+      pending.submissionState === "submitted" &&
+      recovery?.requestId === options.requestId &&
+      recovery.round === options.round &&
+      recovery.promptHash === pending.promptHash &&
+      recovery.evidenceHash === options.evidenceHash &&
+      recovery.failureCode === "CHATGPT_THINKING_FAILED" &&
+      recovery.retryActionAvailable === false &&
+      sameChatGptConversationUrl(
+        recovery.conversationUrl,
+        options.conversationUrl,
+      ) &&
+      (pending.conversationUrl === null ||
+        sameChatGptConversationUrl(
+          pending.conversationUrl,
+          options.conversationUrl,
+        ));
+    if (!exactState) {
+      throw new CueLineError(
+        "CONTROLLER_RESPONSE_RETRY_STATE_INVALID",
+        "Controller response retry authorization does not match the exact pending failure.",
+      );
+    }
+    if (recovery.status === "authorized") {
+      return {
+        runId,
+        requestId: options.requestId,
+        round: options.round,
+        conversationUrl: options.conversationUrl,
+        evidenceHash: options.evidenceHash,
+        outcome: "already_authorized",
+      };
+    }
+    if (recovery.status !== "observed") {
+      throw new CueLineError(
+        "CONTROLLER_RESPONSE_RETRY_EXHAUSTED",
+        "The one-shot controller response retry authorization was already consumed or resolved.",
+      );
+    }
+    const cancellation = await readCancellationObservation(home, runId);
+    if (cancellation.runRequested || cancellation.jobRequests.length > 0) {
+      throw new CueLineError(
+        "CONTROLLER_RESPONSE_RETRY_STATE_INVALID",
+        "Controller response retry is forbidden while cancellation is pending.",
+      );
+    }
+    const events = await readAuthoritativeRunEvents(home, runId);
+    const hasFreshEvidence = events.some((event) => {
+      const payload = eventPayload(event);
+      return event.type === "controller_response_failure_observed" &&
+        payload.request_id === options.requestId &&
+        payload.round === options.round &&
+        payload.evidence_hash === options.evidenceHash &&
+        payload.evidence_source === "fresh_read_only_dom" &&
+        payload.failure_code === "CHATGPT_THINKING_FAILED" &&
+        payload.retry_action_available === false;
+    });
+    if (!hasFreshEvidence) {
+      throw new CueLineError(
+        "CONTROLLER_RESPONSE_RETRY_FRESH_EVIDENCE_REQUIRED",
+        "A fresh exact read-only controller response failure observation is required.",
+      );
+    }
+    await store.append("controller_response_retry_authorized", {
       round: options.round,
       request_id: options.requestId,
       prompt_hash: pending.promptHash,

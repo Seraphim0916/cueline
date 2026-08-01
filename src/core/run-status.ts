@@ -32,6 +32,7 @@ export type CueLineRunPhase =
   | "starting"
   | "prompt_not_sent"
   | "controller_delivery_failed"
+  | "controller_response_failed"
   | "controller_response_pending"
   | "jobs_running"
   | "controller_decision_pending"
@@ -58,6 +59,8 @@ export type CueLineSafeNextAction =
   | "recover_submitted_turn"
   | "authorize_delivery_retry"
   | "retry_delivery_timeout"
+  | "authorize_controller_response_retry"
+  | "retry_controller_response"
   | "retry"
   | "reconcile"
   | "inspect_jobs_then_continue"
@@ -101,6 +104,16 @@ export interface CueLineRunStatusSummary {
       retryActionAvailable: boolean;
       status: NonNullable<
         CueLineRunState["controllerDeliveryTimeoutRecovery"]
+      >["status"];
+    };
+    responseFailure?: {
+      requestId: string;
+      round: number;
+      code: "CHATGPT_THINKING_FAILED";
+      evidenceHash: string;
+      retryActionAvailable: false;
+      status: NonNullable<
+        CueLineRunState["controllerResponseFailureRecovery"]
       >["status"];
     };
     reconciliation?: {
@@ -313,6 +326,27 @@ function relevantDeliveryTimeoutRecovery(
     : null;
 }
 
+function relevantControllerResponseFailureRecovery(
+  state: CueLineRunState,
+): NonNullable<CueLineRunState["controllerResponseFailureRecovery"]> | null {
+  const recovery = state.controllerResponseFailureRecovery ?? null;
+  if (recovery === null) return null;
+  const exactPending = state.pendingControllerTurns.some(
+    (turn) =>
+      turn.round === recovery.round &&
+      turn.submissionState === "submitted" &&
+      (turn.requestId === recovery.requestId ||
+        (recovery.retryRequestId !== null &&
+          turn.requestId === recovery.retryRequestId &&
+          turn.retryOfRequestId === recovery.requestId)),
+  );
+  return exactPending ||
+    recovery.status === "consumed" ||
+    recovery.status === "skipped"
+    ? recovery
+    : null;
+}
+
 function hasDurableSubmittedConflictRecovery(
   state: CueLineRunState,
   runtime: RuntimeLeaseObservation,
@@ -411,6 +445,20 @@ function safeNextActionFor(
   if (deliveryTimeoutRecovery?.status === "authorized") {
     return "retry_delivery_timeout";
   }
+  const responseFailureRecovery =
+    relevantControllerResponseFailureRecovery(state);
+  if (responseFailureRecovery?.status === "observed") {
+    return "authorize_controller_response_retry";
+  }
+  if (responseFailureRecovery?.status === "authorized") {
+    return "retry_controller_response";
+  }
+  if (
+    responseFailureRecovery?.status === "consumed" ||
+    responseFailureRecovery?.status === "skipped"
+  ) {
+    return "manual_review";
+  }
   if (hasRetryableUnsentTurn(state)) return "retry";
   if (state.pendingControllerTurns.length > 0) {
     const turn = state.pendingControllerTurns[0];
@@ -467,6 +515,20 @@ export function cueLineRunPhase(
     deliveryTimeoutRecovery?.status === "authorized"
   ) {
     return "controller_delivery_failed";
+  }
+  const responseFailureRecovery =
+    relevantControllerResponseFailureRecovery(state);
+  if (
+    responseFailureRecovery?.status === "observed" ||
+    responseFailureRecovery?.status === "authorized"
+  ) {
+    return "controller_response_failed";
+  }
+  if (
+    responseFailureRecovery?.status === "consumed" ||
+    responseFailureRecovery?.status === "skipped"
+  ) {
+    return "reconciliation_required";
   }
   if (state.status === "failed" && runtime.ownership === "active") return "runtime_active";
   // A turn stuck in submissionState "submitting" has NO controller_turn_submitted record:
@@ -535,6 +597,27 @@ export function assertRunCanContinue(
       "RUN_CANCELLATION_PENDING",
       `CueLine run '${state.runId}' has a durable cancellation request; continuation is forbidden.`,
       { details: { run_id: state.runId, phase: "cancellation_pending" } },
+    );
+  }
+  const responseFailureRecovery =
+    state.controllerResponseFailureRecovery ?? null;
+  if (
+    responseFailureRecovery !== null &&
+    (responseFailureRecovery.status === "consumed" ||
+      responseFailureRecovery.status === "skipped") &&
+    state.pendingControllerTurns.length === 0
+  ) {
+    throw new CueLineError(
+      "CONTROLLER_RESPONSE_RETRY_REVIEW_REQUIRED",
+      `CueLine run '${state.runId}' has a consumed controller response retry grant without a pending retry turn; manual review is required and no resend is permitted.`,
+      {
+        details: {
+          run_id: state.runId,
+          request_id: responseFailureRecovery.requestId,
+          round: responseFailureRecovery.round,
+          phase: "reconciliation_required",
+        },
+      },
     );
   }
   const inspect = `Inspect it with 'cueline run status ${state.runId} --json'; do not resend it.`;
@@ -729,6 +812,7 @@ export function summarizeCueLineRunState(
         }
       : undefined;
   const deliveryTimeout = relevantDeliveryTimeoutRecovery(state);
+  const responseFailure = relevantControllerResponseFailureRecovery(state);
   return {
     runId: state.runId,
     status: state.status,
@@ -765,6 +849,18 @@ export function summarizeCueLineRunState(
               retryActionAvailable:
                 deliveryTimeout.retryActionAvailable,
               status: deliveryTimeout.status,
+            },
+          }),
+      ...(responseFailure === null
+        ? {}
+        : {
+            responseFailure: {
+              requestId: responseFailure.requestId,
+              round: responseFailure.round,
+              code: "CHATGPT_THINKING_FAILED" as const,
+              evidenceHash: responseFailure.evidenceHash,
+              retryActionAvailable: false as const,
+              status: responseFailure.status,
             },
           }),
       ...(reconciliation === undefined ? {} : { reconciliation }),

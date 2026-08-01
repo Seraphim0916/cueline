@@ -101,6 +101,7 @@ export interface BrowserSubmittedTurnEvidence {
   assistantMessageCount?: number;
   lastMessageRole?: "assistant" | "user" | null;
   deliveryFailure?: BrowserDeliveryFailureEvidence;
+  responseFailure?: BrowserResponseFailureEvidence;
 }
 
 export interface BrowserDeliveryFailureEvidence {
@@ -108,6 +109,13 @@ export interface BrowserDeliveryFailureEvidence {
   message: "Message delivery timed out. Please try again.";
   assistantTextHash: string;
   retryActionAvailable: boolean;
+}
+
+export interface BrowserResponseFailureEvidence {
+  code: "CHATGPT_THINKING_FAILED";
+  message: "Thinking failed";
+  assistantTextHash: string;
+  retryActionAvailable: false;
 }
 
 export type BrowserSubmittedTurnObservation =
@@ -120,7 +128,8 @@ export type BrowserSubmittedTurnObservation =
     }
   | { status: "pending"; evidence?: BrowserSubmittedTurnEvidence }
   | { status: "definitely_not_sent"; evidence: BrowserSubmittedTurnEvidence }
-  | { status: "delivery_failed"; evidence: BrowserSubmittedTurnEvidence };
+  | { status: "delivery_failed"; evidence: BrowserSubmittedTurnEvidence }
+  | { status: "response_failed"; evidence: BrowserSubmittedTurnEvidence };
 
 export interface BrowserDeliveryRetryInput extends BrowserTurnInput {
   expectedConversationUrl: string;

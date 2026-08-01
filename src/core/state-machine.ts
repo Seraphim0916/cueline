@@ -138,6 +138,23 @@ export interface ControllerDeliveryTimeoutRecoveryState {
   status: "observed" | "authorized" | "consumed" | "resolved";
 }
 
+export interface ControllerResponseFailureRecoveryState {
+  requestId: string;
+  round: number;
+  promptHash: string;
+  conversationUrl: string;
+  evidenceHash: string;
+  failureCode: "CHATGPT_THINKING_FAILED";
+  retryActionAvailable: false;
+  selectedModelLabel: string;
+  baselineUserMessageCount: number;
+  observedUserMessageCount: number;
+  assistantMessageCount: number;
+  retryRequestId: string | null;
+  transportAttempt: number;
+  status: "observed" | "authorized" | "consumed" | "resent" | "skipped" | "resolved";
+}
+
 export interface ControllerNotSentRecoveryState {
   abandonedRequestId: string;
   round: number;
@@ -273,6 +290,7 @@ export interface CueLineRunState {
   notSentRecovery?: ControllerNotSentRecoveryState | null | undefined;
   postFixRetryReauthorization?: ControllerPostFixRetryReauthorizationState | null;
   controllerDeliveryTimeoutRecovery?: ControllerDeliveryTimeoutRecoveryState | null;
+  controllerResponseFailureRecovery?: ControllerResponseFailureRecoveryState | null;
   lastFailure: RunFailureEvidence | null;
   jobs: Record<string, StoredJob>;
   /** Job IDs explicitly requested by the most recently accepted inspect command. */
@@ -452,6 +470,7 @@ export function initialRunState(
     notSentRecovery: null,
     postFixRetryReauthorization: null,
     controllerDeliveryTimeoutRecovery: null,
+    controllerResponseFailureRecovery: null,
     lastFailure: null,
     jobs: {},
     inspectionJobIds: [],
@@ -762,6 +781,147 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     };
   }
   if (
+    event.type === "controller_response_failure_observed" &&
+    typeof payload.request_id === "string" &&
+    typeof payload.round === "number" &&
+    typeof payload.prompt_hash === "string" &&
+    typeof payload.conversation_url === "string" &&
+    typeof payload.evidence_hash === "string" &&
+    payload.failure_code === "CHATGPT_THINKING_FAILED" &&
+    payload.retry_action_available === false &&
+    typeof payload.selected_model_label === "string" &&
+    typeof payload.baseline_user_message_count === "number" &&
+    typeof payload.observed_user_message_count === "number" &&
+    typeof payload.assistant_message_count === "number"
+  ) {
+    const pending = (state.pendingControllerTurns ?? []).find(
+      (turn) =>
+        turn.requestId === payload.request_id &&
+        turn.round === payload.round &&
+        turn.promptHash === payload.prompt_hash &&
+        turn.submissionState === "submitted",
+    );
+    const existing = state.controllerResponseFailureRecovery ?? null;
+    if (
+      pending === undefined ||
+      !/^[0-9a-f]{64}$/.test(payload.evidence_hash) ||
+      !/^[0-9a-f]{64}$/.test(payload.prompt_hash) ||
+      !isExactChatGptConversationUrl(payload.conversation_url) ||
+      !/^Pro(?:\s|$)/i.test(payload.selected_model_label) ||
+      (existing?.requestId === payload.request_id &&
+        existing.round === payload.round &&
+        existing.status !== "observed")
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      controllerResponseFailureRecovery: {
+        requestId: payload.request_id,
+        round: payload.round,
+        promptHash: payload.prompt_hash,
+        conversationUrl: payload.conversation_url,
+        evidenceHash: payload.evidence_hash,
+        failureCode: "CHATGPT_THINKING_FAILED",
+        retryActionAvailable: false,
+        selectedModelLabel: payload.selected_model_label,
+        baselineUserMessageCount: payload.baseline_user_message_count,
+        observedUserMessageCount: payload.observed_user_message_count,
+        assistantMessageCount: payload.assistant_message_count,
+        retryRequestId: null,
+        transportAttempt: 1,
+        status: "observed",
+      },
+    };
+  }
+  if (
+    event.type === "controller_response_retry_authorized" &&
+    typeof payload.request_id === "string" &&
+    typeof payload.round === "number" &&
+    typeof payload.evidence_hash === "string"
+  ) {
+    const recovery = state.controllerResponseFailureRecovery;
+    if (
+      recovery?.status !== "observed" ||
+      recovery.requestId !== payload.request_id ||
+      recovery.round !== payload.round ||
+      recovery.evidenceHash !== payload.evidence_hash
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      controllerResponseFailureRecovery: { ...recovery, status: "authorized" },
+    };
+  }
+  if (
+    event.type === "controller_response_retry_authorization_consumed" &&
+    typeof payload.request_id === "string" &&
+    typeof payload.round === "number" &&
+    typeof payload.evidence_hash === "string"
+  ) {
+    const recovery = state.controllerResponseFailureRecovery;
+    if (
+      recovery?.status !== "authorized" ||
+      recovery.requestId !== payload.request_id ||
+      recovery.round !== payload.round ||
+      recovery.evidenceHash !== payload.evidence_hash
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      controllerResponseFailureRecovery: { ...recovery, status: "consumed" },
+    };
+  }
+  if (
+    event.type === "controller_response_retry_resent" &&
+    typeof payload.request_id === "string" &&
+    typeof payload.retry_request_id === "string" &&
+    typeof payload.round === "number" &&
+    typeof payload.evidence_hash === "string"
+  ) {
+    const recovery = state.controllerResponseFailureRecovery;
+    if (
+      recovery?.status !== "consumed" ||
+      recovery.requestId !== payload.request_id ||
+      recovery.round !== payload.round ||
+      recovery.evidenceHash !== payload.evidence_hash ||
+      payload.retry_request_id === payload.request_id
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      controllerResponseFailureRecovery: {
+        ...recovery,
+        retryRequestId: payload.retry_request_id,
+        transportAttempt: 2,
+        status: "resent",
+      },
+    };
+  }
+  if (
+    event.type === "controller_response_retry_skipped" &&
+    typeof payload.request_id === "string" &&
+    typeof payload.round === "number"
+  ) {
+    const recovery = state.controllerResponseFailureRecovery;
+    if (
+      recovery === null ||
+      recovery === undefined ||
+      recovery.requestId !== payload.request_id ||
+      recovery.round !== payload.round ||
+      (recovery.status !== "authorized" && recovery.status !== "consumed")
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      controllerResponseFailureRecovery: { ...recovery, status: "skipped" },
+    };
+  }
+  if (
     event.type === "controller_delivery_timeout_observed" &&
     typeof payload.request_id === "string" &&
     typeof payload.round === "number" &&
@@ -1019,6 +1179,13 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       deliveryTimeoutRecovery !== undefined &&
       payload.request_id === deliveryTimeoutRecovery.requestId &&
       payload.round === deliveryTimeoutRecovery.round;
+    const responseFailureRecovery = state.controllerResponseFailureRecovery;
+    const resolvesResponseFailure =
+      responseFailureRecovery !== null &&
+      responseFailureRecovery !== undefined &&
+      (payload.request_id === responseFailureRecovery.retryRequestId ||
+        payload.request_id === responseFailureRecovery.requestId) &&
+      payload.round === responseFailureRecovery.round;
     return {
       ...state,
       conversationUrl: preserveCanonicalConversationUrl(
@@ -1034,6 +1201,9 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       controllerDeliveryTimeoutRecovery: resolvesDeliveryTimeout
         ? { ...deliveryTimeoutRecovery, status: "resolved" }
         : deliveryTimeoutRecovery ?? null,
+      controllerResponseFailureRecovery: resolvesResponseFailure
+        ? { ...responseFailureRecovery, status: "resolved" }
+        : responseFailureRecovery ?? null,
     };
   }
   if (event.type === "controller_turn_abandoned" && typeof payload.request_id === "string") {

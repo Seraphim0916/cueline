@@ -9,6 +9,11 @@ import {
   CHATGPT_DELIVERY_TIMEOUT_MESSAGE,
   deliveryTimeoutEvidenceHash,
 } from "../browser/delivery-timeout.js";
+import {
+  CHATGPT_THINKING_FAILED_CODE,
+  CHATGPT_THINKING_FAILED_MESSAGE,
+  controllerResponseFailureEvidenceHash,
+} from "../browser/controller-response-failure.js";
 import { JobStatusStore } from "../jobs/status.js";
 import type {
   ControllerCommand,
@@ -711,9 +716,25 @@ async function controllerEvidenceJobs(
   );
 }
 
+interface ControllerResponseRetryContext {
+  abandonedRequestId: string;
+  round: number;
+  promptHash: string;
+  prompt: string;
+  conversationUrl: string;
+  baselineUserMessageCount: number;
+  selectedModelLabel: string;
+  evidenceHash: string;
+}
+
+type ReconcileControllerTurnOutcome =
+  | CommandExecutionOutcome
+  | { status: "controller_response_retry"; retry: ControllerResponseRetryContext };
+
 async function driveControllerLoop(
   store: RunStore<CueLineRunState>,
   options: ControllerRuntimeOptions,
+  responseRetry?: ControllerResponseRetryContext,
 ): Promise<CueLineResult> {
   const { maxRounds, maxStagnantRounds, maxRepairAttempts } =
     validateControllerRuntimeOptions(options);
@@ -726,13 +747,21 @@ async function driveControllerLoop(
     }
     const round = state.round + 1;
     const evidenceJobs = await controllerEvidenceJobs(store);
+    const exactResponseRetry =
+      responseRetry?.round === round ? responseRetry : undefined;
     const confirmedNotSentRetry =
       state.notSentRecovery?.status === "confirmed" &&
       state.notSentRecovery.retryRequestId === null
         ? state.notSentRecovery
         : undefined;
     const notSentRetry =
-      confirmedNotSentRetry === undefined
+      exactResponseRetry !== undefined
+        ? {
+            ...exactResponseRetry,
+            composerPromptState: null,
+            responseFailureRetry: true as const,
+          }
+        : confirmedNotSentRetry === undefined
         ? undefined
         : {
             ...confirmedNotSentRetry,
@@ -790,6 +819,7 @@ async function driveControllerLoop(
       options.returnAfterControllerSubmission === true,
       notSentRetry,
     );
+    responseRetry = undefined;
     if (command === undefined) {
       await store.snapshot();
       return awaitingControllerResult(store.state);
@@ -835,7 +865,7 @@ async function driveControllerLoop(
 async function reconcilePendingControllerTurn(
   store: RunStore<CueLineRunState>,
   options: ContinueControllerLoopOptions,
-): Promise<CommandExecutionOutcome> {
+): Promise<ReconcileControllerTurnOutcome> {
   const pendingTurns = store.state.pendingControllerTurns ?? [];
   if (pendingTurns.length === 0) return "continue";
   // Must run before the proven-unsent shortcut: abandoning the unsent repair turn
@@ -1041,8 +1071,8 @@ async function reconcilePendingControllerTurn(
       recoveryInput,
     );
     const submittedEvidence = submittedObservation.evidence;
-    if (
-      submittedEvidence?.countRegressionDetected === true &&
+      if (
+        submittedEvidence?.countRegressionDetected === true &&
       !store.state.notices.some((notice) =>
         notice.includes(
           `CONTROLLER_OBSERVATION_COUNT_REGRESSION: request=${pending.requestId}`,
@@ -1058,9 +1088,34 @@ async function reconcilePendingControllerTurn(
           observation_baseline_user_message_count:
             submittedEvidence.observationBaselineUserMessageCount ?? null,
         },
-      });
-    }
-    if (submittedObservation.status === "pending") {
+        });
+      }
+      const authorizedResponseFailure =
+        store.state.controllerResponseFailureRecovery;
+      if (
+        authorizedResponseFailure?.status === "authorized" &&
+        authorizedResponseFailure.requestId === pending.requestId &&
+        authorizedResponseFailure.round === pending.round &&
+        submittedObservation.status !== "response_failed"
+      ) {
+        await store.append("controller_response_retry_skipped", {
+          round: pending.round,
+          request_id: pending.requestId,
+          prompt_hash: pending.promptHash,
+          conversation_url: expectedConversationUrl,
+          evidence_hash: authorizedResponseFailure.evidenceHash,
+          reason:
+            submittedObservation.status === "response"
+              ? "response_available_before_resend"
+              : submittedObservation.status === "delivery_failed"
+                ? "failure_kind_changed"
+                : submittedObservation.status === "definitely_not_sent"
+                  ? "submitted_identity_changed"
+                  : "response_failure_no_longer_exact",
+          retry_sent: false,
+        });
+      }
+      if (submittedObservation.status === "pending") {
       const diagnostic = submittedObservation.evidence?.pendingDiagnostic;
       if (
         diagnostic !== undefined &&
@@ -1090,6 +1145,86 @@ async function reconcilePendingControllerTurn(
         submittedObservation.evidence,
       );
       return "awaiting_controller";
+    }
+    if (submittedObservation.status === "response_failed") {
+      const evidence = submittedObservation.evidence;
+      if (
+        !isThinkingFailedObservation(
+          pending,
+          expectedConversationUrl,
+          evidence,
+        )
+      ) {
+        return "awaiting_controller";
+      }
+      const evidenceHash = controllerResponseFailureEvidenceHash(evidence);
+      const existingRecovery = store.state.controllerResponseFailureRecovery;
+      if (
+        existingRecovery?.requestId !== pending.requestId ||
+        existingRecovery.round !== pending.round ||
+        existingRecovery.evidenceHash !== evidenceHash
+      ) {
+        if (
+          existingRecovery?.status === "authorized" &&
+          existingRecovery.requestId === pending.requestId &&
+          existingRecovery.round === pending.round
+        ) {
+          await store.append("controller_response_retry_skipped", {
+            round: pending.round,
+            request_id: pending.requestId,
+            prompt_hash: pending.promptHash,
+            conversation_url: expectedConversationUrl,
+            evidence_hash: existingRecovery.evidenceHash,
+            observed_evidence_hash: evidenceHash,
+            reason: "failure_evidence_changed",
+            retry_sent: false,
+          });
+        } else {
+          await recordThinkingFailedObservation(
+            store,
+            pending,
+            evidence,
+            evidenceHash,
+          );
+        }
+      }
+      const recovery = store.state.controllerResponseFailureRecovery;
+      if (
+        recovery?.requestId !== pending.requestId ||
+        recovery.round !== pending.round ||
+        recovery.evidenceHash !== evidenceHash ||
+        recovery.status !== "authorized"
+      ) {
+        return "awaiting_controller";
+      }
+      await store.append("controller_response_retry_authorization_consumed", {
+        round: pending.round,
+        request_id: pending.requestId,
+        prompt_hash: pending.promptHash,
+        conversation_url: expectedConversationUrl,
+        evidence_hash: evidenceHash,
+        authorization_consumed_before_composer_mutation: true,
+        one_shot: true,
+      });
+      await store.append("controller_turn_abandoned", {
+        round: pending.round,
+        request_id: pending.requestId,
+        reason: "controller_response_retry_authorized",
+        round_not_consumed: true,
+      });
+      return {
+        status: "controller_response_retry",
+        retry: {
+          abandonedRequestId: pending.requestId,
+          round: pending.round,
+          promptHash: pending.promptHash,
+          prompt: pending.prompt,
+          conversationUrl: expectedConversationUrl,
+          baselineUserMessageCount: evidence.observedUserMessageCount!,
+          selectedModelLabel: evidence.selectedModelLabel!,
+          evidenceHash,
+        },
+      };
     }
     if (submittedObservation.status === "delivery_failed") {
       const evidence = submittedObservation.evidence;
@@ -1527,6 +1662,75 @@ function isDeliveryTimeoutObservation(
     evidence.composerPastedTextAttachmentPresent !== true &&
     evidence.composerSendButtonEnabled === false
   );
+}
+
+function isThinkingFailedObservation(
+  pending: CueLineRunState["pendingControllerTurns"][number],
+  expectedConversationUrl: string,
+  evidence: BrowserSubmittedTurnEvidence,
+): boolean {
+  const correlatedSubmittedTurn =
+    evidence.requestMessageFound === true ||
+    evidence.observedUserMessageCount === evidence.baselineUserMessageCount + 1;
+  return (
+    isSubmittedTurnRecoveryCandidate(pending, expectedConversationUrl) &&
+    sameChatGptConversationUrl(
+      evidence.conversationUrl,
+      expectedConversationUrl,
+    ) &&
+    /^Pro(?:\s|$)/i.test(evidence.selectedModelLabel ?? "") &&
+    evidence.hydrated === true &&
+    evidence.baselineUserMessageCount === pending.baselineUserMessageCount &&
+    evidence.countRegressionDetected !== true &&
+    correlatedSubmittedTurn &&
+    evidence.isAnswering === false &&
+    evidence.lastMessageRole === "assistant" &&
+    evidence.responseFailure?.code === CHATGPT_THINKING_FAILED_CODE &&
+    evidence.responseFailure.message === CHATGPT_THINKING_FAILED_MESSAGE &&
+    /^[0-9a-f]{64}$/.test(evidence.responseFailure.assistantTextHash) &&
+    evidence.responseFailure.retryActionAvailable === false &&
+    evidence.composerPromptState === "empty" &&
+    evidence.composerAttachmentCount === 0 &&
+    evidence.composerPastedTextAttachmentPresent !== true &&
+    evidence.composerSendButtonEnabled === false &&
+    Number.isSafeInteger(evidence.observedUserMessageCount) &&
+    Number.isSafeInteger(evidence.assistantMessageCount)
+  );
+}
+
+async function recordThinkingFailedObservation(
+  store: RunStore<CueLineRunState>,
+  pending: CueLineRunState["pendingControllerTurns"][number],
+  evidence: BrowserSubmittedTurnEvidence,
+  evidenceHash: string,
+): Promise<void> {
+  await store.append("controller_response_failure_observed", {
+    round: pending.round,
+    request_id: pending.requestId,
+    prompt_hash: pending.promptHash,
+    conversation_url: evidence.conversationUrl,
+    failure_code: CHATGPT_THINKING_FAILED_CODE,
+    failure_message: CHATGPT_THINKING_FAILED_MESSAGE,
+    assistant_text_hash: evidence.responseFailure!.assistantTextHash,
+    evidence_hash: evidenceHash,
+    evidence_source: "fresh_read_only_dom",
+    selected_model_label: evidence.selectedModelLabel,
+    baseline_user_message_count: evidence.baselineUserMessageCount,
+    observed_user_message_count: evidence.observedUserMessageCount,
+    assistant_message_count: evidence.assistantMessageCount,
+    request_message_found: evidence.requestMessageFound,
+    request_message_found_by: evidence.requestMessageFoundBy ?? null,
+    request_message_scan_complete:
+      evidence.requestMessageScanComplete === true,
+    is_answering: false,
+    last_message_role: "assistant",
+    composer_prompt_state: "empty",
+    composer_attachment_count: 0,
+    composer_pasted_text_attachment_present: false,
+    composer_send_button_enabled: false,
+    retry_action_available: false,
+    automatic_retry_forbidden: true,
+  });
 }
 
 async function recordDeliveryTimeoutObservation(
@@ -1998,6 +2202,7 @@ export async function continueControllerLoop(
         return awaitingControllerResult(store.state);
       }
     }
+    let responseRetry: ControllerResponseRetryContext | undefined;
     if ((store.state.pendingControllerTurns ?? []).length > 0) {
       const outcome = await reconcilePendingControllerTurn(store, {
         ...options,
@@ -2005,6 +2210,9 @@ export async function continueControllerLoop(
         signal: cancellation.options.signal,
       });
       await store.snapshot();
+      if (typeof outcome === "object") {
+        responseRetry = outcome.retry;
+      }
       if (outcome === "terminal") return resultFromState(store.state);
       if (outcome === "awaiting_controller") return awaitingControllerResult(store.state);
       if (outcome === "awaiting_caller") return awaitingCallerResult(store.state);
@@ -2022,7 +2230,11 @@ export async function continueControllerLoop(
         conversation_url: options.conversationUrl,
       });
     }
-    const result = await driveControllerLoop(store, cancellation.options);
+    const result = await driveControllerLoop(
+      store,
+      cancellation.options,
+      responseRetry,
+    );
     if (
       store.state.controllerConversationRollover?.status === "opened" &&
       store.state.conversationUrl !== null

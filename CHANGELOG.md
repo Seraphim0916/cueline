@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.4 - 2026-08-01
+
+### Added
+
+- Exact ChatGPT Pro `Thinking failed` submitted-turn evidence now has independent `CHATGPT_THINKING_FAILED` recovery state, CLI/API one-shot authorization, same-round linked transport retry, crash fencing, run-status exposure, and DOM/integration coverage.
+
+### Verification
+
+- Added current-vs-historical DOM tests, Pro/answering guards, authorization-before-mutation checks, same-round new-request linkage, restart no-duplicate coverage, and existing delivery-timeout regression coverage.
+
 ## 0.7.3 - 2026-07-30
 
 ### Added

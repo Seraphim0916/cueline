@@ -64,6 +64,7 @@ var cuelineModuleUrl = `${pathToFileURL(cuelineApiPath).href}?v=${encodeURICompo
 const {
   CUELINE_VERSION,
   authorizeControllerDeliveryTimeoutRetry,
+  authorizeControllerResponseRetry,
   claimCueLineCallerJob,
   createCodexIabAdapter,
   continueGoalbraidDecision,
@@ -260,7 +261,20 @@ cueline run authorize-delivery-retry RUN_ID \
 
 This command only appends the one-shot authorization; it does not drive the browser. The next `continueCueLineRun` first performs another read-only observation and pre-inspects the one scoped Retry target. After durable authorization consumption, one synchronous page task invokes the existing assistant `Retry` only if the same failure evidence, identity, empty composer, zero attachments, disabled Send button, and pre-inspected target still match. It never fills the composer, creates a new request, or increments the round. A consumed grant cannot click again automatically; a response or target change that wins before the page task is recorded as skipped and reconciled without a click.
 
-For a manually submitted attachment, record confirmation without editing `events.jsonl`:
+Exact current submitted-turn `Thinking failed` is a separate controller response failure, never a delivery timeout or controller output. `run status --json` reports `phase: controller_response_failed`, code `CHATGPT_THINKING_FAILED`, exact evidence hash, and `safeNextAction: authorize_controller_response_retry`. It remains read-only until exact one-shot approval:
+
+```bash
+cueline run authorize-response-retry RUN_ID \
+  --request-id REQUEST_ID \
+  --round ROUND \
+  --conversation-url https://chatgpt.com/c/EXACT_CONVERSATION \
+  --evidence-hash EVIDENCE_SHA256 \
+  --json
+```
+
+Next continuation rechecks exact URL, request, round, Pro label, current last assistant failure, idle state, empty composer, zero attachments, disabled Send button, message counts, cancellation, and competing turns. Authorization is durably consumed before composer mutation. CueLine abandons only failed transport attempt, preserves product round, mints one request ID with `retry_of_request_id`, sends persisted prompt once, and records transport attempt 2. Restart before or after send never resends automatically; consumed-without-pending requires manual review. Identity or DOM drift records `controller_response_retry_skipped` and sends nothing.
+
+For manually submitted attachment, record confirmation without editing `events.jsonl`:
 
 ```bash
 cueline run reconcile RUN_ID \

@@ -487,11 +487,14 @@ export async function requestControllerCommand(
   notSentRetry?: {
     abandonedRequestId: string;
     promptHash: string;
+    prompt?: string;
     conversationUrl: string;
     baselineUserMessageCount: number | null;
     selectedModelLabel: string;
     composerPromptState?: "inline_ready" | "attachment_ready" | null;
     postFixRetryReauthorized?: boolean;
+    responseFailureRetry?: boolean;
+    evidenceHash?: string;
   },
 ): Promise<ControllerCommand | undefined> {
   let lastError: CueLineError | undefined;
@@ -503,7 +506,13 @@ export async function requestControllerCommand(
       turn = recovered.turn;
     } else {
       const prompt =
-        attempt === 0
+        attempt === 0 &&
+        notSentRetry?.responseFailureRetry === true &&
+        typeof notSentRetry.prompt === "string"
+          ? notSentRetry.prompt
+              .split(notSentRetry.abandonedRequestId)
+              .join(expected.requestId)
+          : attempt === 0
           ? controllerPrompt(observation, instructions)
           : repairPrompt(observation, lastError!, attempt, instructions);
       const promptHash = commandHash(prompt);
@@ -578,9 +587,12 @@ export async function requestControllerCommand(
             ? {
                 retry_of_request_id: notSentRetry.abandonedRequestId,
                 recovery_prompt_hash: notSentRetry.promptHash,
-                ...(notSentRetry.postFixRetryReauthorized === true
-                  ? { post_fix_retry_reauthorized: true }
-                  : {}),
+            ...(notSentRetry.postFixRetryReauthorized === true
+              ? { post_fix_retry_reauthorized: true }
+              : {}),
+            ...(notSentRetry.responseFailureRetry === true
+              ? { controller_response_failure_retry: true }
+              : {}),
               }
             : {}),
           ...(browser.submissionCheckpointContract === "write_ahead_v1"
@@ -600,7 +612,7 @@ export async function requestControllerCommand(
               pending,
             );
           }
-          await store.append(
+        await store.append(
             checkpoint.submissionState === "submitted"
               ? "controller_turn_submitted"
               : checkpoint.submissionState === "staged"
@@ -653,9 +665,29 @@ export async function requestControllerCommand(
               ...(checkpoint.sendTargetEvidence === undefined
                 ? {}
                 : { send_target_evidence: checkpoint.sendTargetEvidence }),
-            },
-          );
-        },
+          },
+        );
+        if (
+          checkpoint.submissionState === "submitted" &&
+          attempt === 0 &&
+          notSentRetry?.responseFailureRetry === true &&
+          typeof notSentRetry.evidenceHash === "string"
+        ) {
+          await store.append("controller_response_retry_resent", {
+            round: expected.round,
+            request_id: notSentRetry.abandonedRequestId,
+            retry_request_id: expected.requestId,
+            prompt_hash: notSentRetry.promptHash,
+            conversation_url:
+              checkpoint.conversationUrl ?? notSentRetry.conversationUrl,
+            evidence_hash: notSentRetry.evidenceHash,
+            retry_of_request_id: notSentRetry.abandonedRequestId,
+            transport_attempt: 2,
+            same_round: true,
+            one_shot: true,
+          });
+        }
+      },
       };
       if (
         returnAfterSubmission &&

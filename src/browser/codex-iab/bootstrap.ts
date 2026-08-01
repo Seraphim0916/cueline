@@ -23,6 +23,11 @@ export interface PageChatState {
     message: "Message delivery timed out. Please try again.";
     retryActionAvailable: boolean;
   } | null;
+  responseFailure?: {
+    code: "CHATGPT_THINKING_FAILED";
+    message: "Thinking failed";
+    retryActionAvailable: false;
+  } | null;
 }
 
 export interface PageComposerState {
@@ -302,6 +307,7 @@ export async function readPageChatState(
       );
       const deliveryTimeoutMessage =
         "Message delivery timed out. Please try again." as const;
+      const thinkingFailedMessage = "Thinking failed" as const;
       const retryScope =
         lastAssistant !== undefined &&
         typeof lastAssistant.closest === "function"
@@ -324,6 +330,15 @@ export async function readPageChatState(
               code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT" as const,
               message: deliveryTimeoutMessage,
               retryActionAvailable: retryButtons.length === 1,
+            }
+          : null;
+      const responseFailure =
+        lastAssistant !== undefined &&
+        deliveryAssistantText === thinkingFailedMessage
+          ? {
+              code: "CHATGPT_THINKING_FAILED" as const,
+              message: thinkingFailedMessage,
+              retryActionAvailable: false as const,
             }
           : null;
       const modelTaggedMessages = Array.from(
@@ -399,6 +414,7 @@ export async function readPageChatState(
         requestMessageScanComplete:
           exactControllerIdentity !== undefined || normalizedExpectedPrompt !== "",
         deliveryFailure,
+        responseFailure,
       };
     },
     {

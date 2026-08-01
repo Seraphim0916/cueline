@@ -26,7 +26,7 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.7.3
+## Latest release: 0.7.4
 
 - Adds run-scoped ChatGPT Pin management and operator-confirmed context-exhaustion rollover without abandoning the run or disturbing concurrent conversations.
 
@@ -39,7 +39,7 @@ CueLine is a standalone implementation with **no runtime npm dependencies**. It 
   keeps the turn frozen. No branch control is clicked and no new round is
   created on either path; 770/770 tests pass.
 
-Read the complete [changelog](CHANGELOG.md#073---2026-07-30) or the versioned [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3).
+Read the complete [changelog](CHANGELOG.md#073---2026-07-30) or the versioned [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4).
 
 ## How a run actually goes
 
@@ -82,15 +82,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.7.3
+npm install -g cueline@0.7.4
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.7.3 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.3), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.3/cueline-0.7.3.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.4/cueline-0.7.4.tgz
 cueline install
 cueline doctor
 ```
@@ -222,6 +222,8 @@ ChatGPT's exact `Message delivery timed out. Please try again.` assistant state 
 
 Inside Codex's runtime, import the absolute module that `cueline api path` prints — that is the built API of the package you installed.
 
+An exact current submitted-turn `Thinking failed` leaf is recorded separately as `CHATGPT_THINKING_FAILED` with phase `controller_response_failed`. `run authorize-response-retry ... --evidence-hash SHA256` grants one exact resend only. CueLine consumes authorization before composer mutation, preserves product round, creates a new transport request ID linked by `retry_of_request_id`, and records transport attempt 2. A consumed grant never resends after restart; identity, model, URL, DOM, composer, cancellation, or count drift fails closed.
+
 ### Pinned ChatGPT controller conversations
 
 CueLine automatically ensures each exact ChatGPT Pro controller conversation appears in the web sidebar's Pinned section after its `/c/<conversation-id>` URL is durably bound. The operation is idempotent: an existing `Unpin chat` item proves the conversation is already pinned, while a new Pin click must produce that same proof. Pin state is run-scoped, so concurrent runs pin their own conversations independently. CueLine does not automatically unpin completed conversations or disturb a chat that was pinned manually.
@@ -242,7 +244,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.7.3
+CueLine 0.7.4
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
