@@ -28,6 +28,7 @@ export interface PageChatState {
     message: "Thinking failed";
     retryActionAvailable: false;
   } | null;
+  responseFailureFoundBy?: "assistant_message" | "conversation_turn" | null;
 }
 
 export interface PageComposerState {
@@ -275,11 +276,12 @@ export async function readPageChatState(
       const buttons = Array.from(document.querySelectorAll("button"));
       const isAnswering = buttons.some((button) => {
         const ariaLabel = button.getAttribute("aria-label")?.trim();
-        const label = (ariaLabel || button.textContent || "")
-          .replace(/\s+/g, " ")
-          .trim();
-        if (
-          !/(stop|停止|中止|중지|정지)/i.test(label) ||
+      const label = (ariaLabel || button.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (/^Stopped thinking$/i.test(label)) return false;
+      if (
+        !/(stop|停止|中止|중지|정지)/i.test(label) ||
           !/(answer|generat|respond|response|stream|thinking|回答|回覆|作答|生成|產生|思考|応答|생성|답변|응답)/i.test(
             label,
           )
@@ -305,9 +307,26 @@ export async function readPageChatState(
       const deliveryAssistantText = normalizeMessageText(
         visibleMessageText(lastAssistant),
       );
-      const deliveryTimeoutMessage =
-        "Message delivery timed out. Please try again." as const;
-      const thinkingFailedMessage = "Thinking failed" as const;
+    const deliveryTimeoutMessage =
+      "Message delivery timed out. Please try again." as const;
+    const thinkingFailedMessage = "Thinking failed" as const;
+    const conversationTurns = Array.from(
+      document.querySelectorAll('section[data-testid^="conversation-turn-"]'),
+    );
+    const lastConversationTurnText = normalizeMessageText(
+      visibleMessageText(conversationTurns.at(-1)),
+    );
+    const detachedThinkingFailure =
+      /^(?:ChatGPT said:\s*)?(?:Thinking failed|Stopped thinking)$/i.test(
+        lastConversationTurnText,
+      );
+    const assistantThinkingFailure =
+      deliveryAssistantText === thinkingFailedMessage;
+    const thinkingFailureDetected =
+      assistantThinkingFailure || detachedThinkingFailure;
+    const effectiveAssistantText = thinkingFailureDetected
+      ? thinkingFailedMessage
+      : assistantText;
       const retryScope =
         lastAssistant !== undefined &&
         typeof lastAssistant.closest === "function"
@@ -332,15 +351,19 @@ export async function readPageChatState(
               retryActionAvailable: retryButtons.length === 1,
             }
           : null;
-      const responseFailure =
-        lastAssistant !== undefined &&
-        deliveryAssistantText === thinkingFailedMessage
-          ? {
-              code: "CHATGPT_THINKING_FAILED" as const,
-              message: thinkingFailedMessage,
-              retryActionAvailable: false as const,
-            }
-          : null;
+    const responseFailure =
+      thinkingFailureDetected
+        ? {
+            code: "CHATGPT_THINKING_FAILED" as const,
+            message: thinkingFailedMessage,
+            retryActionAvailable: false as const,
+          }
+        : null;
+    const responseFailureFoundBy = thinkingFailureDetected
+      ? detachedThinkingFailure
+        ? ("conversation_turn" as const)
+        : ("assistant_message" as const)
+      : null;
       const modelTaggedMessages = Array.from(
         document.querySelectorAll("[data-message-model-slug]"),
       );
@@ -392,12 +415,16 @@ export async function readPageChatState(
                 ? "prompt_scan"
                 : null;
       const lastRole = messages.at(-1)?.getAttribute("data-message-author-role");
-      const lastMessageRole: PageChatState["lastMessageRole"] =
-        lastRole === "assistant" || lastRole === "user" ? lastRole : null;
+    const lastMessageRole: PageChatState["lastMessageRole"] =
+      detachedThinkingFailure
+        ? "assistant"
+        : lastRole === "assistant" || lastRole === "user"
+          ? lastRole
+          : null;
       return {
         pageUrl: window.location.href,
         isAnswering,
-        assistantText,
+      assistantText: effectiveAssistantText,
         userMessageCount: userMessages.length,
         assistantMessageCount: assistantMessages.length,
         assistantModelSlug,
@@ -415,6 +442,7 @@ export async function readPageChatState(
           exactControllerIdentity !== undefined || normalizedExpectedPrompt !== "",
         deliveryFailure,
         responseFailure,
+        responseFailureFoundBy,
       };
     },
     {

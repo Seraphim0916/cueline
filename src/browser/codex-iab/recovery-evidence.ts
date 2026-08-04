@@ -30,7 +30,34 @@ export function hasExactControllerEnvelopeIdentity(
 function lastEnvelopeCandidates(text: string): string[] {
   let body: string | undefined;
   for (const match of text.matchAll(CONTROL_ENVELOPE)) body = match[1];
-  if (body === undefined) return [];
+  if (body === undefined) {
+    const openingTag = "<CueLineControl>";
+    // ChatGPT can occasionally finish the controller JSON without rendering
+    // the closing tag. Accept that only when the entire response is one
+    // terminal object: no prefix prose, no second opening tag, and no trailing
+    // bytes after the JSON object. Do not apply the accessibility decode here.
+    if (
+      !text.startsWith(openingTag) ||
+      text.indexOf(openingTag, openingTag.length) !== -1
+    ) {
+      return [];
+    }
+
+    const unclosedBody = text.slice(openingTag.length).trim();
+    try {
+      const parsed = JSON.parse(unclosedBody) as unknown;
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      ) {
+        return [];
+      }
+      return [unclosedBody];
+    } catch {
+      return [];
+    }
+  }
 
   const rawBody = body.trim();
   const candidates = [rawBody];

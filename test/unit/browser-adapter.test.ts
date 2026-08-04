@@ -140,6 +140,62 @@ test("submitted-turn observation correlates exact Thinking failed without retry 
   assert.deepEqual(fixture.composer.fills, []);
 });
 
+test("detached Stopped thinking correlates the exact post-click user turn", async () => {
+  const exactConversationUrl = "https://chatgpt.com/c/stopped-thinking-adapter";
+  const exactRunId = "run_stopped_thinking_adapter";
+  const exactRequestId = "msg_stopped_thinking_adapter";
+  const exactPrompt = `controller request ${exactRequestId}`;
+  const fixture = fakeBrowser({
+    initialUrl: exactConversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    states: [{
+      isAnswering: false,
+      assistantText: "Thinking failed",
+      assistantMessageCount: 23,
+      userMessageCount: 32,
+      lastMessageRole: "assistant",
+      requestMessageFound: false,
+      requestMessageFoundBy: null,
+      requestMessageScanComplete: true,
+      deliveryFailure: null,
+      responseFailure: {
+        code: "CHATGPT_THINKING_FAILED",
+        message: "Thinking failed",
+        retryActionAvailable: false,
+      },
+      responseFailureFoundBy: "conversation_turn",
+    }],
+    composerStates: [{
+      state: "empty",
+      inlineTextLength: 0,
+      attachmentCount: 0,
+      sendButtonEnabled: false,
+    }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl: exactConversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+  const observed = await adapter.observeSubmittedTurn!({
+    runId: exactRunId,
+    round: 24,
+    requestId: exactRequestId,
+    prompt: exactPrompt,
+    durableSubmittedCheckpoint: true,
+    baselineUserMessageCount: 31,
+    baselineAssistantMessageCount: 23,
+    expectedConversationUrl: exactConversationUrl,
+  });
+  assert.equal(observed.status, "response_failed");
+  assert.equal(observed.evidence.responseFailure?.code, "CHATGPT_THINKING_FAILED");
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
 test("Thinking failed while Pro is still answering remains read-only pending", async () => {
   const exactConversationUrl = "https://chatgpt.com/c/thinking-failed-answering";
   const exactRequestId = "msg_thinking_failed_answering";

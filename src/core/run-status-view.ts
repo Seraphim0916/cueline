@@ -41,9 +41,22 @@ export function safeCueLineRunStatus(status: CueLineRunStatusSummary) {
       lastAcceptedAction: status.controller.lastAcceptedAction,
       lastAcceptedRequestId: status.controller.lastAcceptedRequestId,
       lastAcceptedJobKeys: [...status.controller.lastAcceptedJobKeys],
-      ...(status.controller.pendingDiagnostic == null
-        ? {}
-        : { pendingDiagnostic: { ...status.controller.pendingDiagnostic } }),
+    ...(status.controller.pendingDiagnostic == null
+      ? {}
+      : { pendingDiagnostic: { ...status.controller.pendingDiagnostic } }),
+    ...(status.controller.responseFailure === undefined
+      ? {}
+      : {
+          responseFailure: {
+            requestId: status.controller.responseFailure.requestId,
+            round: status.controller.responseFailure.round,
+            code: status.controller.responseFailure.code,
+            evidenceHash: status.controller.responseFailure.evidenceHash,
+            retryActionAvailable:
+              status.controller.responseFailure.retryActionAvailable,
+            status: status.controller.responseFailure.status,
+          },
+        }),
       ...(status.controller.reconciliation === undefined ||
       (status.controller.reconciliation.requiredReason === null &&
         status.controller.reconciliation.operatorConfirmation === null &&

@@ -1908,10 +1908,12 @@ class CodexIabAdapter implements BrowserAdapter {
         hasAggregatePostBaselineUserCount &&
         state.lastMessageRole === "assistant" &&
         (hasOlderCueLineLeaf || hasStableAssistantLeaf);
-      const currentRequestCorrelated =
-        requestMessageFound === true ||
-        hasExactCurrentEnvelope ||
-        (hasReliablePostClickUserTurn && !branchLeafMismatchDetected);
+    const currentRequestCorrelated =
+      requestMessageFound === true ||
+      hasExactCurrentEnvelope ||
+      (hasReliablePostClickUserTurn &&
+        state.responseFailureFoundBy === "conversation_turn") ||
+      (hasReliablePostClickUserTurn && !branchLeafMismatchDetected);
       const deliveryFailureRequestCorrelated =
         currentRequestCorrelated ||
         (input.manualSendConfirmed === true && hasReliablePostClickUserTurn);
