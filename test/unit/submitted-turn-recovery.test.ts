@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { BrowserSubmittedTurnEvidence } from "../../src/browser/browser-adapter.js";
-import { isDefinitelyNotSentObservation } from "../../src/core/submitted-turn-recovery.js";
+import {
+  isDefinitelyNotSentObservation,
+  isSubmittedTurnRecoveryCandidate,
+} from "../../src/core/submitted-turn-recovery.js";
 import type { PendingControllerTurn } from "../../src/core/state-machine.js";
 
 const conversationUrl = "https://chatgpt.com/c/branch-local-recovery";
@@ -65,6 +68,19 @@ test("accepts aggregate uplift only when current-leaf count remains baseline-equ
     ),
     true,
   );
+});
+
+test("accepts exact manual-confirmed possibly-sent turn for response recovery", () => {
+  const turn = pendingTurn();
+  turn.submissionState = "possibly_sent";
+  turn.manualSendConfirmed = true;
+  assert.equal(isSubmittedTurnRecoveryCandidate(turn, conversationUrl), true);
+});
+
+test("rejects possibly-sent turn without manual confirmation", () => {
+  const turn = pendingTurn();
+  turn.submissionState = "possibly_sent";
+  assert.equal(isSubmittedTurnRecoveryCandidate(turn, conversationUrl), false);
 });
 
 test("rejects non-current exact envelope and non-baseline current-leaf count", () => {

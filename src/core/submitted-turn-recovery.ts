@@ -22,13 +22,32 @@ export function hasRecoverableTurnIdentity(
   );
 }
 
+function hasManualConfirmedTurnIdentity(
+  turn: PendingControllerTurn,
+  conversationUrl: string,
+): boolean {
+  return (
+    turn.manualSendConfirmed === true &&
+    (turn.retryOfRequestId === undefined || turn.retryOfRequestId === null) &&
+    turn.submissionCheckpointContract === "write_ahead_v1" &&
+    Number.isSafeInteger(turn.baselineUserMessageCount) &&
+    (turn.baselineUserMessageCount ?? -1) >= 0 &&
+    /^[0-9a-f]{64}$/.test(turn.promptHash) &&
+    turn.selectedModelLabel !== null &&
+    /^Pro(?:\s|$)/i.test(turn.selectedModelLabel) &&
+    isExactChatGptConversationUrl(conversationUrl)
+  );
+}
+
 export function isSubmittedTurnRecoveryCandidate(
   turn: PendingControllerTurn,
   conversationUrl: string,
 ): boolean {
   return (
-    turn.submissionState === "submitted" &&
-    hasRecoverableTurnIdentity(turn, conversationUrl)
+    (turn.submissionState === "submitted" &&
+      hasRecoverableTurnIdentity(turn, conversationUrl)) ||
+    (turn.submissionState === "possibly_sent" &&
+      hasManualConfirmedTurnIdentity(turn, conversationUrl))
   );
 }
 
