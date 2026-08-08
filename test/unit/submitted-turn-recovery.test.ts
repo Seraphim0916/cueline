@@ -77,6 +77,12 @@ test("accepts exact manual-confirmed possibly-sent turn for response recovery", 
   assert.equal(isSubmittedTurnRecoveryCandidate(turn, conversationUrl), true);
 });
 
+test("accepts exact manual-confirmed submitted turn for response recovery", () => {
+  const turn = pendingTurn();
+  turn.manualSendConfirmed = true;
+  assert.equal(isSubmittedTurnRecoveryCandidate(turn, conversationUrl), true);
+});
+
 test("rejects possibly-sent turn without manual confirmation", () => {
   const turn = pendingTurn();
   turn.submissionState = "possibly_sent";

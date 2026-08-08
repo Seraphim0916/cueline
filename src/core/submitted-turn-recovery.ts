@@ -46,7 +46,8 @@ export function isSubmittedTurnRecoveryCandidate(
   return (
     (turn.submissionState === "submitted" &&
       hasRecoverableTurnIdentity(turn, conversationUrl)) ||
-    (turn.submissionState === "possibly_sent" &&
+    ((turn.submissionState === "submitted" ||
+      turn.submissionState === "possibly_sent") &&
       hasManualConfirmedTurnIdentity(turn, conversationUrl))
   );
 }
