@@ -1038,6 +1038,9 @@ async function reconcilePendingControllerTurn(
     ...(pending.composerPromptState === "attachment_ready"
       ? { attachmentPromptExpected: true }
       : {}),
+    ...(exactPostFixRetryObservationCandidate
+      ? { emptyComposerNotSentRecovery: true }
+      : {}),
     ...(pending.submissionState === "submitted"
       ? { durableSubmittedCheckpoint: true }
       : {}),

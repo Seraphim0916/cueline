@@ -4317,6 +4317,7 @@ test("operator-confirmed not-sent retry rejects any prompt change outside the re
       postFixObservationCalls += 1;
       assert.equal(input.requestId, abandonedRequestId);
       assert.equal(input.prompt, abandonedPrompt);
+      assert.equal(input.emptyComposerNotSentRecovery, true);
       return {
         status: "definitely_not_sent",
         evidence: {
