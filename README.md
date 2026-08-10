@@ -28,18 +28,19 @@ CueLine is a standalone implementation with **no runtime npm dependencies**. It 
 
 ## Latest release: 0.7.4
 
-- Adds run-scoped ChatGPT Pin management and operator-confirmed context-exhaustion rollover without abandoning the run or disturbing concurrent conversations.
+- Adds a Claude Code Desktop host lane over the same CueLine controller: packaged
+  lane/mailbox commands, a bundled host skill, atomic request claiming, durable
+  action phases, and fail-closed recovery when a browser action's outcome is unknown.
+- Separates caller `advise` from claimed `work`. The MCP server now owns work
+  leases, heartbeats, completed-progress deadlines, absolute lifetime limits,
+  terminal cleanup, and one stable caller identity per session.
+- Gives the Claude Desktop lane a 120-second composer-ready window while keeping
+  the shared default at 30 seconds. Composer fills use one absolute deadline and
+  replace the unique live composer instead of appending stale text.
+- Verified by typecheck, 875/875 tests, and a real Claude Code Desktop → ChatGPT
+  Pro run that completed with an empty request/inflight/response mailbox.
 
-- A submitted-turn observation no longer waits forever on an opaque `pending`
-  when the user-message count correlates at `baseline + 1` while the readable
-  assistant leaf still carries an older round's envelope. That case is now
-  named `branch_leaf_mismatch` and reports the observed run, round and request
-  id, then performs one read-only accessibility-snapshot scan for the
-  round-exact envelope: a hit is adopted as the controller response, a miss
-  keeps the turn frozen. No branch control is clicked and no new round is
-  created on either path; 770/770 tests pass.
-
-Read the complete [changelog](CHANGELOG.md#073---2026-07-30) or the versioned [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4).
+Read the full [changelog](CHANGELOG.md#074---2026-08-10) or the versioned [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4).
 
 ## How a run actually goes
 
@@ -137,6 +138,26 @@ Then, in Codex:
 The bundled `cueline` skill drives the package from Codex's own Node runtime, which is where the in-app Browser object lives. A plain `node` process started on the side does not inherit it.
 
 Claude Code Desktop can host the same controller through the packaged file-mailbox binaries. See [Driving CueLine from Claude Code Desktop](docs/claude-desktop-host.md).
+
+### Claude Code Desktop host
+
+The npm package bundles the `cueline-host` skill and two commands:
+
+```bash
+export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
+cueline-claude-desktop-lane status
+cueline-claude-desktop-lane daemon "<task>"
+```
+
+Configure the CueLine MCP server as shown above, then run the daemon with Claude
+Code Desktop's shell tool in **Run in background** mode. Do not add shell `&`,
+`nohup`, or `disown`; the Desktop harness owns the background task. The host skill
+claims one mailbox request, performs exactly one browser action, and publishes the
+raw result with `cueline-claude-desktop-mailbox`. If status reports an unknown
+action outcome, inspect the durable lane evidence instead of retrying the action.
+
+Full setup, request methods, phase protocol, and recovery rules:
+[Driving CueLine from Claude Code Desktop](docs/claude-desktop-host.md).
 
 ## Driving it from code
 

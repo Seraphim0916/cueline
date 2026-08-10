@@ -28,11 +28,12 @@ CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 
 
 ## 最新版本：0.7.4
 
-- 新增 run-scoped ChatGPT Pin 管理，以及操作端確認的對話脈絡耗盡輪替；不必放棄原 run，也不會干擾並行對話。
+- 新增 Claude Code Desktop host 車道，與 Codex 車道共用同一套 CueLine 主控核心；套件內含 lane/mailbox 指令與 host skill，信箱採原子認領、持久化動作階段，瀏覽器動作結果不明時會 fail-closed 停住。
+- 明確分開 caller `advise` 與需認領的 `work`。MCP server 現在持有 work lease、heartbeat、完成進度期限、絕對生命週期、終態清理，以及每個 session 穩定的 caller identity。
+- Claude Desktop 車道的 composer-ready 等待時間為 120 秒，共用預設仍是 30 秒。輸入框填寫共用單一絕對期限，並直接取代唯一存活的 composer 內容，不會接在失焦後的舊文字後面。
+- 已通過 typecheck、875/875 測試，以及一次真實 Claude Code Desktop → ChatGPT Pro 執行；完成後 request/inflight/response 信箱皆為空。
 
-- 送出後的觀測不會再卡在意義不明的 `pending`：當使用者訊息數以 `baseline + 1` 對上、但讀得到的 assistant 分支葉節點仍掛著舊 round 的封包時，這個情況現在明確命名為 `branch_leaf_mismatch`，並回報觀測到的 run、round 與 request id；接著以唯讀方式掃描一次 accessibility snapshot 尋找該 round 的精確封包——找到才接收為控制回應，找不到就維持凍結。兩條路徑都不會點擊 ChatGPT 的分支控制項，也不會新建 round；770/770 測試通過。
-
-完整內容請看 [changelog](CHANGELOG.md#073---2026-07-30) 或版本化的 [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4)。
+完整內容請看 [changelog](CHANGELOG.md#074---2026-08-10) 或版本化的 [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4)。
 
 ## 一次執行實際上怎麼跑
 
@@ -111,6 +112,25 @@ cueline doctor
 內建的 `cueline` skill 是從 Codex 自己的 Node runtime 驅動這個套件的——內建瀏覽器的物件就活在那裡。另外開一個單獨的 `node` 行程並不會繼承它。
 
 Claude Code Desktop 可透過套件內附的檔案信箱指令驅動同一套主控核心。操作方式見[用 Claude Code Desktop 驅動 CueLine](docs/claude-desktop-host.md)。
+
+### Claude Code Desktop host
+
+npm 套件內含 `cueline-host` skill 與兩個指令：
+
+```bash
+export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
+cueline-claude-desktop-lane status
+cueline-claude-desktop-lane daemon "<task>"
+```
+
+先依上方範例設定 CueLine MCP server，再用 Claude Code Desktop shell 工具的
+**Run in background** 模式啟動 daemon。不要自行加 `&`、`nohup` 或 `disown`；
+背景工作由 Desktop harness 管理。host skill 每次只認領一個信箱請求、執行一個
+瀏覽器動作，再用 `cueline-claude-desktop-mailbox` 原樣發布結果。若狀態顯示動作
+結果不明，先查持久化 lane 證據，不要直接重試動作。
+
+完整安裝、請求方法、階段協定與復原規則：
+[用 Claude Code Desktop 驅動 CueLine](docs/claude-desktop-host.md)。
 
 ## 從程式碼驅動
 
