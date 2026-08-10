@@ -7,7 +7,6 @@ import {
   heartbeatCueLineCallerJob,
   listCueLineRuns,
   loadCueLineRunStatus,
-  recordCueLineCallerJobProgress,
   startCueLineCallerJob,
   startCueLineRun,
   submitCueLineCallerJobResult,
@@ -698,14 +697,8 @@ async function executeTool(
       };
     case "cueline_record_caller_job_progress":
       return {
-        ...(await recordCueLineCallerJobProgress(
-          args.runId as string,
-          args.jobId as string,
-          {
-            claimId: args.claimId as string,
-            callerId: args.callerId as string,
-            fencingToken: args.fencingToken as number,
-          },
+        ...(await leases.recordProgress(
+          callerWorkLeaseProof(args),
           {
             kind: args.kind as
               | "tool_completed"

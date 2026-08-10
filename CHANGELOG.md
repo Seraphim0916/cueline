@@ -14,12 +14,13 @@
 
 - Claude Desktop paste now replaces the unique live composer instead of appending stale text after focus falls back to the page root.
 - Caller advice can return without a work claim, while caller work requires the exact durable claim proof and active resident lease.
+- Composer readiness now enforces one absolute deadline across baseline reads, prompt fill, and stability probes; resident lease progress refreshes its deadline, and unretained lease proofs cannot bind caller identity.
 
 ### Verification
 
 - Added current-vs-historical DOM tests, Pro/answering guards, authorization-before-mutation checks, same-round new-request linkage, restart no-duplicate coverage, and existing delivery-timeout regression coverage.
 
-- `npm run typecheck` and all 881 tests pass, including mailbox recovery, lane status, timeout separation, caller identity, and resident lease coverage.
+- `npm run typecheck` and all 885 tests pass, including mailbox recovery, lane status, hard timeout bounds, caller identity, and resident lease progress coverage.
 - A real Claude Code Desktop → ChatGPT Pro → CueLine run completed on `gpt-5-6-pro` with exact final delivery, daemon exit 0, and empty request/inflight/response mailboxes.
 
 ## 0.7.3 - 2026-07-30

@@ -219,6 +219,28 @@ function withBrowserOperationTimeout<T>(
   });
 }
 
+function composerReadyTimeoutError(state?: PageComposerState): CueLineError {
+  const message =
+    "ChatGPT exposed neither an exact inline prompt nor an attachment with an enabled send button before the composer-ready deadline.";
+  return state === undefined
+    ? new CueLineError("CONTROLLER_PROMPT_NOT_READY", message)
+    : new CueLineError("CONTROLLER_PROMPT_NOT_READY", message, {
+        details: {
+          composer_state: state.state,
+          attachment_count: state.attachmentCount,
+        },
+      });
+}
+
+function remainingTimeoutMs(
+  deadline: number,
+  timeoutError: () => CueLineError,
+): number {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw timeoutError();
+  return remaining;
+}
+
 async function findUniqueLocator(
   tab: IabTab,
   role: string,
@@ -1064,17 +1086,27 @@ class CodexIabAdapter implements BrowserAdapter {
     tab: IabTab,
     expectedPrompt: string,
     baselineAttachmentCount: number,
+    deadline: number,
     signal?: AbortSignal,
   ): Promise<PageComposerState> {
-    const deadline =
-      Date.now() + Math.min(this.#options.composerReadyTimeoutMs, this.#options.timeoutMs);
     const stableRequirement = Math.min(COMPOSER_READY_STABLE_MS, this.#options.stableMs);
     let stableSignature = "";
     let stableSince = 0;
-    let lastState = await readPageComposerState(tab, expectedPrompt, SEND_BUTTON_NAMES);
+    let lastState: PageComposerState | undefined;
+    const readState = async (): Promise<PageComposerState> => {
+      const timeoutError = (): CueLineError => composerReadyTimeoutError(lastState);
+      const timeoutMs = remainingTimeoutMs(deadline, timeoutError);
+      return withBrowserOperationTimeout(
+        () => readPageComposerState(tab, expectedPrompt, SEND_BUTTON_NAMES),
+        timeoutMs,
+        signal,
+        timeoutError,
+      );
+    };
+    lastState = await readState();
     while (Date.now() < deadline) {
       throwIfCancelled(signal);
-      const state = await readPageComposerState(tab, expectedPrompt, SEND_BUTTON_NAMES);
+      const state = await readState();
       lastState = state;
       const ready =
         state.sendButtonEnabled &&
@@ -1094,13 +1126,16 @@ class CodexIabAdapter implements BrowserAdapter {
         stableSignature = "";
         stableSince = 0;
       }
-      await delay(Math.min(this.#options.pollIntervalMs, 100), signal);
+      await delay(
+        Math.min(
+          this.#options.pollIntervalMs,
+          100,
+          remainingTimeoutMs(deadline, () => composerReadyTimeoutError(lastState)),
+        ),
+        signal,
+      );
     }
-    throw new CueLineError(
-      "CONTROLLER_PROMPT_NOT_READY",
-      "ChatGPT exposed neither the exact inline prompt nor an attachment with an enabled send button after the composer settled.",
-      { details: { composer_state: lastState.state, attachment_count: lastState.attachmentCount } },
-    );
+    throw composerReadyTimeoutError(lastState);
   }
 
   async #resultFromCompletedTurn(
@@ -1249,11 +1284,22 @@ class CodexIabAdapter implements BrowserAdapter {
         );
       }
     }
-    const composerBaseline = await readPageComposerState(
-      tab,
-      input.prompt,
-      SEND_BUTTON_NAMES,
+    const composerReadyDeadline =
+      Date.now() + Math.min(this.#options.composerReadyTimeoutMs, this.#options.timeoutMs);
+    let latestComposerState: PageComposerState | undefined;
+    const composerTimeoutError = (): CueLineError =>
+      composerReadyTimeoutError(latestComposerState);
+    const baselineTimeoutMs = remainingTimeoutMs(
+      composerReadyDeadline,
+      composerTimeoutError,
     );
+    const composerBaseline = await withBrowserOperationTimeout(
+      () => readPageComposerState(tab, input.prompt, SEND_BUTTON_NAMES),
+      baselineTimeoutMs,
+      input.signal,
+      composerTimeoutError,
+    );
+    latestComposerState = composerBaseline;
     // A leftover attachment is provably CueLine's own converted prompt only on
     // an operator-confirmed not-sent retry whose abandoned attempt had reached
     // attachment_ready for this exact prompt. The retry rewrites the requestId
@@ -1283,20 +1329,31 @@ class CodexIabAdapter implements BrowserAdapter {
         },
       );
     }
-    if (!reusesConfirmedAttachmentPrompt) {
-      await composer.fill(input.prompt, {});
-    }
-    throwIfCancelled(input.signal);
     const stagedAttachmentBaseline = reusesConfirmedAttachmentPrompt
       ? 0
       : composerBaseline.attachmentCount;
     try {
+      if (!reusesConfirmedAttachmentPrompt) {
+        const fillTimeoutMs = remainingTimeoutMs(
+          composerReadyDeadline,
+          composerTimeoutError,
+        );
+        await withBrowserOperationTimeout(
+          () => composer.fill(input.prompt, { timeoutMs: fillTimeoutMs }),
+          fillTimeoutMs,
+          input.signal,
+          composerTimeoutError,
+        );
+      }
+      throwIfCancelled(input.signal);
       const readyComposer = await this.#waitForComposerReady(
         tab,
         input.prompt,
         stagedAttachmentBaseline,
+        composerReadyDeadline,
         input.signal,
       );
+      latestComposerState = readyComposer;
       context.composerPromptState =
         readyComposer.state === "inline_ready"
           ? "inline_ready"

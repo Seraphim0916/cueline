@@ -54,6 +54,7 @@ class FakeLocator implements IabLocator {
   countResult = 1;
   failFirstClick = false;
   hangClick = false;
+  hangFill = false;
   invokeOnClickBeforeFailure = false;
   firstClickError = "Playwright timeout: detached button";
 
@@ -64,6 +65,7 @@ class FakeLocator implements IabLocator {
   }
 
   async fill(value: string): Promise<void> {
+    if (this.hangFill) await new Promise<never>(() => {});
     this.fills.push(value);
   }
 
@@ -4721,7 +4723,7 @@ test("returns the conversation URL captured with the completed response DOM", as
 
 test("honors a lane-specific composer-ready timeout before any send", async () => {
   const fixture = fakeBrowser({
-    composerProbeDelayMs: 10,
+    composerProbeDelayMs: 250,
     composerStates: [
       { state: "inline_ready", inlineTextLength: 17, attachmentCount: 0, sendButtonEnabled: true },
     ],
@@ -4733,12 +4735,13 @@ test("honors a lane-specific composer-ready timeout before any send", async () =
   });
   const adapter = createCodexIabAdapter({
     browser: fixture.browser,
-    composerReadyTimeoutMs: 5,
+    composerReadyTimeoutMs: 20,
     pollIntervalMs: 1,
     stableMs: 0,
     timeoutMs: 100,
   });
 
+  const startedAt = Date.now();
   await assert.rejects(
     adapter.sendTurn({
       runId: "run_composer_ready_timeout",
@@ -4749,8 +4752,46 @@ test("honors a lane-specific composer-ready timeout before any send", async () =
     (error: unknown) =>
       error instanceof CueLineError && error.code === "CONTROLLER_PROMPT_NOT_READY",
   );
+  assert.ok(Date.now() - startedAt < 200);
   assert.equal(fixture.sendSubmissions(), 0);
 });
+
+test(
+  "composer-ready deadline bounds a hanging fill before any send",
+  { timeout: 1_000 },
+  async () => {
+    const fixture = fakeBrowser({
+      composerStates: [
+        { state: "empty", inlineTextLength: 0, attachmentCount: 0, sendButtonEnabled: false },
+      ],
+      states: [
+        { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      ],
+    });
+    fixture.composer.hangFill = true;
+    const adapter = createCodexIabAdapter({
+      browser: fixture.browser,
+      composerReadyTimeoutMs: 20,
+      pollIntervalMs: 1,
+      stableMs: 0,
+      timeoutMs: 1_000,
+    });
+
+    const startedAt = Date.now();
+    await assert.rejects(
+      adapter.sendTurn({
+        runId: "run_composer_fill_timeout",
+        round: 1,
+        requestId: "msg_composer_fill_timeout",
+        prompt: "Controller prompt",
+      }),
+      (error: unknown) =>
+        error instanceof CueLineError && error.code === "CONTROLLER_PROMPT_NOT_READY",
+    );
+    assert.ok(Date.now() - startedAt < 200);
+    assert.equal(fixture.sendSubmissions(), 0);
+  },
+);
 
 test("honors a lane-specific browser-operation timeout before any send", async () => {
   const fixture = fakeBrowser({

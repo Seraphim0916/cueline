@@ -1,11 +1,15 @@
 import {
+  recordCueLineCallerJobProgress,
   startCueLineCallerWorkLease,
   type CueLineCallerWorkLease,
   type CueLineCallerWorkLeaseOptions,
+  type CueLineRuntimeOptions,
 } from "../api.js";
 import type {
   CueLineCallerWorkClaimProof,
   CueLineCallerWorkClaimResult,
+  CueLineCallerWorkMutationResult,
+  CueLineCallerWorkProgressInput,
 } from "../api-contracts.js";
 import { CueLineError } from "../core/errors.js";
 
@@ -82,19 +86,24 @@ export class McpCallerWorkLeaseRegistry {
     this.#claims.set(key(claim.runId, claim.jobId), claim);
   }
 
+  #retainedClaim(proof: McpCallerWorkLeaseProof): CueLineCallerWorkClaimResult {
+    const claim = this.#claims.get(key(proof.runId, proof.jobId));
+    if (claim === undefined) {
+      throw new CueLineError(
+        "MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION",
+        "Call cueline_claim_caller_job in this MCP session before using its lease.",
+      );
+    }
+    assertSameProof(claim, proof);
+    return claim;
+  }
+
   async start(
     proof: McpCallerWorkLeaseProof,
     options: CueLineCallerWorkLeaseOptions,
   ): Promise<McpCallerWorkLeaseView> {
     const leaseKey = key(proof.runId, proof.jobId);
-    const claim = this.#claims.get(leaseKey);
-    if (claim === undefined) {
-      throw new CueLineError(
-        "MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION",
-        "Call cueline_claim_caller_job in this MCP session before starting its lease.",
-      );
-    }
-    assertSameProof(claim, proof);
+    const claim = this.#retainedClaim(proof);
 
     const existing = this.#leases.get(leaseKey);
     if (existing?.active === true) {
@@ -109,6 +118,7 @@ export class McpCallerWorkLeaseRegistry {
   }
 
   status(proof: McpCallerWorkLeaseProof): McpCallerWorkLeaseView {
+    this.#retainedClaim(proof);
     const lease = this.#leases.get(key(proof.runId, proof.jobId));
     if (lease === undefined) {
       return {
@@ -127,6 +137,7 @@ export class McpCallerWorkLeaseRegistry {
 
   async end(proof: McpCallerWorkLeaseProof): Promise<McpCallerWorkLeaseView> {
     const leaseKey = key(proof.runId, proof.jobId);
+    this.#retainedClaim(proof);
     const lease = this.#leases.get(leaseKey);
     if (lease === undefined) {
       return {
@@ -143,6 +154,25 @@ export class McpCallerWorkLeaseRegistry {
     await lease.stop();
     this.#leases.delete(leaseKey);
     return { ...view(lease, "ended"), active: false };
+  }
+
+  async recordProgress(
+    proof: McpCallerWorkLeaseProof,
+    input: CueLineCallerWorkProgressInput,
+    options: CueLineRuntimeOptions,
+  ): Promise<CueLineCallerWorkMutationResult> {
+    const lease = this.#leases.get(key(proof.runId, proof.jobId));
+    if (lease === undefined) {
+      return recordCueLineCallerJobProgress(
+        proof.runId,
+        proof.jobId,
+        proof,
+        input,
+        options,
+      );
+    }
+    assertSameProof(lease.proof, proof);
+    return lease.recordProgress(input);
   }
 
   async endAfterSubmission(proof: McpCallerWorkLeaseProof): Promise<void> {

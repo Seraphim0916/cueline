@@ -82,14 +82,41 @@ function toolCall(id: number, name: string, arguments_: Record<string, unknown>)
   };
 }
 
+interface DelayedExchangeMessage {
+  readonly delayMs: number;
+  readonly message: unknown;
+}
+
+function delayedMessage(delayMs: number, message: unknown): DelayedExchangeMessage {
+  return { delayMs, message };
+}
+
+function isDelayedMessage(value: unknown): value is DelayedExchangeMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { delayMs?: unknown }).delayMs === "number" &&
+    Object.hasOwn(value, "message")
+  );
+}
+
 async function exchange(
   messages: readonly unknown[],
   options: Parameters<typeof serveCueLineMcp>[0] = {},
 ): Promise<JsonRpcResponse[]> {
   const input = Readable.from(
-    messages.map((message) =>
-      typeof message === "string" ? `${message}\n` : `${JSON.stringify(message)}\n`,
-    ),
+    (async function* () {
+      for (const entry of messages) {
+        const delayed = isDelayedMessage(entry) ? entry : undefined;
+        if (delayed !== undefined) {
+          await new Promise<void>((resolve) => setTimeout(resolve, delayed.delayMs));
+        }
+        const message = delayed?.message ?? entry;
+        yield typeof message === "string"
+          ? `${message}\n`
+          : `${JSON.stringify(message)}\n`;
+      }
+    })(),
   );
   const output = new PassThrough();
   output.setEncoding("utf8");
@@ -546,6 +573,90 @@ test("MCP server retains, reports, and ends a real caller-work lease", async () 
   assert.equal(structured(responseFor(responses, 5)).outcome, "ended");
   assert.equal(structured(responseFor(responses, 6)).outcome, "inactive");
 });
+
+test("MCP progress refreshes the resident lease progress deadline", async () => {
+  const { home, jobId } = await callerWorkFixture();
+  const callerId = "lease-progress-owner";
+  const claim = await claimCueLineCallerJob("run_mcp_caller_work", jobId, {
+    home,
+    callerId,
+    ttlMs: 60_000,
+  });
+  const proof = {
+    runId: "run_mcp_caller_work",
+    jobId,
+    claimId: claim.claimId,
+    callerId,
+    fencingToken: claim.fencingToken,
+  };
+  const responses = await exchange([
+    initialize(),
+    initialized(),
+    toolCall(2, "cueline_claim_caller_job", {
+      runId: proof.runId,
+      jobId: proof.jobId,
+      callerId: proof.callerId,
+      home,
+    }),
+    toolCall(3, "cueline_start_caller_work_lease", {
+      ...proof,
+      heartbeatIntervalMs: 10_000,
+      progressTimeoutMs: 400,
+      maxExecutionMs: 60_000,
+      home,
+    }),
+    delayedMessage(
+      250,
+      toolCall(4, "cueline_record_caller_job_progress", {
+        ...proof,
+        kind: "checkpoint_persisted",
+        evidenceHash: "e".repeat(64),
+        home,
+      }),
+    ),
+    delayedMessage(250, toolCall(5, "cueline_caller_work_lease_status", proof)),
+    toolCall(6, "cueline_end_caller_work_lease", proof),
+  ]);
+
+  assert.equal(structured(responseFor(responses, 4)).outcome, "progress_recorded");
+  assert.equal(structured(responseFor(responses, 5)).active, true);
+  assert.equal(structured(responseFor(responses, 6)).outcome, "ended");
+});
+
+for (const toolName of [
+  "cueline_caller_work_lease_status",
+  "cueline_end_caller_work_lease",
+] as const) {
+  test(`${toolName} rejects unretained proof without binding caller identity`, async () => {
+    const { home, jobId } = await callerWorkFixture();
+    const responses = await exchange([
+      initialize(),
+      initialized(),
+      toolCall(2, toolName, {
+        runId: "run_mcp_caller_work",
+        jobId,
+        claimId: "unretained-claim",
+        callerId: "invalid-lease-probe",
+        fencingToken: 1,
+      }),
+      toolCall(3, "cueline_claim_caller_job", {
+        runId: "run_mcp_caller_work",
+        jobId,
+        callerId: "valid-caller-after-lease-probe",
+        home,
+      }),
+    ]);
+
+    const failedProbe = responseFor(responses, 2).result;
+    assert.equal(failedProbe?.isError, true);
+    assert.match(
+      failedProbe?.content?.[0]?.text ?? "",
+      /MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION/,
+    );
+    const validClaim = structured(responseFor(responses, 3));
+    assert.equal(validClaim.callerId, "valid-caller-after-lease-probe");
+  });
+}
 
 test("work result submission enforces the MCP session caller identity", async () => {
   const { home, jobId } = await callerWorkFixture();
