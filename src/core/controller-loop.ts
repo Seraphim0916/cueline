@@ -1211,7 +1211,8 @@ async function reconcilePendingControllerTurn(
             submittedObservation.evidence.composerPromptState,
           submission_state: "definitely_not_sent",
           confirmation_source: "fresh_read_only_observation",
-          post_fix_retry_reauthorized: true,
+          post_fix_retry_reauthorized:
+            pending.postFixRetryReauthorized === true,
         });
         return "awaiting_controller";
       }
@@ -1732,7 +1733,8 @@ function isExactPostFixRetryObservationCandidate(
   const failure = state.lastFailure;
   return (
     (state.pendingControllerTurns ?? []).length === 1 &&
-    pending.postFixRetryReauthorized === true &&
+    (pending.postFixRetryReauthorized === true ||
+      recovery?.postFixLineageReconciliations === 1) &&
     pending.retryOfRequestId === pending.requestId &&
     pending.submissionState === "possibly_sent" &&
     pending.manualSendConfirmed === false &&
@@ -1781,7 +1783,10 @@ function isExactPostFixRetryNotSentObservation(
   }
   const evidenceTurn = {
     ...pending,
-    submissionState: "submitting" as const,
+    submissionState:
+      evidence.composerPromptState === "empty"
+        ? ("submitted" as const)
+        : ("submitting" as const),
     retryOfRequestId: null,
   };
   return (
@@ -1793,10 +1798,14 @@ function isExactPostFixRetryNotSentObservation(
     evidence.requestMessageScanComplete === true &&
     evidence.accessibilityRequestIdFound === false &&
     evidence.countRegressionDetected !== true &&
-    evidence.composerPromptState === "attachment_ready" &&
-    evidence.composerAttachmentCount === 1 &&
-    evidence.composerPastedTextAttachmentPresent === true &&
-    evidence.composerSendButtonEnabled === true
+    ((evidence.composerPromptState === "attachment_ready" &&
+      evidence.composerAttachmentCount === 1 &&
+      evidence.composerPastedTextAttachmentPresent === true &&
+      evidence.composerSendButtonEnabled === true) ||
+      (evidence.composerPromptState === "empty" &&
+        evidence.composerAttachmentCount === 0 &&
+        evidence.composerPastedTextAttachmentPresent !== true &&
+        evidence.composerSendButtonEnabled === false))
   );
 }
 

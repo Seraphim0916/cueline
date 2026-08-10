@@ -170,6 +170,12 @@ export interface ControllerNotSentRecoveryState {
   conflictCode: string | null;
   confirmationSource?: "operator" | "fresh_observation" | "write_ahead_record";
   /**
+   * Number of post-fix lineage attempts that were later proven zero-send.
+   * It bounds the one direct successor reconciliation without turning a
+   * consumed authorization into a permanent retry grant.
+   */
+  postFixLineageReconciliations?: number;
+  /**
    * The abandoned attempt's staged composer shape. "attachment_ready" proves the
    * prompt was already converted into a composer attachment before the crash, so
    * the retry may reuse that exact staged attachment instead of re-uploading.
@@ -799,6 +805,7 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           retryRequestId: null,
           conflictCode: null,
           confirmationSource: "fresh_observation",
+          postFixLineageReconciliations: 0,
         },
         postFixRetryReauthorization: {
           requestId: payload.request_id,
@@ -823,6 +830,7 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
         retryRequestId: null,
         conflictCode: null,
         confirmationSource: "fresh_observation",
+        postFixLineageReconciliations: 0,
       },
       postFixRetryReauthorization: {
         requestId: payload.request_id,
@@ -1265,6 +1273,33 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       payload.round_not_consumed === true &&
       abandoned !== undefined &&
       abandoned.round === state.round;
+    const postFixLineageReconciled =
+      abandoned !== undefined &&
+      abandoned.retryOfRequestId === abandoned.requestId &&
+      payload.reason === "definitely_not_sent_retry" &&
+      payload.confirmation_source === "fresh_read_only_observation" &&
+      payload.request_message_found === false &&
+      payload.request_message_scan_complete === true &&
+      payload.accessibility_request_id_found === false &&
+      payload.count_regression_detected === false &&
+      payload.is_answering === false &&
+      payload.page_hydrated === true &&
+      payload.baseline_user_message_count ===
+        payload.observed_user_message_count &&
+      payload.prompt_hash === abandoned.promptHash &&
+      typeof payload.conversation_url === "string" &&
+      typeof abandoned.conversationUrl === "string" &&
+      sameChatGptConversationUrl(
+        abandoned.conversationUrl,
+        payload.conversation_url,
+      ) &&
+      state.notSentRecovery?.abandonedRequestId === abandoned.requestId &&
+      state.notSentRecovery.retryRequestId === abandoned.requestId &&
+      state.notSentRecovery.round === abandoned.round &&
+      state.notSentRecovery.promptHash === abandoned.promptHash &&
+      state.postFixRetryReauthorization?.requestId === abandoned.requestId &&
+      state.postFixRetryReauthorization.round === abandoned.round &&
+      state.postFixRetryReauthorization.status === "consumed";
     return {
       ...state,
       round: roundWasNotConsumed ? Math.max(0, state.round - 1) : state.round,
@@ -1287,10 +1322,21 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
         state.notSentRecovery?.abandonedRequestId === abandoned.retryOfRequestId
           ? {
               ...state.notSentRecovery,
-              status: "confirmed",
-              retryRequestId: null,
-              conflictCode: null,
-              confirmationSource:
+      status: "confirmed",
+      retryRequestId: null,
+      conflictCode: null,
+      ...(postFixLineageReconciled
+        ? {
+            postFixLineageReconciliations:
+              (state.notSentRecovery.postFixLineageReconciliations ?? 0) + 1,
+          }
+        : state.notSentRecovery.postFixLineageReconciliations === undefined
+          ? {}
+          : {
+              postFixLineageReconciliations:
+                state.notSentRecovery.postFixLineageReconciliations,
+            }),
+      confirmationSource:
                 payload.confirmation_source === "fresh_read_only_observation"
                   ? "fresh_observation"
                   : payload.confirmation_source === "write_ahead_permanent_record"
@@ -1359,11 +1405,12 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
           typeof payload.branch_local_assistant_message_count === "number"
             ? payload.branch_local_assistant_message_count
             : null,
-        selectedModelLabel: payload.selected_model_label,
-        status: "confirmed",
-        retryRequestId: null,
-        conflictCode: null,
-        confirmationSource:
+      selectedModelLabel: payload.selected_model_label,
+      status: "confirmed",
+      retryRequestId: null,
+      conflictCode: null,
+      postFixLineageReconciliations: 0,
+      confirmationSource:
           payload.confirmation_source === "fresh_read_only_observation" ||
           payload.confirmation_source === "misdirected_read_only_observation"
             ? "fresh_observation"
@@ -2000,7 +2047,8 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       typeof payload.conversation_url !== "string" ||
       !isExactChatGptConversationUrl(payload.conversation_url) ||
       pending.submissionState !== "possibly_sent" ||
-      pending.postFixRetryReauthorized !== true ||
+      (pending.postFixRetryReauthorized !== true &&
+        recovery?.postFixLineageReconciliations !== 1) ||
       pending.retryOfRequestId !== pending.requestId ||
       state.lastFailure?.code !== "IAB_READ_FAILED_AFTER_SUBMIT" ||
       state.lastFailure.requestId !== pending.requestId ||

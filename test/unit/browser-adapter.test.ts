@@ -2616,6 +2616,91 @@ test("a resolved click with an unchanged staged attachment is definitely not sen
   assert.deepEqual(checkpoints, ["staged", "submitting"]);
 });
 
+test("a not-sent attachment retry uses the semantic send locator before coordinate fallback", async () => {
+  const conversationUrl = "https://chatgpt.com/c/not-sent-locator-retry";
+  const requestId = "msg_not_sent_locator_retry";
+  const prompt = "Retry the exact staged controller prompt";
+  const attachmentReady = {
+    state: "attachment_ready" as const,
+    inlineTextLength: 0,
+    attachmentCount: 1,
+    sendButtonEnabled: true,
+  };
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    cuaAvailable: true,
+    hydratedComposer: true,
+    composerStates: [
+      attachmentReady,
+      attachmentReady,
+      attachmentReady,
+      {
+        state: "empty",
+        inlineTextLength: 0,
+        attachmentCount: 0,
+        sendButtonEnabled: false,
+      },
+    ],
+    states: [
+      {
+        pageUrl: conversationUrl,
+        isAnswering: false,
+        assistantText: "previous",
+        userMessageCount: 1,
+        assistantMessageCount: 1,
+        lastUserText: "previous prompt",
+        lastMessageRole: "assistant",
+      },
+      {
+        pageUrl: conversationUrl,
+        isAnswering: true,
+        assistantText: "",
+        userMessageCount: 2,
+        assistantMessageCount: 1,
+        lastUserText: prompt,
+        lastMessageRole: "user",
+      },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 1_000,
+  });
+  const checkpoints: Array<Record<string, unknown>> = [];
+
+  await adapter.submitTurn!(
+    {
+      runId: "run_not_sent_locator_retry",
+      round: 2,
+      requestId,
+      prompt,
+      attachmentPromptExpected: true,
+      notSentRecovery: {
+        abandonedRequestId: requestId,
+        promptHash: commandHash(prompt),
+        conversationUrl,
+        baselineUserMessageCount: 1,
+      },
+    },
+    {
+      async onCheckpoint(checkpoint) {
+        checkpoints.push(checkpoint as unknown as Record<string, unknown>);
+      },
+    },
+  );
+
+  assert.equal(fixture.coordinateClicks(), 0);
+  assert.equal(fixture.sendButtons[0]?.clicks, 1);
+  assert.equal(fixture.sendSubmissions(), 1);
+  assert.equal(
+    (checkpoints[1]?.sendTargetEvidence as Record<string, unknown>)?.targetKind,
+    "locator",
+  );
+});
+
 test("a known historical conversation with a degraded 0/0 baseline fails closed before one send action", async () => {
   const conversationUrl = "https://chatgpt.com/c/history-not-ready";
   const requestId = "msg_history_not_ready";

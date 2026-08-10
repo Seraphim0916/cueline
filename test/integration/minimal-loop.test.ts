@@ -4486,6 +4486,150 @@ test("operator-confirmed not-sent retry rejects any prompt change outside the re
   assert.equal(postFixObservationCalls, 2);
   assert.equal(postFixReconciledStatus.safeNextAction, "retry");
 
+  let successorSendCalls = 0;
+  const successorReadFailureBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input, hooks): Promise<ControllerTurn> {
+      successorSendCalls += 1;
+      assert.equal(input.requestId, abandonedRequestId);
+      assert.equal(input.prompt, abandonedPrompt);
+      assert.notEqual(input.postFixRetryReauthorized, true);
+      await hooks?.onCheckpoint?.({
+        submissionState: "possibly_sent",
+        composerPromptState: "attachment_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineUserMessageCount: 0,
+        baselineAssistantMessageCount: 1,
+      });
+      throw new CueLineError(
+        "IAB_READ_FAILED_AFTER_SUBMIT",
+        "CDP operation exceeded its deadline before command dispatch",
+        {
+          details: {
+            stage: "submitting",
+            submission_state: "possibly_sent",
+            request_id: input.requestId,
+          },
+        },
+      );
+    },
+  };
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      conversationUrl,
+      browser: successorReadFailureBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "IAB_READ_FAILED_AFTER_SUBMIT",
+  );
+  assert.equal(successorSendCalls, 1);
+
+  let successorObservationCalls = 0;
+  const successorEmptyComposerBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("successor reconciliation must stay read-only");
+    },
+    async observeSubmittedTurn(input) {
+      successorObservationCalls += 1;
+      assert.equal(input.requestId, abandonedRequestId);
+      assert.equal(input.prompt, abandonedPrompt);
+      return {
+        status: "definitely_not_sent",
+        evidence: {
+          conversationUrl,
+          selectedModelLabel: "Pro",
+          hydrated: true,
+          baselineUserMessageCount: 0,
+          observedUserMessageCount: 0,
+          countRegressionDetected: false,
+          requestMessageFound: false,
+          requestMessageFoundBy: "request_id_scan",
+          requestMessageScanComplete: true,
+          accessibilityRequestIdFound: false,
+          isAnswering: false,
+          composerPromptState: "empty",
+          composerAttachmentCount: 0,
+          composerPastedTextAttachmentPresent: false,
+          composerSendButtonEnabled: false,
+          assistantMessageCount: 1,
+        },
+      };
+    },
+  };
+  await continueControllerLoop({
+    runId,
+    home: stateHome,
+    conversationUrl,
+    browser: successorEmptyComposerBrowser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+  const successorReconciledStatus = await loadCueLineRunStatus(runId, {
+    home: stateHome,
+  });
+  assert.equal(successorObservationCalls, 1);
+  assert.equal(successorReconciledStatus.controller.pendingTurns, 0);
+  assert.equal(successorReconciledStatus.safeNextAction, "retry");
+  const successorStore = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  assert.equal(
+    successorStore.state.notSentRecovery?.postFixLineageReconciliations,
+    2,
+  );
+
+  const cappedParent = await home();
+  const cappedHome = path.join(cappedParent, "post-fix-lineage-cap-copy");
+  await cp(stateHome, cappedHome, { recursive: true });
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: cappedHome,
+      conversationUrl,
+      browser: successorReadFailureBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "IAB_READ_FAILED_AFTER_SUBMIT",
+  );
+  let cappedObservationCalls = 0;
+  const cappedObservationBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("capped lineage must not send");
+    },
+    async observeSubmittedTurn() {
+      cappedObservationCalls += 1;
+      throw new Error("capped lineage must not observe");
+    },
+  };
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: cappedHome,
+      conversationUrl,
+      browser: cappedObservationBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_RECONCILIATION_REQUIRED",
+  );
+  assert.equal(cappedObservationCalls, 0);
+
   const recoveredPostFixBrowser = new FakeBrowserAdapter([
     reply(
       () => ({
@@ -4514,6 +4658,17 @@ test("operator-confirmed not-sent retry rejects any prompt change outside the re
         event.type === "controller_turn_abandoned" &&
         (event.payload as Record<string, unknown>)
           .post_fix_retry_reauthorized === true &&
+        (event.payload as Record<string, unknown>).reason ===
+          "definitely_not_sent_retry",
+    ),
+    true,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === "controller_turn_abandoned" &&
+        (event.payload as Record<string, unknown>)
+          .post_fix_retry_reauthorized === false &&
         (event.payload as Record<string, unknown>).reason ===
           "definitely_not_sent_retry",
     ),

@@ -1435,7 +1435,8 @@ class CodexIabAdapter implements BrowserAdapter {
       () =>
         this.#resolveSendTarget(
           tab,
-          context.composerPromptState === "attachment_ready",
+          context.composerPromptState === "attachment_ready" &&
+            input.notSentRecovery === undefined,
           input.postFixRetryReauthorized === true,
         ),
       operationTimeoutMs,
