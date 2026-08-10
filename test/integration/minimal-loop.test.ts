@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readdirSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -21,6 +21,7 @@ import {
   confirmManualControllerSubmission,
   continueCueLineRun,
   loadCueLineRunStatus,
+  reauthorizeControllerPostFixRetry,
   reconcileCueLineRuntime,
   runCueLine,
   startCueLineRun,
@@ -4084,15 +4085,18 @@ test("operator-confirmed not-sent retry rejects any prompt change outside the re
   const stateHome = await home();
   const conversationUrl = "https://chatgpt.com/c/operator-not-sent-prompt-mismatch";
   let abandonedRequestId = "";
+  let abandonedPrompt = "";
   const firstBrowser: BrowserAdapter = {
     submissionCheckpointContract: "write_ahead_v1",
     async sendTurn(input, hooks): Promise<ControllerTurn> {
       abandonedRequestId = input.requestId;
+      abandonedPrompt = input.prompt;
       await hooks?.onCheckpoint?.({
         submissionState: "possibly_sent",
         composerPromptState: "attachment_ready",
         conversationUrl,
         selectedModelLabel: "Pro",
+        baselineUserMessageCount: 0,
         baselineAssistantMessageCount: 1,
       });
       throw new CueLineError(
@@ -4150,6 +4154,144 @@ test("operator-confirmed not-sent retry rejects any prompt change outside the re
   assert.equal(
     status.controller.reconciliation?.resendBlockedReason,
     "CONTROLLER_NOT_SENT_PROMPT_MISMATCH",
+  );
+
+  let observationCalls = 0;
+  let completeRequestScan = false;
+  const reauthorizationBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("post-fix reauthorization must stay read-only");
+    },
+    async observeSubmittedTurn(input) {
+      observationCalls += 1;
+      assert.equal(input.requestId, abandonedRequestId);
+      assert.equal(input.prompt, abandonedPrompt);
+      return {
+        status: "definitely_not_sent",
+        evidence: {
+          conversationUrl,
+          selectedModelLabel: "Pro",
+          hydrated: true,
+          baselineUserMessageCount: 0,
+          observedUserMessageCount: 0,
+          countRegressionDetected: false,
+          requestMessageFound: false,
+          requestMessageFoundBy: "request_id_scan",
+          requestMessageScanComplete: completeRequestScan,
+          accessibilityRequestIdFound: false,
+          isAnswering: false,
+          composerPromptState: "attachment_ready",
+          composerAttachmentCount: 1,
+          composerPastedTextAttachmentPresent: true,
+          composerSendButtonEnabled: true,
+          assistantMessageCount: 1,
+        },
+      };
+    },
+  };
+  await assert.rejects(
+    reauthorizeControllerPostFixRetry(runId, {
+      home: stateHome,
+      browser: reauthorizationBrowser,
+      requestId: abandonedRequestId,
+      round: 1,
+      conversationUrl,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_NOT_SENT_EVIDENCE_INSUFFICIENT",
+  );
+  assert.equal(observationCalls, 1);
+  const eventsAfterWeakEvidence = await readEvents(
+    runPaths(stateHome, runId).events,
+  );
+  assert.equal(
+    eventsAfterWeakEvidence.filter(
+      (event) =>
+        event.type === "controller_turn_post_fix_retry_reauthorized" &&
+        (event.payload as Record<string, unknown>).failure_code ===
+          "CONTROLLER_NOT_SENT_PROMPT_MISMATCH",
+    ).length,
+    0,
+  );
+
+  completeRequestScan = true;
+  const authorization = await reauthorizeControllerPostFixRetry(runId, {
+    home: stateHome,
+    browser: reauthorizationBrowser,
+    requestId: abandonedRequestId,
+    round: 1,
+    conversationUrl,
+  });
+  assert.equal(authorization.outcome, "reauthorized");
+  const repeatedAuthorization = await reauthorizeControllerPostFixRetry(runId, {
+    home: stateHome,
+    browser: reauthorizationBrowser,
+    requestId: abandonedRequestId,
+    round: 1,
+    conversationUrl,
+  });
+  assert.equal(repeatedAuthorization.outcome, "already_reauthorized");
+  assert.equal(observationCalls, 2);
+
+  const failClosedParent = await home();
+  const failClosedHome = path.join(failClosedParent, "authorized-state-copy");
+  await cp(stateHome, failClosedHome, { recursive: true });
+  const requestedBeforePromptChange = (
+    await readEvents(runPaths(failClosedHome, runId).events)
+  ).filter((event) => event.type === "controller_turn_requested").length;
+  const changedInstructionsBrowser = new FakeBrowserAdapter([]);
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: failClosedHome,
+      conversationUrl,
+      controllerInstructions: ["This still changes the controller prompt."],
+      browser: changedInstructionsBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "CONTROLLER_NOT_SENT_PROMPT_MISMATCH",
+  );
+  assert.equal(changedInstructionsBrowser.calls.length, 0);
+  const requestedAfterPromptChange = (
+    await readEvents(runPaths(failClosedHome, runId).events)
+  ).filter((event) => event.type === "controller_turn_requested").length;
+  assert.equal(requestedAfterPromptChange, requestedBeforePromptChange);
+
+  const postFixBrowser = new FakeBrowserAdapter([
+    reply(
+      () => ({
+        action: "complete",
+        final_delivery_text: "POST_FIX_RETRY_COMPLETE",
+      }),
+      conversationUrl,
+    ),
+  ]);
+  const result = await continueControllerLoop({
+    runId,
+    home: stateHome,
+    conversationUrl,
+    browser: postFixBrowser,
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "POST_FIX_RETRY_COMPLETE");
+  assert.equal(postFixBrowser.calls.length, 1);
+  assert.equal(postFixBrowser.calls[0]?.prompt, abandonedPrompt);
+  const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "controller_turn_post_fix_retry_reauthorized" &&
+        (event.payload as Record<string, unknown>).failure_code ===
+          "CONTROLLER_NOT_SENT_PROMPT_MISMATCH",
+    ).length,
+    1,
   );
 });
 

@@ -834,6 +834,196 @@ export async function reauthorizeControllerPostFixRetry(
         );
       }
     }
+    const promptMismatchRecovery = state.notSentRecovery;
+    const promptMismatchTurn = (state.abandonedControllerTurns ?? []).find(
+      (turn) =>
+        turn.requestId === options.requestId &&
+        turn.round === options.round &&
+        turn.promptHash === promptMismatchRecovery?.promptHash,
+    );
+    if (
+    promptMismatchRecovery?.abandonedRequestId === options.requestId &&
+    promptMismatchRecovery.round === options.round &&
+    promptMismatchRecovery.status === "conflict" &&
+    promptMismatchRecovery.retryRequestId === null &&
+    promptMismatchRecovery.conflictCode ===
+      "CONTROLLER_NOT_SENT_PROMPT_MISMATCH"
+  ) {
+    if (
+      promptMismatchTurn === undefined ||
+      (state.pendingControllerTurns ?? []).length !== 0 ||
+      state.lastFailure?.code !== "CONTROLLER_NOT_SENT_PROMPT_MISMATCH" ||
+      state.lastFailure.stage !== "not_sent_recovery" ||
+      typeof state.lastFailure.requestId !== "string" ||
+      typeof state.conversationUrl !== "string" ||
+      !sameChatGptConversationUrl(
+        state.conversationUrl,
+        options.conversationUrl,
+      ) ||
+      !sameChatGptConversationUrl(
+        promptMismatchRecovery.conversationUrl,
+        options.conversationUrl,
+      ) ||
+      (promptMismatchTurn.conversationUrl !== null &&
+        !sameChatGptConversationUrl(
+          promptMismatchTurn.conversationUrl,
+          options.conversationUrl,
+        ))
+    ) {
+      throw new CueLineError(
+        "CONTROLLER_POST_FIX_RETRY_STATE_INVALID",
+        "The prompt-mismatch conflict does not match an exact abandoned controller turn.",
+      );
+    }
+    const cancellation = await readCancellationObservation(home, runId);
+    if (cancellation.runRequested || cancellation.jobRequests.length > 0) {
+      throw new CueLineError(
+        "CONTROLLER_POST_FIX_RETRY_STATE_INVALID",
+        "Post-fix retry reauthorization is forbidden while cancellation is pending.",
+      );
+    }
+    const events = await readAuthoritativeRunEvents(home, runId);
+    let conflictEvent: AuthoritativeRunEvent | undefined;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const candidate = events[index]!;
+      const payload = eventPayload(candidate);
+      if (
+        candidate.type === "controller_turn_retry_conflict" &&
+        payload.round === options.round &&
+        payload.abandoned_request_id === options.requestId &&
+        payload.request_id === state.lastFailure.requestId &&
+        payload.expected_prompt_hash === promptMismatchRecovery.promptHash &&
+        payload.code === "CONTROLLER_NOT_SENT_PROMPT_MISMATCH"
+      ) {
+        conflictEvent = candidate;
+        break;
+      }
+    }
+    if (conflictEvent === undefined) {
+      throw new CueLineError(
+        "CONTROLLER_POST_FIX_RETRY_EVENT_MISMATCH",
+        "Permanent events do not contain the exact prompt-mismatch conflict being reauthorized.",
+      );
+    }
+    const observation = await options.browser.observeSubmittedTurn({
+      runId,
+      round: promptMismatchTurn.round,
+      requestId: promptMismatchTurn.requestId,
+      prompt: promptMismatchTurn.prompt,
+      expectedConversationUrl: options.conversationUrl,
+      ...(typeof promptMismatchTurn.baselineUserMessageCount === "number"
+        ? {
+            baselineUserMessageCount:
+              promptMismatchTurn.baselineUserMessageCount,
+          }
+        : {}),
+      ...(typeof promptMismatchTurn.baselineAssistantMessageCount === "number"
+        ? {
+            baselineAssistantMessageCount:
+              promptMismatchTurn.baselineAssistantMessageCount,
+          }
+        : {}),
+      ...(promptMismatchTurn.composerPromptState === "attachment_ready"
+        ? {
+            attachmentPromptExpected: true,
+            emptyComposerNotSentRecovery: true,
+          }
+        : {}),
+    });
+    if (observation.status !== "definitely_not_sent") {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_EVIDENCE_INSUFFICIENT",
+        "Fresh evidence did not prove the exact abandoned prompt still absent from the idle Pro conversation.",
+      );
+    }
+    const evidence = observation.evidence;
+    const baselineUserMessageCount =
+      promptMismatchTurn.baselineUserMessageCount;
+    const exactComposerEvidence =
+      promptMismatchTurn.composerPromptState === "attachment_ready" &&
+      ((evidence.composerPromptState === "attachment_ready" &&
+        evidence.composerAttachmentCount === 1 &&
+        evidence.composerPastedTextAttachmentPresent === true &&
+        evidence.composerSendButtonEnabled === true) ||
+        (evidence.composerPromptState === "empty" &&
+          evidence.composerAttachmentCount === 0 &&
+          evidence.composerPastedTextAttachmentPresent !== true &&
+          evidence.composerSendButtonEnabled === false));
+    const exactFreshEvidence =
+      typeof baselineUserMessageCount === "number" &&
+      isExactChatGptConversationUrl(evidence.conversationUrl) &&
+      sameChatGptConversationUrl(
+        evidence.conversationUrl,
+        options.conversationUrl,
+      ) &&
+      /^Pro(?:\s|$)/i.test(evidence.selectedModelLabel ?? "") &&
+      evidence.hydrated === true &&
+      evidence.requestMessageFound === false &&
+      evidence.requestMessageScanComplete === true &&
+      evidence.accessibilityRequestIdFound === false &&
+      evidence.countRegressionDetected !== true &&
+      evidence.isAnswering === false &&
+      evidence.baselineUserMessageCount === baselineUserMessageCount &&
+      typeof evidence.observedUserMessageCount === "number" &&
+      Number.isSafeInteger(evidence.observedUserMessageCount) &&
+      evidence.observedUserMessageCount >= baselineUserMessageCount &&
+      exactComposerEvidence;
+    if (!exactFreshEvidence) {
+      throw new CueLineError(
+        "CONTROLLER_NOT_SENT_EVIDENCE_INSUFFICIENT",
+        "Fresh evidence did not prove the exact abandoned prompt still absent from the idle Pro conversation.",
+      );
+    }
+    const conflictPayload = eventPayload(conflictEvent);
+    const authorizationGeneration =
+      events.filter((event) => {
+        const payload = eventPayload(event);
+        return (
+          event.type === "controller_turn_post_fix_retry_reauthorized" &&
+          payload.request_id === options.requestId &&
+          payload.round === options.round
+        );
+      }).length + 1;
+    await store.append("controller_turn_post_fix_retry_reauthorized", {
+      round: options.round,
+      request_id: options.requestId,
+      conflict_request_id: conflictPayload.request_id,
+      prompt_hash: promptMismatchRecovery.promptHash,
+      conversation_url: options.conversationUrl,
+      failure_code: "CONTROLLER_NOT_SENT_PROMPT_MISMATCH",
+      submission_state: "not_sent_recovery_conflict",
+      not_sent_recovery_status: "conflict",
+      composer_prompt_state: evidence.composerPromptState,
+      composer_attachment_count: evidence.composerAttachmentCount,
+      composer_attachment_kind:
+        evidence.composerPastedTextAttachmentPresent === true
+          ? "pasted_text"
+          : "none",
+      restage_required: evidence.composerPromptState === "empty",
+      baseline_user_message_count:
+        promptMismatchTurn.baselineUserMessageCount,
+      observed_user_message_count:
+        evidence.observedUserMessageCount,
+      request_message_scan_complete:
+        evidence.requestMessageScanComplete,
+      accessibility_request_id_found:
+        evidence.accessibilityRequestIdFound,
+      count_regression_detected:
+        evidence.countRegressionDetected ?? false,
+      selected_model_label: evidence.selectedModelLabel,
+      confirmation_source: "fresh_read_only_observation",
+      authorization_generation: authorizationGeneration,
+      one_shot: true,
+    });
+    await store.snapshot();
+    return {
+      runId,
+      requestId: options.requestId,
+      conversationUrl: options.conversationUrl,
+      promptHash: promptMismatchRecovery.promptHash,
+      outcome: "reauthorized",
+    };
+  }
     const pending = (state.pendingControllerTurns ?? []).find(
       (turn) => turn.requestId === options.requestId && turn.round === options.round,
     );

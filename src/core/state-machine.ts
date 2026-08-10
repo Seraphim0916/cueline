@@ -756,6 +756,57 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     typeof payload.request_id === "string" &&
     typeof payload.round === "number"
   ) {
+    const promptMismatchRecovery = state.notSentRecovery;
+    const promptMismatchTurn = (state.abandonedControllerTurns ?? []).find(
+      (turn) =>
+        turn.requestId === payload.request_id &&
+        turn.round === payload.round &&
+        turn.promptHash === payload.prompt_hash,
+    );
+    if (
+      payload.failure_code === "CONTROLLER_NOT_SENT_PROMPT_MISMATCH" &&
+      payload.submission_state === "not_sent_recovery_conflict" &&
+      payload.not_sent_recovery_status === "conflict" &&
+      payload.confirmation_source === "fresh_read_only_observation" &&
+      payload.one_shot === true &&
+      (state.pendingControllerTurns ?? []).length === 0 &&
+      promptMismatchTurn !== undefined &&
+      promptMismatchRecovery?.abandonedRequestId === payload.request_id &&
+      promptMismatchRecovery.round === payload.round &&
+      promptMismatchRecovery.promptHash === payload.prompt_hash &&
+      promptMismatchRecovery.status === "conflict" &&
+      promptMismatchRecovery.retryRequestId === null &&
+      promptMismatchRecovery.conflictCode ===
+        "CONTROLLER_NOT_SENT_PROMPT_MISMATCH" &&
+      state.lastFailure?.code === "CONTROLLER_NOT_SENT_PROMPT_MISMATCH" &&
+      state.lastFailure.requestId === payload.conflict_request_id &&
+      typeof payload.conversation_url === "string" &&
+      typeof state.conversationUrl === "string" &&
+      sameChatGptConversationUrl(
+        state.conversationUrl,
+        payload.conversation_url,
+      ) &&
+      sameChatGptConversationUrl(
+        promptMismatchRecovery.conversationUrl,
+        payload.conversation_url,
+      )
+    ) {
+      return {
+        ...state,
+        notSentRecovery: {
+          ...promptMismatchRecovery,
+          status: "confirmed",
+          retryRequestId: null,
+          conflictCode: null,
+          confirmationSource: "fresh_observation",
+        },
+        postFixRetryReauthorization: {
+          requestId: payload.request_id,
+          round: payload.round,
+          status: "authorized",
+        },
+      };
+    }
     const pending = (state.pendingControllerTurns ?? []).find(
       (turn) => turn.requestId === payload.request_id && turn.round === payload.round,
     );
