@@ -20,7 +20,7 @@
 
 - Added current-vs-historical DOM tests, Pro/answering guards, authorization-before-mutation checks, same-round new-request linkage, restart no-duplicate coverage, and existing delivery-timeout regression coverage.
 
-- `npm run typecheck` and all 885 tests pass, including mailbox recovery, lane status, hard timeout bounds, caller identity, and resident lease progress coverage.
+- `npm run typecheck` and all 875 tests pass, including mailbox recovery, lane status, hard timeout bounds, caller identity, and resident lease progress coverage.
 - A real Claude Code Desktop → ChatGPT Pro → CueLine run completed on `gpt-5-6-pro` with exact final delivery, daemon exit 0, and empty request/inflight/response mailboxes.
 
 ## 0.7.3 - 2026-07-30
