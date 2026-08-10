@@ -681,12 +681,26 @@ export async function readPageComposerState(
       });
       const attachmentCount = attachmentElements.size;
       const pastedTextAttachmentPresent = Array.from(
-        root.querySelectorAll('button[aria-label]'),
-      ).some(
-        (element) =>
-          normalize(element.getAttribute("aria-label")) ===
-          "Open pasted text attachment. Too long to show in text field",
-      );
+        root.querySelectorAll("button"),
+      ).some((element) => {
+        const ariaLabel = normalize(element.getAttribute("aria-label"));
+        if (
+          ariaLabel ===
+          "Open pasted text attachment. Too long to show in text field"
+        ) {
+          return true;
+        }
+        const controlLabel =
+          ariaLabel ||
+          normalize((element as HTMLElement).innerText || element.textContent);
+        if (controlLabel !== "Show in text field") return false;
+        return (
+          typeof element.closest === "function" &&
+          element.closest(
+            '[data-testid="file-upload-preview"], [data-testid*="attachment"], [data-testid*="file"], [class*="attachment"], [class*="file-tile"]',
+          ) !== null
+        );
+      });
       const state: PageComposerState["state"] =
         inlineText !== "" && inlineText === expected
           ? "inline_ready"

@@ -1435,6 +1435,138 @@ test("composer probe records one Pasted text attachment as redacted identity evi
   }
 });
 
+test("composer probe recognizes the current Show in text field file-tile control", async () => {
+  const attachmentTile = { className: "group/file-tile" };
+  const showInTextFieldButton = {
+    innerText: "Show in text field",
+    textContent: "Show in text field",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Show in text field";
+      return null;
+    },
+    closest(selector: string) {
+      return selector.includes('[class*="file-tile"]') ? attachmentTile : null;
+    },
+  };
+  const removeFileButton = {
+    innerText: "",
+    textContent: "",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Remove file";
+      return null;
+    },
+    closest() { return attachmentTile; },
+  };
+  const sendButton = {
+    disabled: false,
+    hidden: false,
+    innerText: "Send prompt",
+    textContent: "Send prompt",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Send prompt";
+      if (name === "aria-disabled") return "false";
+      return null;
+    },
+    closest() { return null; },
+    getBoundingClientRect() { return { width: 20, height: 20 }; },
+    getClientRects() { return [{}]; },
+  };
+  const buttons = [showInTextFieldButton, removeFileButton, sendButton];
+  const form = { querySelectorAll() { return buttons; } };
+  const composer = {
+    innerText: "",
+    textContent: "",
+    parentElement: null,
+    closest() { return form; },
+  };
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { querySelector() { return composer; } },
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result, Argument>(pageFunction: (argument: Argument) => Result | Promise<Result>, argument: Argument): Promise<Result> {
+        return pageFunction(argument);
+      },
+    },
+  } as unknown as IabTab;
+  try {
+    const state = await readPageComposerState(tab, "controller prompt", ["Send prompt"]);
+    assert.equal(state.state, "attachment_ready");
+    assert.equal(state.attachmentCount, 1);
+    assert.equal(state.pastedTextAttachmentPresent, true);
+  } finally {
+    if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor);
+    else delete (globalThis as { document?: unknown }).document;
+  }
+});
+
+test("composer probe does not classify an ordinary file attachment as pasted text", async () => {
+  const attachmentTile = { className: "group/file-tile" };
+  const removeFileButton = {
+    innerText: "",
+    textContent: "",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Remove file";
+      return null;
+    },
+    closest() { return attachmentTile; },
+  };
+  const unrelatedShowButton = {
+    innerText: "Show in text field",
+    textContent: "Show in text field",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Show in text field";
+      return null;
+    },
+    closest() { return null; },
+  };
+  const sendButton = {
+    disabled: false,
+    hidden: false,
+    innerText: "Send prompt",
+    textContent: "Send prompt",
+    getAttribute(name: string) {
+      if (name === "aria-label") return "Send prompt";
+      if (name === "aria-disabled") return "false";
+      return null;
+    },
+    closest() { return null; },
+    getBoundingClientRect() { return { width: 20, height: 20 }; },
+    getClientRects() { return [{}]; },
+  };
+  const buttons = [removeFileButton, unrelatedShowButton, sendButton];
+  const form = { querySelectorAll() { return buttons; } };
+  const composer = {
+    innerText: "",
+    textContent: "",
+    parentElement: null,
+    closest() { return form; },
+  };
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { querySelector() { return composer; } },
+  });
+  const tab = {
+    playwright: {
+      async evaluate<Result, Argument>(pageFunction: (argument: Argument) => Result | Promise<Result>, argument: Argument): Promise<Result> {
+        return pageFunction(argument);
+      },
+    },
+  } as unknown as IabTab;
+  try {
+    const state = await readPageComposerState(tab, "controller prompt", ["Send prompt"]);
+    assert.equal(state.state, "attachment_ready");
+    assert.equal(state.attachmentCount, 1);
+    assert.equal(state.pastedTextAttachmentPresent, false);
+  } finally {
+    if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor);
+    else delete (globalThis as { document?: unknown }).document;
+  }
+});
+
 test("composer readiness ignores every non-actionable residual Send button", async () => {
   type VisibilityCase =
     | "hidden"
