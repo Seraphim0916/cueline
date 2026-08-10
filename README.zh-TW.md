@@ -31,7 +31,7 @@ CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 
 - 新增 Claude Code Desktop host 車道，與 Codex 車道共用同一套 CueLine 主控核心；套件內含 lane/mailbox 指令與 host skill，信箱採原子認領、持久化動作階段，瀏覽器動作結果不明時會 fail-closed 停住。
 - 明確分開 caller `advise` 與需認領的 `work`。MCP server 現在持有 work lease、heartbeat、完成進度期限、絕對生命週期、終態清理，以及每個 session 穩定的 caller identity。
 - Claude Desktop 車道的 composer-ready 等待時間為 120 秒，共用預設仍是 30 秒。輸入框填寫共用單一絕對期限，並直接取代唯一存活的 composer 內容，不會接在失焦後的舊文字後面。
-- 已通過 typecheck、875/875 測試，以及一次真實 Claude Code Desktop → ChatGPT Pro 執行；完成後 request/inflight/response 信箱皆為空。
+- 已通過 typecheck、877/877 測試，以及一次真實 Claude Code Desktop → ChatGPT Pro 執行；完成後 request/inflight/response 信箱皆為空。
 
 完整內容請看 [changelog](CHANGELOG.md#074---2026-08-10) 或版本化的 [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4)。
 

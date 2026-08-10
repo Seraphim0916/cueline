@@ -37,7 +37,7 @@ CueLine is a standalone implementation with **no runtime npm dependencies**. It 
 - Gives the Claude Desktop lane a 120-second composer-ready window while keeping
   the shared default at 30 seconds. Composer fills use one absolute deadline and
   replace the unique live composer instead of appending stale text.
-- Verified by typecheck, 875/875 tests, and a real Claude Code Desktop → ChatGPT
+- Verified by typecheck, 877/877 tests, and a real Claude Code Desktop → ChatGPT
   Pro run that completed with an empty request/inflight/response mailbox.
 
 Read the full [changelog](CHANGELOG.md#074---2026-08-10) or the versioned [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4).
