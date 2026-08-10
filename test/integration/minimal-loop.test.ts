@@ -4262,7 +4262,231 @@ test("operator-confirmed not-sent retry rejects any prompt change outside the re
   ).filter((event) => event.type === "controller_turn_requested").length;
   assert.equal(requestedAfterPromptChange, requestedBeforePromptChange);
 
-  const postFixBrowser = new FakeBrowserAdapter([
+  let postFixSendCalls = 0;
+  const postFixReadFailureBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(input, hooks): Promise<ControllerTurn> {
+      postFixSendCalls += 1;
+      assert.equal(input.requestId, abandonedRequestId);
+      assert.equal(input.prompt, abandonedPrompt);
+      await hooks?.onCheckpoint?.({
+        submissionState: "possibly_sent",
+        composerPromptState: "attachment_ready",
+        conversationUrl,
+        selectedModelLabel: "Pro",
+        baselineUserMessageCount: 0,
+        baselineAssistantMessageCount: 1,
+      });
+      throw new CueLineError(
+        "IAB_READ_FAILED_AFTER_SUBMIT",
+        "CDP read expired after the controlled retry click.",
+        {
+          details: {
+            stage: "submitting",
+            submission_state: "possibly_sent",
+            request_id: input.requestId,
+          },
+        },
+      );
+    },
+  };
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: stateHome,
+      conversationUrl,
+      browser: postFixReadFailureBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError &&
+      error.code === "IAB_READ_FAILED_AFTER_SUBMIT",
+  );
+  assert.equal(postFixSendCalls, 1);
+
+  let postFixObservationCalls = 0;
+  const postFixNotSentBrowser = (
+    requestMessageScanComplete: boolean,
+  ): BrowserAdapter => ({
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(): Promise<ControllerTurn> {
+      throw new Error("post-fix reconciliation must stay read-only");
+    },
+    async observeSubmittedTurn(input) {
+      postFixObservationCalls += 1;
+      assert.equal(input.requestId, abandonedRequestId);
+      assert.equal(input.prompt, abandonedPrompt);
+      return {
+        status: "definitely_not_sent",
+        evidence: {
+          conversationUrl,
+          selectedModelLabel: "Pro",
+          hydrated: true,
+          baselineUserMessageCount: 0,
+          observedUserMessageCount: 0,
+          countRegressionDetected: false,
+          requestMessageFound: false,
+          requestMessageFoundBy: "request_id_scan",
+          requestMessageScanComplete,
+          accessibilityRequestIdFound: false,
+          isAnswering: false,
+          composerPromptState: "attachment_ready",
+          composerAttachmentCount: 1,
+          composerPastedTextAttachmentPresent: true,
+          composerSendButtonEnabled: true,
+          assistantMessageCount: 1,
+        },
+      };
+    },
+  });
+
+  const responseConflictParent = await home();
+  const responseConflictHome = path.join(
+    responseConflictParent,
+    "post-fix-response-conflict-copy",
+  );
+  await cp(stateHome, responseConflictHome, { recursive: true });
+  let responseConflictSendCalls = 0;
+  const responseConflictBrowser: BrowserAdapter = {
+    submissionCheckpointContract: "write_ahead_v1",
+    async sendTurn(): Promise<ControllerTurn> {
+      responseConflictSendCalls += 1;
+      throw new Error("post-fix response conflict must not send a repair");
+    },
+    async observeSubmittedTurn(input) {
+      return {
+        status: "response",
+        turn: reply(
+          () => ({ action: "invalid-post-fix-command" }),
+          conversationUrl,
+        )(input),
+      };
+    },
+  };
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: responseConflictHome,
+      conversationUrl,
+      browser: responseConflictBrowser,
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    { code: "CONTROLLER_NOT_SENT_RESPONSE_CONFLICT" },
+  );
+  assert.equal(responseConflictSendCalls, 0);
+  const responseConflictStatus = await loadCueLineRunStatus(runId, {
+    home: responseConflictHome,
+  });
+  assert.equal(responseConflictStatus.controller.pendingTurns, 1);
+
+  const malformedPostFixParent = await home();
+  const malformedPostFixHome = path.join(
+    malformedPostFixParent,
+    "post-fix-malformed-state-copy",
+  );
+  await cp(stateHome, malformedPostFixHome, { recursive: true });
+  const malformedPostFixStore = await RunStore.load({
+    home: malformedPostFixHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await malformedPostFixStore.append("controller_turn_submitted", {
+    round: 1,
+    request_id: abandonedRequestId,
+    submission_state: "submitted",
+    conversation_url: conversationUrl,
+    selected_model_label: "Pro",
+    composer_prompt_state: "attachment_ready",
+    baseline_user_message_count: 0,
+    baseline_assistant_message_count: 1,
+  });
+  await malformedPostFixStore.snapshot();
+  await assert.rejects(
+    continueControllerLoop({
+      runId,
+      home: malformedPostFixHome,
+      conversationUrl,
+      browser: postFixNotSentBrowser(true),
+      jobSupervisor: new FakeJobSupervisor([]),
+      resolveRunnerSpec: resolver,
+    }),
+    { code: "CONTROLLER_RECONCILIATION_REQUIRED" },
+  );
+  assert.equal(postFixObservationCalls, 0);
+  const malformedPostFixStatus = await loadCueLineRunStatus(runId, {
+    home: malformedPostFixHome,
+  });
+  assert.equal(malformedPostFixStatus.controller.pendingTurns, 1);
+
+  await continueControllerLoop({
+    runId,
+    home: stateHome,
+    conversationUrl,
+    browser: postFixNotSentBrowser(false),
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+  const weakPostFixEvents = await readEvents(
+    runPaths(stateHome, runId).events,
+  );
+  assert.equal(
+    weakPostFixEvents.some(
+      (event) =>
+        event.type === "controller_turn_abandoned" &&
+        (event.payload as Record<string, unknown>)
+          .post_fix_retry_reauthorized === true &&
+        (event.payload as Record<string, unknown>).reason ===
+          "definitely_not_sent_retry",
+    ),
+    false,
+  );
+  const weakPostFixStatus = await loadCueLineRunStatus(runId, {
+    home: stateHome,
+  });
+  assert.equal(weakPostFixStatus.controller.pendingTurns, 1);
+  assert.equal(postFixObservationCalls, 1);
+  const waitingEvents = weakPostFixEvents.filter(
+    (event) =>
+      event.type === "controller_post_fix_retry_reconciliation_waiting",
+  );
+  assert.equal(waitingEvents.length, 1);
+  const weakPostFixStore = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  assert.equal(weakPostFixStore.state.status, "failed");
+  assert.equal(
+    weakPostFixStore.state.lastFailure?.code,
+    "IAB_READ_FAILED_AFTER_SUBMIT",
+  );
+  const waitingProjection = structuredClone(weakPostFixStore.state);
+  await weakPostFixStore.append(
+    "controller_post_fix_retry_reconciliation_waiting",
+    waitingEvents[0]!.payload,
+  );
+  assert.deepEqual(weakPostFixStore.state, waitingProjection);
+
+  await continueControllerLoop({
+    runId,
+    home: stateHome,
+    conversationUrl,
+    browser: postFixNotSentBrowser(true),
+    jobSupervisor: new FakeJobSupervisor([]),
+    resolveRunnerSpec: resolver,
+  });
+  const postFixReconciledStatus = await loadCueLineRunStatus(runId, {
+    home: stateHome,
+  });
+  assert.equal(postFixReconciledStatus.controller.pendingTurns, 0);
+  assert.equal(postFixObservationCalls, 2);
+  assert.equal(postFixReconciledStatus.safeNextAction, "retry");
+
+  const recoveredPostFixBrowser = new FakeBrowserAdapter([
     reply(
       () => ({
         action: "complete",
@@ -4275,15 +4499,26 @@ test("operator-confirmed not-sent retry rejects any prompt change outside the re
     runId,
     home: stateHome,
     conversationUrl,
-    browser: postFixBrowser,
+    browser: recoveredPostFixBrowser,
     jobSupervisor: new FakeJobSupervisor([]),
     resolveRunnerSpec: resolver,
   });
   assert.equal(result.status, "complete");
   assert.equal(result.finalDeliveryText, "POST_FIX_RETRY_COMPLETE");
-  assert.equal(postFixBrowser.calls.length, 1);
-  assert.equal(postFixBrowser.calls[0]?.prompt, abandonedPrompt);
+  assert.equal(recoveredPostFixBrowser.calls.length, 1);
+  assert.equal(recoveredPostFixBrowser.calls[0]?.prompt, abandonedPrompt);
   const events = await readEvents(runPaths(stateHome, runId).events);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === "controller_turn_abandoned" &&
+        (event.payload as Record<string, unknown>)
+          .post_fix_retry_reauthorized === true &&
+        (event.payload as Record<string, unknown>).reason ===
+          "definitely_not_sent_retry",
+    ),
+    true,
+  );
   assert.equal(
     events.filter(
       (event) =>

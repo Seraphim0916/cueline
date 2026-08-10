@@ -994,8 +994,17 @@ async function reconcilePendingControllerTurn(
       },
     );
   }
+  const exactPostFixRetryObservationCandidate =
+    expectedConversationUrl !== null &&
+    isExactPostFixRetryObservationCandidate(
+      store.state,
+      pending,
+      expectedConversationUrl,
+    );
   const observeSubmittedTurn =
-    pending.retryOfRequestId === undefined || pending.retryOfRequestId === null
+    pending.retryOfRequestId === undefined ||
+    pending.retryOfRequestId === null ||
+    exactPostFixRetryObservationCandidate
       ? options.browser.observeSubmittedTurn
       : undefined;
   const observeWithoutWaiting =
@@ -1080,7 +1089,8 @@ async function reconcilePendingControllerTurn(
     observeSubmittedTurn !== undefined &&
     expectedConversationUrl !== null &&
     (isSubmittedTurnRecoveryCandidate(pending, expectedConversationUrl) ||
-      operatorConfirmedSubmittedTurn)
+      operatorConfirmedSubmittedTurn ||
+      exactPostFixRetryObservationCandidate)
   ) {
     const submittedObservation = await observeSubmittedTurn.call(
       options.browser,
@@ -1146,13 +1156,63 @@ async function reconcilePendingControllerTurn(
       return "awaiting_controller";
     }
     if (submittedObservation.status === "definitely_not_sent") {
+      const exactPostFixRetryNotSent =
+        isExactPostFixRetryNotSentObservation(
+          store.state,
+          pending,
+          expectedConversationUrl,
+          submittedObservation.evidence,
+        );
       if (
+        !exactPostFixRetryNotSent &&
         !isDefinitelyNotSentObservation(
           pending,
           expectedConversationUrl,
           submittedObservation.evidence,
         )
       ) {
+        if (exactPostFixRetryObservationCandidate) {
+          await store.append(
+            "controller_post_fix_retry_reconciliation_waiting",
+            {
+              round: pending.round,
+              request_id: pending.requestId,
+              prompt_hash: pending.promptHash,
+              conversation_url: expectedConversationUrl,
+              submission_state: "possibly_sent",
+              failed_condition: "fresh_not_sent_evidence_insufficient",
+            },
+          );
+        }
+        return "awaiting_controller";
+      }
+      if (exactPostFixRetryNotSent) {
+        await store.append("controller_turn_abandoned", {
+          round: pending.round,
+          request_id: pending.requestId,
+          retry_of_request_id: pending.retryOfRequestId,
+          reason: "definitely_not_sent_retry",
+          round_not_consumed: true,
+          prompt_hash: pending.promptHash,
+          conversation_url: submittedObservation.evidence.conversationUrl,
+          selected_model_label:
+            submittedObservation.evidence.selectedModelLabel,
+          baseline_user_message_count:
+            submittedObservation.evidence.baselineUserMessageCount,
+          observed_user_message_count:
+            submittedObservation.evidence.observedUserMessageCount,
+          request_message_found: false,
+          request_message_scan_complete: true,
+          accessibility_request_id_found: false,
+          count_regression_detected: false,
+          is_answering: false,
+          page_hydrated: true,
+          composer_prompt_state:
+            submittedObservation.evidence.composerPromptState,
+          submission_state: "definitely_not_sent",
+          confirmation_source: "fresh_read_only_observation",
+          post_fix_retry_reauthorized: true,
+        });
         return "awaiting_controller";
       }
       await recordFreshSubmittedTurnNotSent(
@@ -1414,6 +1474,18 @@ async function reconcilePendingControllerTurn(
       turn?.responseSource === "count_degraded_message_dom_exact_envelope";
   }
   if (turn === undefined) return "awaiting_controller";
+  const recoveredNotSentRetry = exactPostFixRetryObservationCandidate
+    ? {
+        abandonedRequestId: pending.requestId,
+        promptHash: pending.promptHash,
+        prompt: pending.prompt,
+        conversationUrl: expectedConversationUrl!,
+        baselineUserMessageCount: pending.baselineUserMessageCount ?? null,
+        selectedModelLabel: pending.selectedModelLabel!,
+        composerPromptState: pending.composerPromptState,
+        postFixRetryReauthorized: true,
+      }
+    : undefined;
   const command = await requestControllerCommand(
     store,
     options.browser,
@@ -1430,6 +1502,7 @@ async function reconcilePendingControllerTurn(
     options.signal,
     expectedConversationUrl,
     options.returnAfterControllerSubmission === true,
+    recoveredNotSentRetry,
   );
   if (command === undefined) return "awaiting_controller";
   if (shouldRecordTurnBinding && store.state.conversationUrl !== null) {
@@ -1647,6 +1720,84 @@ async function recordFreshSubmittedTurnNotSent(
       operator_confirmation: false,
     });
   }
+}
+
+function isExactPostFixRetryObservationCandidate(
+  state: CueLineRunState,
+  pending: CueLineRunState["pendingControllerTurns"][number],
+  expectedConversationUrl: string,
+): boolean {
+  const recovery = state.notSentRecovery;
+  const authorization = state.postFixRetryReauthorization;
+  const failure = state.lastFailure;
+  return (
+    (state.pendingControllerTurns ?? []).length === 1 &&
+    pending.postFixRetryReauthorized === true &&
+    pending.retryOfRequestId === pending.requestId &&
+    pending.submissionState === "possibly_sent" &&
+    pending.manualSendConfirmed === false &&
+    pending.submissionCheckpointContract === "write_ahead_v1" &&
+    Number.isSafeInteger(pending.baselineUserMessageCount) &&
+    (pending.baselineUserMessageCount ?? -1) >= 0 &&
+    /^[0-9a-f]{64}$/.test(pending.promptHash) &&
+    pending.selectedModelLabel !== null &&
+    /^Pro(?:\s|$)/i.test(pending.selectedModelLabel) &&
+    pending.composerPromptState === "attachment_ready" &&
+    recovery?.abandonedRequestId === pending.requestId &&
+    recovery.retryRequestId === pending.requestId &&
+    recovery.round === pending.round &&
+    recovery.promptHash === pending.promptHash &&
+    recovery.status === "retry_pending" &&
+    authorization?.requestId === pending.requestId &&
+    authorization.round === pending.round &&
+    authorization.status === "consumed" &&
+    failure?.code === "IAB_READ_FAILED_AFTER_SUBMIT" &&
+    failure.requestId === pending.requestId &&
+    failure.stage === "submitting" &&
+    failure.submissionState === "possibly_sent" &&
+    isExactChatGptConversationUrl(expectedConversationUrl) &&
+    typeof state.conversationUrl === "string" &&
+    typeof pending.conversationUrl === "string" &&
+    sameChatGptConversationUrl(state.conversationUrl, expectedConversationUrl) &&
+    sameChatGptConversationUrl(pending.conversationUrl, expectedConversationUrl) &&
+    sameChatGptConversationUrl(recovery.conversationUrl, expectedConversationUrl)
+  );
+}
+
+function isExactPostFixRetryNotSentObservation(
+  state: CueLineRunState,
+  pending: CueLineRunState["pendingControllerTurns"][number],
+  expectedConversationUrl: string,
+  evidence: BrowserSubmittedTurnEvidence,
+): boolean {
+  if (
+    !isExactPostFixRetryObservationCandidate(
+      state,
+      pending,
+      expectedConversationUrl,
+    )
+  ) {
+    return false;
+  }
+  const evidenceTurn = {
+    ...pending,
+    submissionState: "submitting" as const,
+    retryOfRequestId: null,
+  };
+  return (
+    isDefinitelyNotSentObservation(
+      evidenceTurn,
+      expectedConversationUrl,
+      evidence,
+    ) &&
+    evidence.requestMessageScanComplete === true &&
+    evidence.accessibilityRequestIdFound === false &&
+    evidence.countRegressionDetected !== true &&
+    evidence.composerPromptState === "attachment_ready" &&
+    evidence.composerAttachmentCount === 1 &&
+    evidence.composerPastedTextAttachmentPresent === true &&
+    evidence.composerSendButtonEnabled === true
+  );
 }
 
 function isDeliveryTimeoutObservation(

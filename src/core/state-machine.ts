@@ -1984,6 +1984,51 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
       cancelledReason: payload.reason,
     };
   }
+  if (event.type === "controller_post_fix_retry_reconciliation_waiting") {
+    const pending = (state.pendingControllerTurns ?? []).find(
+      (turn) =>
+        turn.requestId === payload.request_id &&
+        turn.round === payload.round &&
+        turn.promptHash === payload.prompt_hash,
+    );
+    const recovery = state.notSentRecovery;
+    const authorization = state.postFixRetryReauthorization;
+    if (
+      pending === undefined ||
+      payload.submission_state !== "possibly_sent" ||
+      payload.failed_condition !== "fresh_not_sent_evidence_insufficient" ||
+      typeof payload.conversation_url !== "string" ||
+      !isExactChatGptConversationUrl(payload.conversation_url) ||
+      pending.submissionState !== "possibly_sent" ||
+      pending.postFixRetryReauthorized !== true ||
+      pending.retryOfRequestId !== pending.requestId ||
+      state.lastFailure?.code !== "IAB_READ_FAILED_AFTER_SUBMIT" ||
+      state.lastFailure.requestId !== pending.requestId ||
+      recovery?.abandonedRequestId !== pending.requestId ||
+      recovery.retryRequestId !== pending.requestId ||
+      recovery.status !== "retry_pending" ||
+      authorization?.requestId !== pending.requestId ||
+      authorization.round !== pending.round ||
+      authorization.status !== "consumed" ||
+      typeof state.conversationUrl !== "string" ||
+      typeof pending.conversationUrl !== "string" ||
+      !sameChatGptConversationUrl(
+        state.conversationUrl,
+        payload.conversation_url,
+      ) ||
+      !sameChatGptConversationUrl(
+        pending.conversationUrl,
+        payload.conversation_url,
+      ) ||
+      !sameChatGptConversationUrl(
+        recovery.conversationUrl,
+        payload.conversation_url,
+      )
+    ) {
+      return state;
+    }
+    return { ...state, status: "failed" };
+  }
   if (event.type === "run_failed") {
     const failedRequestId =
       typeof payload.request_id === "string" ? payload.request_id : undefined;
