@@ -4786,7 +4786,12 @@ test(
         prompt: "Controller prompt",
       }),
       (error: unknown) =>
-        error instanceof CueLineError && error.code === "CONTROLLER_PROMPT_NOT_READY",
+        error instanceof CueLineError &&
+        error.code === "CONTROLLER_COMPOSER_MUTATION_OUTCOME_UNKNOWN" &&
+        (error.details as { submission_state?: unknown } | undefined)?.submission_state ===
+          "possibly_sent" &&
+        (error.details as { composer_mutation_outcome?: unknown } | undefined)
+          ?.composer_mutation_outcome === "unknown",
     );
     assert.ok(Date.now() - startedAt < 200);
     assert.equal(fixture.sendSubmissions(), 0);

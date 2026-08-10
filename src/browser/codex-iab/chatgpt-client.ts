@@ -232,6 +232,28 @@ function composerReadyTimeoutError(state?: PageComposerState): CueLineError {
       });
 }
 
+function composerMutationOutcomeUnknownError(
+  timeoutMs: number,
+  state?: PageComposerState,
+): CueLineError {
+  return new CueLineError(
+    "CONTROLLER_COMPOSER_MUTATION_OUTCOME_UNKNOWN",
+    `ChatGPT composer fill did not finish within ${timeoutMs} ms; the claimed browser action may still complete. Reconcile the composer before retrying.`,
+    {
+      details: {
+        submission_state: "possibly_sent",
+        composer_mutation_outcome: "unknown",
+        ...(state === undefined
+          ? {}
+          : {
+              composer_state: state.state,
+              attachment_count: state.attachmentCount,
+            }),
+      },
+    },
+  );
+}
+
 function remainingTimeoutMs(
   deadline: number,
   timeoutError: () => CueLineError,
@@ -1338,11 +1360,13 @@ class CodexIabAdapter implements BrowserAdapter {
           composerReadyDeadline,
           composerTimeoutError,
         );
+        const fillTimeoutError = (): CueLineError =>
+          composerMutationOutcomeUnknownError(fillTimeoutMs, latestComposerState);
         await withBrowserOperationTimeout(
           () => composer.fill(input.prompt, { timeoutMs: fillTimeoutMs }),
           fillTimeoutMs,
           input.signal,
-          composerTimeoutError,
+          fillTimeoutError,
         );
       }
       throwIfCancelled(input.signal);
