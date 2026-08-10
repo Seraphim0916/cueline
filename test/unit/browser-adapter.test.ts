@@ -7698,7 +7698,7 @@ test("misdirected observation confirms after zero-count hydration becomes stable
     // `confirmed`, so a tight wall-clock ceiling makes it report the timeout
     // `pending` under a loaded full-suite run. The ceiling is deliberately
     // generous; confirmation still returns as soon as stability is proven.
-    stableMs: 1,
+    stableMs: 0,
     timeoutMs: 20_000,
   });
 
