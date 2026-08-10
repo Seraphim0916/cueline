@@ -4530,6 +4530,39 @@ test("operator-confirmed not-sent retry rejects any prompt change outside the re
   );
   assert.equal(successorSendCalls, 1);
 
+  const heartbeatOverlayStore = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await heartbeatOverlayStore.append(
+    "run_failed",
+    {
+      code: "RUNTIME_LEASE_HEARTBEAT_FAILED",
+      message: `CueLine run '${runId}' runtime lease heartbeat failed.`,
+      request_id: abandonedRequestId,
+      stage: "reconciling",
+      submission_state: "possibly_sent",
+      conversation_url: conversationUrl,
+    },
+    { allowUnownedRuntime: true },
+  );
+  const heartbeatOverlayReloaded = await RunStore.load({
+    home: stateHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  assert.equal(
+    heartbeatOverlayReloaded.state.lastFailure?.code,
+    "IAB_READ_FAILED_AFTER_SUBMIT",
+  );
+  assert.equal(
+    heartbeatOverlayReloaded.state.pendingControllerTurns.length,
+    1,
+  );
+
   let successorObservationCalls = 0;
   const successorEmptyComposerBrowser: BrowserAdapter = {
     submissionCheckpointContract: "write_ahead_v1",
@@ -4603,6 +4636,34 @@ test("operator-confirmed not-sent retry rejects any prompt change outside the re
     (error: unknown) =>
       error instanceof CueLineError &&
       error.code === "IAB_READ_FAILED_AFTER_SUBMIT",
+  );
+  const cappedOverlayStore = await RunStore.load({
+    home: cappedHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  await cappedOverlayStore.append(
+    "run_failed",
+    {
+      code: "RUNTIME_LEASE_HEARTBEAT_FAILED",
+      message: `CueLine run '${runId}' runtime lease heartbeat failed.`,
+      request_id: abandonedRequestId,
+      stage: "reconciling",
+      submission_state: "possibly_sent",
+      conversation_url: conversationUrl,
+    },
+    { allowUnownedRuntime: true },
+  );
+  const cappedOverlayReloaded = await RunStore.load({
+    home: cappedHome,
+    runId,
+    initialState: initialRunState(runId, ""),
+    reducer: reduceRunState,
+  });
+  assert.equal(
+    cappedOverlayReloaded.state.lastFailure?.code,
+    "RUNTIME_LEASE_HEARTBEAT_FAILED",
   );
   let cappedObservationCalls = 0;
   const cappedObservationBrowser: BrowserAdapter = {

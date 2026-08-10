@@ -504,6 +504,64 @@ export function isControllerTurnProvenUnsent(
   );
 }
 
+function preservePostFixRetryFailureAcrossHeartbeat(
+  state: CueLineRunState,
+  payload: Record<string, unknown>,
+): boolean {
+  const pendingTurns = state.pendingControllerTurns ?? [];
+  if (pendingTurns.length !== 1) return false;
+
+  const pending = pendingTurns[0];
+  if (pending === undefined) return false;
+  const recovery = state.notSentRecovery;
+  const authorization = state.postFixRetryReauthorization;
+  const failure = state.lastFailure;
+  const conversationUrl = payload.conversation_url;
+
+  return (
+    payload.code === "RUNTIME_LEASE_HEARTBEAT_FAILED" &&
+    payload.stage === "reconciling" &&
+    payload.submission_state === "possibly_sent" &&
+    typeof payload.request_id === "string" &&
+    typeof conversationUrl === "string" &&
+    isExactChatGptConversationUrl(conversationUrl) &&
+    pending.requestId === payload.request_id &&
+    pending.retryOfRequestId === pending.requestId &&
+    pending.submissionState === "possibly_sent" &&
+    pending.manualSendConfirmed === false &&
+    pending.submissionCheckpointContract === "write_ahead_v1" &&
+    Number.isSafeInteger(pending.baselineUserMessageCount) &&
+    (pending.baselineUserMessageCount ?? -1) >= 0 &&
+    /^[0-9a-f]{64}$/.test(pending.promptHash) &&
+    pending.selectedModelLabel !== null &&
+    /^Pro(?:\s|$)/i.test(pending.selectedModelLabel) &&
+    pending.composerPromptState === "attachment_ready" &&
+    ((pending.postFixRetryReauthorized === true &&
+      (recovery?.postFixLineageReconciliations ?? 0) === 0) ||
+      (pending.postFixRetryReauthorized !== true &&
+        recovery?.postFixLineageReconciliations === 1)) &&
+    recovery?.abandonedRequestId === pending.requestId &&
+    recovery.retryRequestId === pending.requestId &&
+    recovery.round === pending.round &&
+    recovery.promptHash === pending.promptHash &&
+    recovery.status === "retry_pending" &&
+    authorization?.requestId === pending.requestId &&
+    authorization.round === pending.round &&
+    authorization.status === "consumed" &&
+    failure?.code === "IAB_READ_FAILED_AFTER_SUBMIT" &&
+    failure.requestId === pending.requestId &&
+    failure.stage === "submitting" &&
+    failure.submissionState === "possibly_sent" &&
+    typeof failure.conversationUrl === "string" &&
+    typeof state.conversationUrl === "string" &&
+    typeof pending.conversationUrl === "string" &&
+    sameChatGptConversationUrl(state.conversationUrl, conversationUrl) &&
+    sameChatGptConversationUrl(pending.conversationUrl, conversationUrl) &&
+    sameChatGptConversationUrl(recovery.conversationUrl, conversationUrl) &&
+    sameChatGptConversationUrl(failure.conversationUrl, conversationUrl)
+  );
+}
+
 export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLineRunState {
   const payload = recordPayload(event);
   if (
@@ -2078,6 +2136,8 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
     return { ...state, status: "failed" };
   }
   if (event.type === "run_failed") {
+    const preservePreviousLastFailure =
+      preservePostFixRetryFailureAcrossHeartbeat(state, payload);
     const failedRequestId =
       typeof payload.request_id === "string" ? payload.request_id : undefined;
     const failedSubmissionState =
@@ -2115,24 +2175,28 @@ export function reduceRunState(state: CueLineRunState, event: RunEvent): CueLine
                   }
                 : turn,
             ),
-      lastFailure: {
-        code: typeof payload.code === "string" ? payload.code : "CUELINE_INTERNAL",
-        requestId: typeof payload.request_id === "string" ? payload.request_id : null,
-        message: typeof payload.message === "string" ? payload.message : null,
-        stage: typeof payload.stage === "string" ? payload.stage : null,
-        submissionState:
-          payload.submission_state === "definitely_not_sent" ||
-          payload.submission_state === "requested" ||
-          payload.submission_state === "submitting" ||
-          payload.submission_state === "possibly_sent" ||
-          payload.submission_state === "submitted"
-            ? payload.submission_state
-            : null,
-        conversationUrl:
-          typeof payload.conversation_url === "string"
-            ? payload.conversation_url
-            : state.conversationUrl,
-      },
+      lastFailure: preservePreviousLastFailure
+        ? state.lastFailure
+        : {
+            code:
+              typeof payload.code === "string" ? payload.code : "CUELINE_INTERNAL",
+            requestId:
+              typeof payload.request_id === "string" ? payload.request_id : null,
+            message: typeof payload.message === "string" ? payload.message : null,
+            stage: typeof payload.stage === "string" ? payload.stage : null,
+            submissionState:
+              payload.submission_state === "definitely_not_sent" ||
+              payload.submission_state === "requested" ||
+              payload.submission_state === "submitting" ||
+              payload.submission_state === "possibly_sent" ||
+              payload.submission_state === "submitted"
+                ? payload.submission_state
+                : null,
+            conversationUrl:
+              typeof payload.conversation_url === "string"
+                ? payload.conversation_url
+                : state.conversationUrl,
+          },
     };
   }
   return state;
