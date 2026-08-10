@@ -10,6 +10,7 @@ import {
   recordCueLineCallerJobProgress,
   startCueLineCallerJob,
   startCueLineRun,
+  submitCueLineCallerJobResult,
   type CueLineResult,
   type CueLineRuntimeOptions,
 } from "../api.js";
@@ -19,6 +20,10 @@ import { CueLineError } from "../core/errors.js";
 import { MAX_TIMER_DELAY_MS } from "../core/timing.js";
 import type { RoutingConfig } from "../router/types.js";
 import { CUELINE_VERSION } from "../version.js";
+import {
+  McpCallerWorkLeaseRegistry,
+  type McpCallerWorkLeaseProof,
+} from "./caller-work-lease-registry.js";
 
 export const CUELINE_MCP_PROTOCOL_VERSION = "2025-11-25" as const;
 
@@ -247,6 +252,59 @@ const TOOLS = [
     },
   },
   {
+    name: "cueline_start_caller_work_lease",
+    description:
+      "Start and retain an executor-owned caller-work lease in this MCP server. Call claim first in the same session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: runIdProperty,
+        jobId: jobIdProperty,
+        claimId: stringProperty("Exact claim ID returned by cueline_claim_caller_job."),
+        callerId: callerIdProperty,
+        fencingToken: positiveIntegerProperty("Exact fencing token returned by claim."),
+        heartbeatIntervalMs: positiveIntegerProperty("Executor-owned heartbeat cadence."),
+        progressTimeoutMs: positiveIntegerProperty("Maximum interval without durable progress."),
+        maxExecutionMs: positiveIntegerProperty("Maximum lease execution lifetime."),
+        home: runtimeProperties.home,
+      },
+      required: ["runId", "jobId", "claimId", "callerId", "fencingToken"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "cueline_caller_work_lease_status",
+    description: "Return bounded status for the caller-work lease retained by this MCP session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: runIdProperty,
+        jobId: jobIdProperty,
+        claimId: stringProperty("Exact claim ID returned by cueline_claim_caller_job."),
+        callerId: callerIdProperty,
+        fencingToken: positiveIntegerProperty("Exact fencing token returned by claim."),
+      },
+      required: ["runId", "jobId", "claimId", "callerId", "fencingToken"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "cueline_end_caller_work_lease",
+    description: "Stop and forget the caller-work lease retained by this MCP session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: runIdProperty,
+        jobId: jobIdProperty,
+        claimId: stringProperty("Exact claim ID returned by cueline_claim_caller_job."),
+        callerId: callerIdProperty,
+        fencingToken: positiveIntegerProperty("Exact fencing token returned by claim."),
+      },
+      required: ["runId", "jobId", "claimId", "callerId", "fencingToken"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "cueline_start_caller_job",
     description:
       "Durably start exactly one claimed caller work job with the claim ID, caller ID, and fencing token returned by claim.",
@@ -317,6 +375,39 @@ const TOOLS = [
         "kind",
         "evidenceHash",
       ],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "cueline_submit_caller_job_result",
+    description:
+      "Submit a terminal caller result. Advise jobs omit claimId, callerId, and fencingToken; work jobs provide all three values returned by claim.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: runIdProperty,
+        jobId: jobIdProperty,
+        claimId: stringProperty("Exact claim ID returned by cueline_claim_caller_job."),
+        callerId: callerIdProperty,
+        fencingToken: positiveIntegerProperty("Exact fencing token returned by the claim."),
+        status: {
+          type: "string",
+          enum: ["succeeded", "failed", "timed_out", "cancelled", "ambiguous"],
+          description: "Terminal outcome observed by the executor.",
+        },
+        stdout: stringProperty("Bounded standard output evidence."),
+        stderr: stringProperty("Bounded standard error evidence."),
+        output: stringProperty("Bounded result evidence for non-process executors."),
+        error: stringProperty("Bounded failure description."),
+        exitCode: {
+          type: "integer",
+          description: "Process exit code; omit entirely when the executor produced none.",
+        },
+        startedAt: stringProperty("ISO-8601 instant work started."),
+        finishedAt: stringProperty("ISO-8601 instant work finished."),
+        home: runtimeProperties.home,
+      },
+      required: ["runId", "jobId", "status"],
       additionalProperties: false,
     },
   },
@@ -447,10 +538,46 @@ async function boundedRunResult(
   };
 }
 
+function optionalCallerWorkClaim(args: JsonObject):
+  | { claimId: string; callerId: string; fencingToken: number }
+  | undefined {
+  const provided = [args.claimId, args.callerId, args.fencingToken].filter(
+    (value) => value !== undefined,
+  ).length;
+  if (provided === 0) return undefined;
+  if (provided !== 3) {
+    throw new CueLineError(
+      "MCP_CALLER_WORK_CLAIM_PARTIAL",
+      "claimId, callerId, and fencingToken must be supplied together.",
+    );
+  }
+  return {
+    claimId: args.claimId as string,
+    callerId: args.callerId as string,
+    fencingToken: args.fencingToken as number,
+  };
+}
+
+function callerWorkLeaseProof(args: JsonObject): McpCallerWorkLeaseProof {
+  const claim = optionalCallerWorkClaim(args);
+  if (claim === undefined) {
+    throw new CueLineError(
+      "MCP_CALLER_WORK_CLAIM_REQUIRED",
+      "Caller-work lease operation requires claimId, callerId, and fencingToken.",
+    );
+  }
+  return {
+    runId: args.runId as string,
+    jobId: args.jobId as string,
+    ...claim,
+  };
+}
+
 async function executeTool(
   name: string,
   args: JsonObject,
   options: ServeCueLineMcpOptions,
+  leases: McpCallerWorkLeaseRegistry,
 ): Promise<JsonObject> {
   const runtime = runtimeOptions(args, options);
   switch (name) {
@@ -484,16 +611,65 @@ async function executeTool(
       );
     case "cueline_run_doctor":
       return { ...(await diagnoseCueLineRun(args.runId as string, runtime)) };
-    case "cueline_claim_caller_job":
+    case "cueline_claim_caller_job": {
       // MCP clientInfo is unauthenticated metadata. The explicit callerId remains
       // the durable identity and must be reused in every fenced proof.
+      const claim = await claimCueLineCallerJob(args.runId as string, args.jobId as string, {
+        ...runtime,
+        callerId: args.callerId as string,
+        ...(args.ttlMs === undefined ? {} : { ttlMs: args.ttlMs as number }),
+      });
+      leases.rememberClaim(claim);
+      return { ...claim };
+    }
+    case "cueline_start_caller_work_lease":
       return {
-        ...(await claimCueLineCallerJob(args.runId as string, args.jobId as string, {
+        ...(await leases.start(callerWorkLeaseProof(args), {
           ...runtime,
-          callerId: args.callerId as string,
-          ...(args.ttlMs === undefined ? {} : { ttlMs: args.ttlMs as number }),
+          ...(args.heartbeatIntervalMs === undefined
+            ? {}
+            : { heartbeatIntervalMs: args.heartbeatIntervalMs as number }),
+          ...(args.progressTimeoutMs === undefined
+            ? {}
+            : { progressTimeoutMs: args.progressTimeoutMs as number }),
+          ...(args.maxExecutionMs === undefined
+            ? {}
+            : { maxExecutionMs: args.maxExecutionMs as number }),
         })),
       };
+    case "cueline_caller_work_lease_status":
+      return { ...leases.status(callerWorkLeaseProof(args)) };
+    case "cueline_end_caller_work_lease":
+      return { ...(await leases.end(callerWorkLeaseProof(args))) };
+    case "cueline_submit_caller_job_result": {
+      const claim = optionalCallerWorkClaim(args);
+      const submission = await submitCueLineCallerJobResult(
+          args.runId as string,
+          args.jobId as string,
+          {
+            status: args.status as "succeeded" | "failed" | "timed_out" | "cancelled" | "ambiguous",
+            ...(args.stdout === undefined ? {} : { stdout: args.stdout as string }),
+            ...(args.stderr === undefined ? {} : { stderr: args.stderr as string }),
+            ...(args.output === undefined ? {} : { output: args.output as string }),
+            ...(args.error === undefined ? {} : { error: args.error as string }),
+            ...(args.exitCode === undefined ? {} : { exitCode: args.exitCode as number | null }),
+            ...(args.startedAt === undefined ? {} : { startedAt: args.startedAt as string }),
+            ...(args.finishedAt === undefined ? {} : { finishedAt: args.finishedAt as string }),
+          },
+          {
+            ...runtime,
+            ...(claim === undefined ? {} : { claim }),
+          },
+        );
+      if (claim !== undefined) {
+        await leases.endAfterSubmission({
+          runId: args.runId as string,
+          jobId: args.jobId as string,
+          ...claim,
+        });
+      }
+      return { ...submission };
+    }
     case "cueline_start_caller_job":
       return {
         ...(await startCueLineCallerJob(
@@ -572,15 +748,20 @@ class CueLineMcpSession {
   #initializeAnswered = false;
   #initialized = false;
   #callerId: string | undefined;
+  readonly #leases = new McpCallerWorkLeaseRegistry();
 
   constructor(private readonly options: ServeCueLineMcpOptions) {}
 
   #assertCallerIdCompatible(toolName: string, args: JsonObject): void {
     if (
       toolName !== "cueline_claim_caller_job" &&
+      toolName !== "cueline_start_caller_work_lease" &&
+      toolName !== "cueline_caller_work_lease_status" &&
+      toolName !== "cueline_end_caller_work_lease" &&
       toolName !== "cueline_start_caller_job" &&
       toolName !== "cueline_heartbeat_caller_job" &&
-      toolName !== "cueline_record_caller_job_progress"
+      toolName !== "cueline_record_caller_job_progress" &&
+      !(toolName === "cueline_submit_caller_job_result" && args.callerId !== undefined)
     ) return;
     const callerId = args.callerId as string;
     if (this.#callerId !== undefined && this.#callerId !== callerId) {
@@ -595,9 +776,13 @@ class CueLineMcpSession {
     if (
       this.#callerId !== undefined ||
       (toolName !== "cueline_claim_caller_job" &&
+        toolName !== "cueline_start_caller_work_lease" &&
+        toolName !== "cueline_caller_work_lease_status" &&
+        toolName !== "cueline_end_caller_work_lease" &&
         toolName !== "cueline_start_caller_job" &&
         toolName !== "cueline_heartbeat_caller_job" &&
-        toolName !== "cueline_record_caller_job_progress")
+        toolName !== "cueline_record_caller_job_progress" &&
+        !(toolName === "cueline_submit_caller_job_result" && args.callerId !== undefined))
     ) return;
     // clientInfo is descriptive, so the first successful caller operation
     // binds this stdio session without letting a failed probe poison it.
@@ -687,7 +872,7 @@ class CueLineMcpSession {
       }
       try {
         this.#assertCallerIdCompatible(tool.name, args);
-        const result = await executeTool(tool.name, args, this.options);
+        const result = await executeTool(tool.name, args, this.options, this.#leases);
         this.#bindCallerIdAfterSuccess(tool.name, args);
         return resultResponse(id!, toolResult(result));
       } catch (error) {
@@ -695,6 +880,10 @@ class CueLineMcpSession {
       }
     }
     return errorResponse(id!, -32601, "Method not found");
+  }
+
+  async close(): Promise<void> {
+    await this.#leases.close();
   }
 }
 
@@ -737,5 +926,6 @@ export async function serveCueLineMcp(options: ServeCueLineMcpOptions = {}): Pro
   } finally {
     options.signal?.removeEventListener("abort", abort);
     lines.close();
+    await session.close();
   }
 }

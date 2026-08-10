@@ -21,7 +21,9 @@
   },
   "include": [
     "src/**/*.ts",
-    "test/**/*.ts"
+    "test/**/*.ts",
+    "scripts/claude-desktop-lane.ts",
+    "scripts/claude-desktop-mailbox.ts"
   ],
   "exclude": [
     "dist",

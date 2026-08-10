@@ -310,6 +310,8 @@ function fakeBrowser(options: {
   proSelectionSucceeds?: boolean;
   responseModelSlug?: string | null;
   composerStates?: PageComposerState[];
+  composerProbeDelayMs?: number;
+  sendTargetDelayMs?: number;
   urlReadSequence?: string[];
   archivePostActionUrl?: string;
   archiveClickError?: string;
@@ -501,6 +503,9 @@ function fakeBrowser(options: {
         argument !== null &&
         "composerProbe" in argument
       ) {
+        if (options.composerProbeDelayMs !== undefined) {
+          await new Promise((resolve) => setTimeout(resolve, options.composerProbeDelayMs));
+        }
         const states = options.composerStates ?? [
           {
             state: "inline_ready",
@@ -537,6 +542,9 @@ function fakeBrowser(options: {
         argument !== null &&
         "sendButtonNames" in argument
       ) {
+        if (options.sendTargetDelayMs !== undefined) {
+          await new Promise((resolve) => setTimeout(resolve, options.sendTargetDelayMs));
+        }
         const sendButton = {
           tagName: "button",
           role: null,
@@ -687,6 +695,17 @@ test("rejects unsafe browser timing options before touching the Browser runtime"
     { options: { timeoutMs: Number.NaN }, code: "IAB_TIMEOUT_INVALID" },
     { options: { timeoutMs: Number.POSITIVE_INFINITY }, code: "IAB_TIMEOUT_INVALID" },
     { options: { timeoutMs: 2_147_483_648 }, code: "IAB_TIMEOUT_INVALID" },
+    { options: { composerReadyTimeoutMs: 0 }, code: "IAB_COMPOSER_READY_TIMEOUT_INVALID" },
+    { options: { composerReadyTimeoutMs: Number.NaN }, code: "IAB_COMPOSER_READY_TIMEOUT_INVALID" },
+    {
+      options: { composerReadyTimeoutMs: 2_147_483_648 },
+      code: "IAB_COMPOSER_READY_TIMEOUT_INVALID",
+    },
+    { options: { browserOperationTimeoutMs: 0 }, code: "IAB_BROWSER_OPERATION_TIMEOUT_INVALID" },
+    {
+      options: { browserOperationTimeoutMs: Number.POSITIVE_INFINITY },
+      code: "IAB_BROWSER_OPERATION_TIMEOUT_INVALID",
+    },
     { options: { pollIntervalMs: 0 }, code: "IAB_POLL_INTERVAL_INVALID" },
     { options: { pollIntervalMs: -1 }, code: "IAB_POLL_INTERVAL_INVALID" },
     { options: { pollIntervalMs: 0.5 }, code: "IAB_POLL_INTERVAL_INVALID" },
@@ -4698,6 +4717,69 @@ test("returns the conversation URL captured with the completed response DOM", as
 
   assert.equal(turn.text, "response from A");
   assert.equal(turn.conversationUrl, responseUrl);
+});
+
+test("honors a lane-specific composer-ready timeout before any send", async () => {
+  const fixture = fakeBrowser({
+    composerProbeDelayMs: 10,
+    composerStates: [
+      { state: "inline_ready", inlineTextLength: 17, attachmentCount: 0, sendButtonEnabled: true },
+    ],
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    composerReadyTimeoutMs: 5,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 100,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_composer_ready_timeout",
+      round: 1,
+      requestId: "msg_composer_ready_timeout",
+      prompt: "Controller prompt",
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "CONTROLLER_PROMPT_NOT_READY",
+  );
+  assert.equal(fixture.sendSubmissions(), 0);
+});
+
+test("honors a lane-specific browser-operation timeout before any send", async () => {
+  const fixture = fakeBrowser({
+    sendTargetDelayMs: 10,
+    states: [
+      { isAnswering: false, assistantText: "", assistantMessageCount: 0 },
+      { isAnswering: true, assistantText: "working", assistantMessageCount: 0 },
+      { isAnswering: false, assistantText: "complete", assistantMessageCount: 1 },
+    ],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    browserOperationTimeoutMs: 5,
+    pollIntervalMs: 1,
+    stableMs: 0,
+    timeoutMs: 100,
+  });
+
+  await assert.rejects(
+    adapter.sendTurn({
+      runId: "run_browser_operation_timeout",
+      round: 1,
+      requestId: "msg_browser_operation_timeout",
+      prompt: "Controller prompt",
+    }),
+    (error: unknown) =>
+      error instanceof CueLineError && error.code === "CONTROLLER_SUBMISSION_PRECLICK_TIMEOUT",
+  );
+  assert.equal(fixture.sendSubmissions(), 0);
 });
 
 test("recognizes a long prompt converted to an attachment and clicks send exactly once", async () => {

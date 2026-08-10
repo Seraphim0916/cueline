@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 
 import {
+  claimCueLineCallerJob,
   runCueLine,
   startCueLineRun,
 } from "../../src/api.js";
@@ -171,7 +172,35 @@ async function callerWorkFixture() {
   return { home, jobId: job.jobId, task, workdir: await realpath(workdir) };
 }
 
-test("MCP initialize and tools/list expose the fixed nine-tool contract", async () => {
+async function callerAdviseFixture() {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-mcp-advise-"));
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "dispatch",
+      jobs: [
+        {
+          job_key: "mcp_advise",
+          lane: "default",
+          mode: "advise",
+          task: "Inspect the fixture and return bounded advice.",
+        },
+      ],
+    })),
+  ]);
+  const result = await runCueLine({
+    request: "Prepare one caller advise job",
+    runId: "run_mcp_caller_advise",
+    home,
+    browser,
+    routingConfig,
+  });
+  assert.equal(result.status, "awaiting_caller");
+  const job = Object.values(result.state.jobs)[0];
+  assert.ok(job);
+  return { home, jobId: job.jobId };
+}
+
+test("MCP initialize and tools/list expose the fixed thirteen-tool contract", async () => {
   const responses = await exchange([
     initialize(),
     initialized(),
@@ -199,9 +228,13 @@ test("MCP initialize and tools/list expose the fixed nine-tool contract", async 
       "cueline_run_status",
       "cueline_run_doctor",
       "cueline_claim_caller_job",
+      "cueline_start_caller_work_lease",
+      "cueline_caller_work_lease_status",
+      "cueline_end_caller_work_lease",
       "cueline_start_caller_job",
       "cueline_heartbeat_caller_job",
       "cueline_record_caller_job_progress",
+      "cueline_submit_caller_job_result",
       "cueline_list_runs",
     ],
   );
@@ -219,6 +252,19 @@ test("MCP initialize and tools/list expose the fixed nine-tool contract", async 
     "jobId",
     "callerId",
   ]);
+  for (const name of [
+    "cueline_start_caller_work_lease",
+    "cueline_caller_work_lease_status",
+    "cueline_end_caller_work_lease",
+  ]) {
+    assert.deepEqual(byName.get(name)?.inputSchema.required, [
+      "runId",
+      "jobId",
+      "claimId",
+      "callerId",
+      "fencingToken",
+    ]);
+  }
   assert.deepEqual(byName.get("cueline_start_caller_job")?.inputSchema.required, [
     "runId",
     "jobId",
@@ -242,6 +288,11 @@ test("MCP initialize and tools/list expose the fixed nine-tool contract", async 
     "kind",
     "evidenceHash",
   ]);
+  assert.deepEqual(byName.get("cueline_submit_caller_job_result")?.inputSchema.required, [
+    "runId",
+    "jobId",
+    "status",
+  ]);
   const startProperties = byName.get("cueline_start_run")?.inputSchema.properties as
     | Record<string, Record<string, unknown>>
     | undefined;
@@ -253,6 +304,24 @@ test("MCP initialize and tools/list expose the fixed nine-tool contract", async 
     /omitted means unlimited/i,
   );
   assert.equal(startProperties?.maxStagnantRounds?.minimum, 1);
+});
+
+test("MCP submits advise results without a caller-work claim", async () => {
+  const { home, jobId } = await callerAdviseFixture();
+  const responses = await exchange([
+    initialize(),
+    initialized(),
+    toolCall(2, "cueline_submit_caller_job_result", {
+      runId: "run_mcp_caller_advise",
+      jobId,
+      status: "succeeded",
+      output: "bounded advice",
+      home,
+    }),
+  ]);
+
+  const submitted = structured(responseFor(responses, 2));
+  assert.equal(submitted.outcome, "submitted");
 });
 
 test("start, status, doctor, and list tools return sanitized bounded evidence", async () => {
@@ -438,6 +507,100 @@ test("a failed caller tool does not bind or poison the MCP session identity", as
   assert.equal(claim.outcome, "claimed");
 });
 
+test("MCP server retains, reports, and ends a real caller-work lease", async () => {
+  const { home, jobId } = await callerWorkFixture();
+  const callerId = "lease-owner";
+  const claim = await claimCueLineCallerJob("run_mcp_caller_work", jobId, {
+    home,
+    callerId,
+    ttlMs: 60_000,
+  });
+  const proof = {
+    runId: "run_mcp_caller_work",
+    jobId,
+    claimId: claim.claimId,
+    callerId,
+    fencingToken: claim.fencingToken,
+  };
+  const responses = await exchange([
+    initialize(),
+    initialized(),
+    toolCall(2, "cueline_claim_caller_job", {
+      runId: proof.runId,
+      jobId: proof.jobId,
+      callerId: proof.callerId,
+      home,
+    }),
+    toolCall(3, "cueline_start_caller_work_lease", {
+      ...proof,
+      heartbeatIntervalMs: 10_000,
+      home,
+    }),
+    toolCall(4, "cueline_caller_work_lease_status", proof),
+    toolCall(5, "cueline_end_caller_work_lease", proof),
+    toolCall(6, "cueline_caller_work_lease_status", proof),
+  ]);
+
+  assert.equal(structured(responseFor(responses, 3)).outcome, "started");
+  assert.equal(structured(responseFor(responses, 4)).active, true);
+  assert.equal(structured(responseFor(responses, 5)).outcome, "ended");
+  assert.equal(structured(responseFor(responses, 6)).outcome, "inactive");
+});
+
+test("work result submission enforces the MCP session caller identity", async () => {
+  const { home, jobId } = await callerWorkFixture();
+  const responses = await exchange([
+    initialize(),
+    initialized(),
+    toolCall(2, "cueline_claim_caller_job", {
+      runId: "run_mcp_caller_work",
+      jobId,
+      callerId: "stable-submit-caller",
+      home,
+    }),
+    toolCall(3, "cueline_submit_caller_job_result", {
+      runId: "run_mcp_caller_work",
+      jobId,
+      claimId: "claim_probe",
+      callerId: "different-submit-caller",
+      fencingToken: 1,
+      status: "ambiguous",
+      error: "probe",
+      home,
+    }),
+  ]);
+
+  structured(responseFor(responses, 2));
+  const mismatch = responseFor(responses, 3).result;
+  assert.equal(mismatch?.isError, true);
+  assert.match(mismatch?.content?.[0]?.text ?? "", /MCP_CALLER_ID_MISMATCH/);
+});
+
+test("advise submission does not bind the MCP session caller identity", async () => {
+  const advise = await callerAdviseFixture();
+  const work = await callerWorkFixture();
+  const responses = await exchange([
+    initialize(),
+    initialized(),
+    toolCall(2, "cueline_submit_caller_job_result", {
+      runId: "run_mcp_caller_advise",
+      jobId: advise.jobId,
+      status: "succeeded",
+      output: "bounded advice",
+      home: advise.home,
+    }),
+    toolCall(3, "cueline_claim_caller_job", {
+      runId: "run_mcp_caller_work",
+      jobId: work.jobId,
+      callerId: "caller-after-advise",
+      home: work.home,
+    }),
+  ]);
+
+  assert.equal(structured(responseFor(responses, 2)).outcome, "submitted");
+  assert.equal(structured(responseFor(responses, 3)).callerId, "caller-after-advise");
+});
+
 test("process execution remains refused without per-call authorization", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "cueline-mcp-process-guard-"));
   const responses = await exchange([
@@ -490,7 +653,13 @@ test("cueline mcp serve wires the real CLI stdio surface", () => {
   const responses = result.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
   assert.equal(responses.length, 2);
   assert.equal(responses[0].result.protocolVersion, CUELINE_MCP_PROTOCOL_VERSION);
-  assert.equal(responses[1].result.tools.length, 9);
+  assert.equal(responses[1].result.tools.length, 13);
+  assert.ok(
+    responses[1].result.tools.some(
+      (tool: { name: string }) => tool.name === "cueline_submit_caller_job_result",
+    ),
+    "claimed caller work must have a terminal submission tool or a run stays blocked",
+  );
 });
 
 test("cueline mcp serve handles SIGTERM as a graceful transport shutdown", { timeout: 5_000 }, async () => {

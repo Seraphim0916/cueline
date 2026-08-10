@@ -110,6 +110,8 @@ cueline doctor
 
 內建的 `cueline` skill 是從 Codex 自己的 Node runtime 驅動這個套件的——內建瀏覽器的物件就活在那裡。另外開一個單獨的 `node` 行程並不會繼承它。
 
+Claude Code Desktop 可透過套件內附的檔案信箱指令驅動同一套主控核心。操作方式見[用 Claude Code Desktop 驅動 CueLine](docs/claude-desktop-host.md)。
+
 ## 從程式碼驅動
 
 ```js

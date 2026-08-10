@@ -136,6 +136,8 @@ Then, in Codex:
 
 The bundled `cueline` skill drives the package from Codex's own Node runtime, which is where the in-app Browser object lives. A plain `node` process started on the side does not inherit it.
 
+Claude Code Desktop can host the same controller through the packaged file-mailbox binaries. See [Driving CueLine from Claude Code Desktop](docs/claude-desktop-host.md).
+
 ## Driving it from code
 
 ```js

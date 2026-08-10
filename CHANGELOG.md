@@ -1,14 +1,26 @@
 # Changelog
 
-## 0.7.4 - 2026-08-01
+## 0.7.4 - 2026-08-10
 
 ### Added
 
 - Exact ChatGPT Pro `Thinking failed` submitted-turn evidence now has independent `CHATGPT_THINKING_FAILED` recovery state, CLI/API one-shot authorization, same-round linked transport retry, crash fencing, run-status exposure, and DOM/integration coverage.
 
+- Claude Code Desktop can now host CueLine's existing browser controller through an atomic file mailbox, packaged lane/mailbox binaries, a dedicated host skill, bounded lane-status continuation, and fail-closed side-effect recovery.
+- The MCP server now owns caller-work leases, heartbeat, progress/lifetime aborts, terminal cleanup, and stable per-session caller identity across claim, status, progress, and submission tools.
+- Browser adapters now accept independent composer-readiness and browser-operation timeouts; shared defaults remain 30 and 10 seconds, while the Claude Desktop lane uses 120 and 180 seconds.
+
+### Fixed
+
+- Claude Desktop paste now replaces the unique live composer instead of appending stale text after focus falls back to the page root.
+- Caller advice can return without a work claim, while caller work requires the exact durable claim proof and active resident lease.
+
 ### Verification
 
 - Added current-vs-historical DOM tests, Pro/answering guards, authorization-before-mutation checks, same-round new-request linkage, restart no-duplicate coverage, and existing delivery-timeout regression coverage.
+
+- `npm run typecheck` and all 881 tests pass, including mailbox recovery, lane status, timeout separation, caller identity, and resident lease coverage.
+- A real Claude Code Desktop → ChatGPT Pro → CueLine run completed on `gpt-5-6-pro` with exact final delivery, daemon exit 0, and empty request/inflight/response mailboxes.
 
 ## 0.7.3 - 2026-07-30
 

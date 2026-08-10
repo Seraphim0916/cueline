@@ -80,6 +80,10 @@ export interface CodexIabAdapterOptions {
   conversationUrl?: string;
   /** Positive integer no greater than Node's maximum timer delay. */
   timeoutMs?: number;
+  /** Positive composer-ready window; defaults to 30 seconds. */
+  composerReadyTimeoutMs?: number;
+  /** Positive timeout for one Browser host operation; defaults to 10 seconds. */
+  browserOperationTimeoutMs?: number;
   /** Positive integer no greater than Node's maximum timer delay. */
   pollIntervalMs?: number;
   /** Non-negative integer no greater than Node's maximum timer delay. */
@@ -306,7 +310,17 @@ async function readComposerModelLabelWhenReady(
 
 class CodexIabAdapter implements BrowserAdapter {
   readonly submissionCheckpointContract = "write_ahead_v1" as const;
-  readonly #options: Required<Pick<CodexIabAdapterOptions, "timeoutMs" | "pollIntervalMs" | "stableMs" | "pendingDiagnosticMs">> &
+  readonly #options: Required<
+    Pick<
+      CodexIabAdapterOptions,
+      | "timeoutMs"
+      | "composerReadyTimeoutMs"
+      | "browserOperationTimeoutMs"
+      | "pollIntervalMs"
+      | "stableMs"
+      | "pendingDiagnosticMs"
+    >
+  > &
     Pick<CodexIabAdapterOptions, "browser" | "conversationUrl">;
   #browser: IabBrowser | undefined;
   #tab: IabTab | undefined;
@@ -329,6 +343,18 @@ class CodexIabAdapter implements BrowserAdapter {
         options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         1,
         "IAB_TIMEOUT_INVALID",
+      ),
+      composerReadyTimeoutMs: validatedTimingOption(
+        "composerReadyTimeoutMs",
+        options.composerReadyTimeoutMs ?? COMPOSER_READY_TIMEOUT_MS,
+        1,
+        "IAB_COMPOSER_READY_TIMEOUT_INVALID",
+      ),
+      browserOperationTimeoutMs: validatedTimingOption(
+        "browserOperationTimeoutMs",
+        options.browserOperationTimeoutMs ?? SUBMISSION_ACTION_TIMEOUT_MS,
+        1,
+        "IAB_BROWSER_OPERATION_TIMEOUT_INVALID",
       ),
       pollIntervalMs: validatedTimingOption(
         "pollIntervalMs",
@@ -523,7 +549,7 @@ class CodexIabAdapter implements BrowserAdapter {
     const deadline =
       Date.now() + Math.min(this.#options.timeoutMs, COMPOSER_HYDRATION_TIMEOUT_MS);
     const operationTimeoutMs = Math.min(
-      SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.browserOperationTimeoutMs,
       this.#options.timeoutMs,
     );
     let state = baseline;
@@ -593,7 +619,7 @@ class CodexIabAdapter implements BrowserAdapter {
       Date.now() +
       Math.min(this.#options.timeoutMs, POST_CLICK_ACKNOWLEDGEMENT_TIMEOUT_MS);
     const operationTimeoutMs = Math.min(
-      SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.browserOperationTimeoutMs,
       this.#options.timeoutMs,
     );
     let stableSignature = "";
@@ -757,7 +783,7 @@ class CodexIabAdapter implements BrowserAdapter {
     hooks?: BrowserTurnHooks,
   ): Promise<void> {
     const operationTimeoutMs = Math.min(
-      SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.browserOperationTimeoutMs,
       this.#options.timeoutMs,
     );
     const previousUrl =
@@ -1040,7 +1066,8 @@ class CodexIabAdapter implements BrowserAdapter {
     baselineAttachmentCount: number,
     signal?: AbortSignal,
   ): Promise<PageComposerState> {
-    const deadline = Date.now() + Math.min(COMPOSER_READY_TIMEOUT_MS, this.#options.timeoutMs);
+    const deadline =
+      Date.now() + Math.min(this.#options.composerReadyTimeoutMs, this.#options.timeoutMs);
     const stableRequirement = Math.min(COMPOSER_READY_STABLE_MS, this.#options.stableMs);
     let stableSignature = "";
     let stableSince = 0;
@@ -1320,7 +1347,7 @@ class CodexIabAdapter implements BrowserAdapter {
       );
     }
     const operationTimeoutMs = Math.min(
-      SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.browserOperationTimeoutMs,
       this.#options.timeoutMs,
     );
     const sendTarget = await withBrowserOperationTimeout(
@@ -1630,7 +1657,7 @@ class CodexIabAdapter implements BrowserAdapter {
       Date.now() +
       Math.min(this.#options.timeoutMs, SUBMITTED_RECOVERY_HYDRATION_TIMEOUT_MS);
     const operationTimeoutMs = Math.min(
-      SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.browserOperationTimeoutMs,
       this.#options.timeoutMs,
     );
     let stableSignature = "";
@@ -2155,7 +2182,7 @@ class CodexIabAdapter implements BrowserAdapter {
         input.signal,
       );
       const operationTimeoutMs = Math.min(
-        SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.browserOperationTimeoutMs,
         this.#options.timeoutMs,
       );
       const expectedIdentity: ExpectedControllerIdentity = {
@@ -2514,7 +2541,7 @@ class CodexIabAdapter implements BrowserAdapter {
     try {
       const browser = await this.#getBrowser();
       const operationTimeoutMs = Math.min(
-        SUBMISSION_ACTION_TIMEOUT_MS,
+      this.#options.browserOperationTimeoutMs,
         this.#options.timeoutMs,
       );
       const currentIdentity: ExpectedControllerIdentity = {

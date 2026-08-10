@@ -28,7 +28,9 @@
     "node": ">=22"
   },
   "bin": {
-    "cueline": "bin/cueline"
+    "cueline": "bin/cueline",
+    "cueline-claude-desktop-lane": "bin/cueline-claude-desktop-lane",
+    "cueline-claude-desktop-mailbox": "bin/cueline-claude-desktop-mailbox"
   },
   "exports": {
     ".": {
@@ -42,6 +44,7 @@
     "bin",
     "config",
     "dist/src",
+    "dist/scripts",
     "docs",
     "!docs/superpowers",
     "evals",
