@@ -415,6 +415,27 @@ function controllerPrompt(
   ].join("\n");
 }
 
+const CONTROLLER_OBSERVATION_OPEN = "\n<CueLineObservation>\n";
+const CONTROLLER_OBSERVATION_CLOSE = "\n</CueLineObservation>";
+
+function controllerPromptContract(prompt: string): string | null {
+  const observationStart = prompt.lastIndexOf(CONTROLLER_OBSERVATION_OPEN);
+  const observationEnd = prompt.indexOf(
+    CONTROLLER_OBSERVATION_CLOSE,
+    observationStart + CONTROLLER_OBSERVATION_OPEN.length,
+  );
+  if (observationStart < 0 || observationEnd < 0) {
+    return null;
+  }
+  // The sealed prompt hash protects the original observation and any repair
+  // suffix. Only compare the preamble here so current controller instructions
+  // cannot change while reconciliation-only observation state is allowed to.
+  return prompt.slice(
+    0,
+    observationStart + CONTROLLER_OBSERVATION_OPEN.length,
+  );
+}
+
 function repairPrompt(
   observation: ControllerObservation,
   error: CueLineError,
@@ -505,16 +526,49 @@ export async function requestControllerCommand(
     if (recovered && attempt === firstAttempt) {
       turn = recovered.turn;
     } else {
-      const prompt =
-        attempt === 0 &&
-        notSentRetry?.responseFailureRetry === true &&
+      const isNotSentReplayAttempt =
+        notSentRetry !== undefined && attempt === firstAttempt;
+      const regeneratedPrompt =
+        isNotSentReplayAttempt || attempt === 0
+          ? controllerPrompt(observation, instructions)
+          : repairPrompt(observation, lastError!, attempt, instructions);
+      const sealedRetryPrompt =
+        isNotSentReplayAttempt &&
+        notSentRetry !== undefined &&
         typeof notSentRetry.prompt === "string"
           ? notSentRetry.prompt
               .split(notSentRetry.abandonedRequestId)
               .join(expected.requestId)
-          : attempt === 0
-          ? controllerPrompt(observation, instructions)
-          : repairPrompt(observation, lastError!, attempt, instructions);
+          : undefined;
+      if (
+        isNotSentReplayAttempt &&
+        notSentRetry !== undefined &&
+        notSentRetry.responseFailureRetry !== true &&
+        sealedRetryPrompt !== undefined &&
+        (controllerPromptContract(regeneratedPrompt) === null ||
+          controllerPromptContract(regeneratedPrompt) !==
+            controllerPromptContract(sealedRetryPrompt))
+      ) {
+        await store.append("controller_turn_retry_conflict", {
+          round: expected.round,
+          request_id: expected.requestId,
+          abandoned_request_id: notSentRetry.abandonedRequestId,
+          expected_prompt_hash: notSentRetry.promptHash,
+          actual_prompt_hash: commandHash(
+            regeneratedPrompt
+              .split(expected.requestId)
+              .join(notSentRetry.abandonedRequestId),
+          ),
+          code: "CONTROLLER_NOT_SENT_PROMPT_MISMATCH",
+          message:
+            "The regenerated controller prompt contract does not match the operator-confirmed checkpoint.",
+        });
+        throw new CueLineError(
+          "CONTROLLER_NOT_SENT_PROMPT_MISMATCH",
+          "The regenerated controller prompt contract does not match the operator-confirmed checkpoint.",
+        );
+      }
+      const prompt = sealedRetryPrompt ?? regeneratedPrompt;
       const promptHash = commandHash(prompt);
       const recoveryComparablePrompt =
         notSentRetry === undefined
@@ -522,7 +576,7 @@ export async function requestControllerCommand(
           : prompt.split(expected.requestId).join(notSentRetry.abandonedRequestId);
       const recoveryComparablePromptHash = commandHash(recoveryComparablePrompt);
       if (
-        attempt === 0 &&
+        isNotSentReplayAttempt &&
         notSentRetry !== undefined &&
         recoveryComparablePromptHash !== notSentRetry.promptHash
       ) {
@@ -552,7 +606,7 @@ export async function requestControllerCommand(
       expectedBrowserConversationUrl === undefined
         ? {}
         : { expectedConversationUrl: expectedBrowserConversationUrl }),
-        ...(attempt === 0 && notSentRetry !== undefined
+          ...(isNotSentReplayAttempt && notSentRetry !== undefined
           ? {
               notSentRecovery: {
                 abandonedRequestId: notSentRetry.abandonedRequestId,
@@ -583,7 +637,7 @@ export async function requestControllerCommand(
           prompt,
           prompt_hash: promptHash,
           repair_attempt: attempt,
-          ...(attempt === 0 && notSentRetry !== undefined
+        ...(isNotSentReplayAttempt && notSentRetry !== undefined
             ? {
                 retry_of_request_id: notSentRetry.abandonedRequestId,
                 recovery_prompt_hash: notSentRetry.promptHash,
@@ -669,8 +723,9 @@ export async function requestControllerCommand(
         );
         if (
           checkpoint.submissionState === "submitted" &&
-          attempt === 0 &&
-          notSentRetry?.responseFailureRetry === true &&
+          isNotSentReplayAttempt &&
+          notSentRetry !== undefined &&
+          notSentRetry.responseFailureRetry === true &&
           typeof notSentRetry.evidenceHash === "string"
         ) {
           await store.append("controller_response_retry_resent", {

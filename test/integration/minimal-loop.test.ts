@@ -3936,6 +3936,9 @@ test("operator-confirmed not-sent retries the same prompt once keeping the stage
       message:
         "CONTROLLER_OBSERVATION_PENDING_STABLE: exact controller envelope not found",
     });
+    await store.append("notice", {
+      message: "CONTROLLER_RECONCILIATION_COMPLETED_AFTER_NOT_SENT_CONFIRMATION",
+    });
     await store.snapshot();
   } finally {
     await diagnosticLease.release();

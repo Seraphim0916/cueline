@@ -754,6 +754,19 @@ async function driveControllerLoop(
       state.notSentRecovery.retryRequestId === null
         ? state.notSentRecovery
         : undefined;
+    const confirmedNotSentStateTurn =
+      confirmedNotSentRetry === undefined
+        ? undefined
+        : [
+            ...(state.pendingControllerTurns ?? []),
+            ...(state.abandonedControllerTurns ?? []),
+          ].find(
+            (turn) =>
+              turn.requestId === confirmedNotSentRetry.abandonedRequestId &&
+              turn.round === confirmedNotSentRetry.round &&
+              turn.promptHash === confirmedNotSentRetry.promptHash,
+          );
+    const confirmedNotSentPrompt = confirmedNotSentStateTurn?.prompt;
     const notSentRetry =
       exactResponseRetry !== undefined
         ? {
@@ -765,6 +778,9 @@ async function driveControllerLoop(
         ? undefined
         : {
             ...confirmedNotSentRetry,
+            ...(confirmedNotSentPrompt === undefined
+              ? {}
+              : { prompt: confirmedNotSentPrompt }),
             ...(state.postFixRetryReauthorization?.status === "authorized" &&
             state.postFixRetryReauthorization.requestId ===
               confirmedNotSentRetry.abandonedRequestId
