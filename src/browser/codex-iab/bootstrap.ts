@@ -23,6 +23,7 @@ export interface PageChatState {
     message: "Message delivery timed out. Please try again.";
     retryActionAvailable: boolean;
   } | null;
+  deliveryFailureFoundBy?: "assistant_message" | "conversation_turn" | null;
   responseFailure?: {
     code: "CHATGPT_THINKING_FAILED";
     message: "Thinking failed";
@@ -316,6 +317,10 @@ export async function readPageChatState(
     const lastConversationTurnText = normalizeMessageText(
       visibleMessageText(conversationTurns.at(-1)),
     );
+    const deliveryTimeoutInLastConversationTurn =
+      /^(?:ChatGPT said:\s*)?Message delivery timed out\. Please try again\.(?:\s+Retry)?$/i.test(
+        lastConversationTurnText,
+      );
     const detachedThinkingFailure =
       /^(?:ChatGPT said:\s*)?(?:Thinking failed|Stopped thinking)$/i.test(
         lastConversationTurnText,
@@ -359,6 +364,12 @@ export async function readPageChatState(
             retryActionAvailable: false as const,
           }
         : null;
+    const deliveryFailureFoundBy =
+      deliveryFailure === null
+        ? null
+        : deliveryTimeoutInLastConversationTurn
+          ? ("conversation_turn" as const)
+          : ("assistant_message" as const);
     const responseFailureFoundBy = thinkingFailureDetected
       ? detachedThinkingFailure
         ? ("conversation_turn" as const)
@@ -441,6 +452,7 @@ export async function readPageChatState(
         requestMessageScanComplete:
           exactControllerIdentity !== undefined || normalizedExpectedPrompt !== "",
         deliveryFailure,
+        deliveryFailureFoundBy,
         responseFailure,
         responseFailureFoundBy,
       };

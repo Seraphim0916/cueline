@@ -2023,8 +2023,14 @@ class CodexIabAdapter implements BrowserAdapter {
       (hasReliablePostClickUserTurn &&
         state.responseFailureFoundBy === "conversation_turn") ||
       (hasReliablePostClickUserTurn && !branchLeafMismatchDetected);
+      const exactDeliveryTimeoutRetrySurface =
+        state.deliveryFailure?.code === CHATGPT_DELIVERY_TIMEOUT_CODE &&
+        state.deliveryFailure.message === CHATGPT_DELIVERY_TIMEOUT_MESSAGE &&
+        state.deliveryFailure.retryActionAvailable === true &&
+        state.deliveryFailureFoundBy === "conversation_turn";
       const deliveryFailureRequestCorrelated =
         currentRequestCorrelated ||
+        (hasReliablePostClickUserTurn && exactDeliveryTimeoutRetrySurface) ||
         (input.manualSendConfirmed === true && hasReliablePostClickUserTurn);
 
       const deliveryFailureCorrelated =

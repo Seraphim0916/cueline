@@ -1831,6 +1831,10 @@ test("page chat state recognizes delivery timeout only with one visible Retry in
       "Message delivery timed out. Please try again. Retry",
     ),
   ];
+  const conversationTurns = [{
+    innerText: "Message delivery timed out. Please try again.\nRetry",
+    textContent: "Message delivery timed out. Please try again. Retry",
+  }];
   const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
   const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
   const styleDescriptor = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
@@ -1842,6 +1846,9 @@ test("page chat state recognizes delivery timeout only with one visible Retry in
         if (selector === "[data-message-author-role]") return messages;
         if (selector === "[data-message-model-slug]") {
           return [messages[0], messages[2]];
+        }
+        if (selector === 'section[data-testid^="conversation-turn-"]') {
+          return conversationTurns;
         }
         return [];
       },
@@ -1875,6 +1882,7 @@ test("page chat state recognizes delivery timeout only with one visible Retry in
       message: "Message delivery timed out. Please try again.",
       retryActionAvailable: true,
     });
+    assert.equal(state.deliveryFailureFoundBy, "conversation_turn");
 
     scopedButtons = [retryButton, { ...retryButton }];
     const ambiguous = await readPageChatState(tab, expectedIdentity);
@@ -3996,6 +4004,7 @@ test("submitted-turn recovery classifies ChatGPT delivery timeout without clicki
         message: "Message delivery timed out. Please try again.",
         retryActionAvailable: true,
       },
+      deliveryFailureFoundBy: "conversation_turn",
     }],
     composerStates: [{
       state: "empty",
@@ -4031,6 +4040,70 @@ test("submitted-turn recovery classifies ChatGPT delivery timeout without clicki
   assert.equal(observation.evidence.observedUserMessageCount, 212);
   assert.equal(observation.evidence.assistantMessageCount, 4);
   assert.equal(observation.evidence.lastMessageRole, "assistant");
+  assert.equal(fixture.deliveryRetryClicks(), 0);
+  assert.equal(fixture.sendSubmissions(), 0);
+  assert.deepEqual(fixture.composer.fills, []);
+});
+
+test("submitted-turn recovery correlates exact delivery timeout when assistant count stays at baseline", async () => {
+  const conversationUrl = "https://chatgpt.com/c/delivery-timeout-stable-assistant-count";
+  const runId = "run_delivery_timeout_stable_assistant_count";
+  const requestId = "msg_delivery_timeout_stable_assistant_count";
+  const fixture = fakeBrowser({
+    initialUrl: conversationUrl,
+    initialModel: "Pro",
+    hydratedComposer: true,
+    cuaAvailable: true,
+    states: [{
+      isAnswering: false,
+      assistantText: "Message delivery timed out. Please try again.\nRetry",
+      assistantMessageCount: 3,
+      userMessageCount: 54,
+      lastUserText: "Pasted text(327).txt Document",
+      lastMessageRole: "assistant",
+      requestMessageFound: false,
+      requestMessageFoundBy: null,
+      requestMessageScanComplete: true,
+      deliveryFailure: {
+        code: "CHATGPT_MESSAGE_DELIVERY_TIMEOUT",
+        message: "Message delivery timed out. Please try again.",
+        retryActionAvailable: true,
+      },
+      deliveryFailureFoundBy: "conversation_turn",
+    }],
+    composerStates: [{
+      state: "empty",
+      inlineTextLength: 0,
+      attachmentCount: 0,
+      pastedTextAttachmentPresent: false,
+      sendButtonEnabled: false,
+    }],
+  });
+  const adapter = createCodexIabAdapter({
+    browser: fixture.browser,
+    conversationUrl,
+    timeoutMs: 20,
+    pollIntervalMs: 1,
+    stableMs: 0,
+  });
+
+  const observation = await adapter.observeSubmittedTurn!({
+    runId,
+    round: 56,
+    requestId,
+    prompt: "round 56 attachment prompt",
+    attachmentPromptExpected: true,
+    durableSubmittedCheckpoint: true,
+    manualSendConfirmed: false,
+    baselineUserMessageCount: 53,
+    baselineAssistantMessageCount: 3,
+  });
+
+  assert.equal(observation.status, "delivery_failed");
+  assert.equal(observation.evidence.requestMessageFound, false);
+  assert.equal(observation.evidence.observedUserMessageCount, 54);
+  assert.equal(observation.evidence.assistantMessageCount, 3);
+  assert.equal(observation.evidence.deliveryFailure?.retryActionAvailable, true);
   assert.equal(fixture.deliveryRetryClicks(), 0);
   assert.equal(fixture.sendSubmissions(), 0);
   assert.deepEqual(fixture.composer.fills, []);
