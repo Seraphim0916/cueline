@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.5 - 2026-08-16
+
+### Fixed
+
+- A failed post-fix retry after an unreadable post-submit state now reconciles through a dedicated reconciliation-waiting phase: a fresh read-only observation must prove the retry was definitely not sent before any second Send is authorized, and insufficient fresh evidence keeps the turn frozen instead of guessing.
+- Zero-send retry reconciliation is now bounded, and a not-sent attachment retry uses the semantic send locator before falling back to coordinate clicking.
+- Retry evidence is now preserved across heartbeat persistence.
+- An observed empty composer now counts as not-sent recovery proof for the exact post-fix retry observation candidate.
+- Submitted-turn recovery now correlates an exact ChatGPT delivery-timeout envelope when DOM virtualization keeps the assistant count at baseline, instead of leaving the turn pending.
+
+### Verification
+
+- `npm run typecheck` and the full `npm test` suite pass.
+- `npm run release:check` reports no findings.
+
 ## 0.7.4 - 2026-08-10
 
 ### Added

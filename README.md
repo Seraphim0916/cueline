@@ -26,21 +26,19 @@ The web page never touches your machine and has no local tools. It only emits on
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.7.4
+## Latest release: 0.7.5
 
-- Adds a Claude Code Desktop host lane over the same CueLine controller: packaged
-  lane/mailbox commands, a bundled host skill, atomic request claiming, durable
-  action phases, and fail-closed recovery when a browser action's outcome is unknown.
-- Separates caller `advise` from claimed `work`. The MCP server now owns work
-  leases, heartbeats, completed-progress deadlines, absolute lifetime limits,
-  terminal cleanup, and one stable caller identity per session.
-- Gives the Claude Desktop lane a 120-second composer-ready window while keeping
-  the shared default at 30 seconds. Composer fills use one absolute deadline and
-  replace the unique live composer instead of appending stale text.
-- Verified by typecheck, 877/877 tests, and a real Claude Code Desktop → ChatGPT
-  Pro run that completed with an empty request/inflight/response mailbox.
+- Hardens post-fix retry reconciliation: after an unreadable post-submit state,
+  a dedicated reconciliation phase demands fresh read-only not-sent proof before
+  any second Send, and stays safely frozen when evidence is insufficient.
+- Bounds zero-send retry reconciliation, and not-sent attachment retries prefer
+  the semantic send control before the coordinate fallback.
+- Preserves retry evidence across heartbeat persistence, and accepts an observed
+  empty composer as not-sent recovery proof for the exact retry candidate.
+- Correlates exact delivery-timeout envelopes during submitted-turn recovery
+  when DOM virtualization keeps the assistant count at baseline.
 
-Read the full [changelog](CHANGELOG.md#074---2026-08-10) or the versioned [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4).
+Read the full [changelog](CHANGELOG.md#075---2026-08-16) or the versioned [v0.7.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5).
 
 ## How a run actually goes
 
@@ -83,15 +81,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.7.4
+npm install -g cueline@0.7.5
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4), which also carries its `.sha256` checksum:
+As a fallback, install the packaged tarball from the [v0.7.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.4/cueline-0.7.4.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.5/cueline-0.7.5.tgz
 cueline install
 cueline doctor
 ```
@@ -267,7 +265,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.7.4
+CueLine 0.7.5
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

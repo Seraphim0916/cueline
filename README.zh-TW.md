@@ -26,14 +26,14 @@
 
 CueLine 是獨立實作，**沒有任何 runtime npm 相依套件**，也不是 Omnilane 的包裝層。
 
-## 最新版本：0.7.4
+## 最新版本：0.7.5
 
-- 新增 Claude Code Desktop host 車道，與 Codex 車道共用同一套 CueLine 主控核心；套件內含 lane/mailbox 指令與 host skill，信箱採原子認領、持久化動作階段，瀏覽器動作結果不明時會 fail-closed 停住。
-- 明確分開 caller `advise` 與需認領的 `work`。MCP server 現在持有 work lease、heartbeat、完成進度期限、絕對生命週期、終態清理，以及每個 session 穩定的 caller identity。
-- Claude Desktop 車道的 composer-ready 等待時間為 120 秒，共用預設仍是 30 秒。輸入框填寫共用單一絕對期限，並直接取代唯一存活的 composer 內容，不會接在失焦後的舊文字後面。
-- 已通過 typecheck、877/877 測試，以及一次真實 Claude Code Desktop → ChatGPT Pro 執行；完成後 request/inflight/response 信箱皆為空。
+- 強化修復後重試（post-fix retry）的對帳：送出後狀態不可讀時，進入專屬對帳階段，必須取得新的唯讀「未送出」證據才允許第二次 Send；證據不足就安全維持凍結。
+- zero-send 重試對帳有界化；未送出附件的重試優先使用語意 send 控制項，之後才退回座標點擊。
+- 重試證據跨 heartbeat 持久化保留；觀測到空的 composer 現在可作為該筆重試候選的未送出恢復證據。
+- DOM 虛擬化讓 assistant 訊息數停在基準值時，submitted-turn 恢復現在會對上精確的 delivery-timeout 封包，不再停在 pending。
 
-完整內容請看 [changelog](CHANGELOG.md#074---2026-08-10) 或版本化的 [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4)。
+完整內容請看 [changelog](CHANGELOG.md#075---2026-08-16) 或版本化的 [v0.7.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5)。
 
 ## 一次執行實際上怎麼跑
 
@@ -74,15 +74,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.7.4
+npm install -g cueline@0.7.5
 cueline install
 cueline doctor
 ```
 
-作為備援，也可以安裝 [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
+作為備援，也可以安裝 [v0.7.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5) 上的打包 tarball，該 release 同時附上它的 `.sha256` 校驗碼：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.4/cueline-0.7.4.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.5/cueline-0.7.5.tgz
 cueline install
 cueline doctor
 ```
@@ -236,7 +236,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.7.4
+CueLine 0.7.5
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

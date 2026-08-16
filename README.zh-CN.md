@@ -26,13 +26,14 @@
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 的包装层。
 
-## 最新版本：0.7.4
+## 最新版本：0.7.5
 
-- 新增 run-scoped ChatGPT Pin 管理，以及操作端确认的对话上下文耗尽轮换；无需放弃原 run，也不会干扰并发对话。
+- 强化修复后重试（post-fix retry）的对账：提交后状态不可读时，进入专属对账阶段，必须取得新的只读「未发送」证据才允许第二次 Send；证据不足就安全保持冻结。
+- zero-send 重试对账有界化；未发送附件的重试优先使用语义 send 控件，之后才退回坐标点击。
+- 重试证据跨 heartbeat 持久化保留；观测到空的 composer 现在可作为该重试候选的未发送恢复证据。
+- DOM 虚拟化让 assistant 消息数停在基准值时，submitted-turn 恢复现在会对上精确的 delivery-timeout 信封，不再停在 pending。
 
-- 提交后的观测不会再卡在含义不明的 `pending`：当用户消息数以 `baseline + 1` 对上、但可读到的 assistant 分支叶节点仍挂着旧 round 的信封时，该情况现在明确命名为 `branch_leaf_mismatch`，并回报观测到的 run、round 与 request id；随后以只读方式扫描一次 accessibility snapshot 寻找该 round 的精确信封——找到才接收为控制响应，找不到就保持冻结。两条路径都不会点击 ChatGPT 的分支控件，也不会新建 round；770/770 测试通过。
-
-完整内容请查看 [changelog](CHANGELOG.md#073---2026-07-30) 或版本化的 [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4)。
+完整内容请查看 [changelog](CHANGELOG.md#075---2026-08-16) 或版本化的 [v0.7.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5)。
 
 ## 一次运行实际是怎么走的
 
@@ -73,15 +74,15 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.7.4
+npm install -g cueline@0.7.5
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.7.4 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.4) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为后备，也可以安装 [v0.7.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.4/cueline-0.7.4.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.5/cueline-0.7.5.tgz
 cueline install
 cueline doctor
 ```
@@ -194,7 +195,7 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.7.4
+CueLine 0.7.5
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
