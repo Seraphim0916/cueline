@@ -89,6 +89,23 @@ cueline doctor
 
 `cueline install`이 만드는 심볼릭 링크는 하나뿐입니다. 번들된 스킬을 `$CODEX_HOME/skills/cueline`(기본값 `~/.codex/skills/cueline`)에 연결합니다. 자신이 소유하지 않은 경로는 덮어쓰기를 거부하고, 두 번 실행해도 아무것도 달라지지 않습니다. `cueline uninstall`은 그 링크만 제거하며, 그 자리에 다른 파일이 있으면 지우지 않고 보존합니다.
 
+### MCP server
+
+줄바꿈으로 구분되는 stdio로 CueLine을 시작하도록 MCP client를 설정합니다:
+
+```json
+{
+  "mcpServers": {
+    "cueline": {
+      "command": "cueline",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+이 제로 런타임 의존성 server는 MCP `2025-11-25`를 구현하며 start, continue, 민감 정보가 제거된 status/doctor/list, 그리고 펜스가 적용된 caller claim/start/heartbeat/progress 도구를 제공합니다. 원본 대화 기록은 절대 반환하지 않습니다. 해당 도구 호출이 `executor: "process"`와 `allowProcessExecution: true`를 모두 설정하지 않는 한 프로세스 실행은 꺼진 상태로 유지됩니다. 처음 성공한 caller 도구 호출이 이 stdio 세션을 안정적이고 명시적인 `callerId`에 결속하며, 이후 호출은 매번 정확한 claim ID와 펜싱 token을 제시해야 합니다. 브라우저를 진행시키는 호출에는 server 호스트가 CueLine 내장 Browser binding을 주입해야 합니다. 그것이 없는 일반 하위 프로세스는 `IAB_BROWSER_MISSING`을 반환하지만, 영속화된 start/status/doctor/list와 caller 펜싱은 계속 사용할 수 있습니다. 프로토콜을 넘는 것은 JSON-safe API 옵션뿐이며, Browser·환경·시계·중단 binding은 항상 호스트가 주입합니다.
+
 ### 소스에서 설치하기
 
 ```bash
@@ -110,6 +127,22 @@ cueline doctor
 4. 반환된 `runId`를 보관하세요. 중단된 실행을 이어서 진행하는 열쇠입니다.
 
 기본 제공 `cueline` 스킬은 Codex 자체의 Node 런타임에서 이 패키지를 구동합니다. 내장 브라우저 객체가 바로 그곳에 있기 때문입니다. 옆에서 따로 띄운 평범한 `node` 프로세스는 그것을 물려받지 못합니다.
+
+Claude Code Desktop도 패키지에 포함된 파일 메일박스 바이너리를 통해 같은 controller를 호스팅할 수 있습니다. [Claude Code Desktop에서 CueLine 구동하기](docs/claude-desktop-host.md)를 참고하세요.
+
+### Claude Code Desktop host
+
+npm 패키지에는 `cueline-host` skill과 두 개의 명령이 포함되어 있습니다:
+
+```bash
+export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
+cueline-claude-desktop-lane status
+cueline-claude-desktop-lane daemon "<task>"
+```
+
+위와 같이 CueLine MCP server를 설정한 다음, Claude Code Desktop의 shell 도구를 **Run in background** 모드로 하여 daemon을 실행합니다. shell의 `&`, `nohup`, `disown`을 추가하지 마세요. 백그라운드 작업은 Desktop harness가 관리합니다. host skill은 한 번에 하나의 메일박스 요청만 인수하고, 브라우저 동작을 정확히 한 번만 수행하며, 그 원본 결과를 `cueline-claude-desktop-mailbox`에 게시합니다. status가 동작 결과를 알 수 없다고 보고하면 동작을 재시도하지 말고 영속화된 lane 증거를 확인하세요.
+
+전체 설정, 요청 방법, 단계 프로토콜, 복구 규칙: [Claude Code Desktop에서 CueLine 구동하기](docs/claude-desktop-host.md).
 
 ## 코드에서 구동하기
 
@@ -176,6 +209,10 @@ if (result.status === "complete") {
 Codex 런타임에서는 `cueline api path`가 출력하는 절대 경로 모듈을 import하세요. 그것이 설치한 패키지의 빌드된 API입니다.
 
 `startCueLineRun`은 지속 run을 만들고 `ready`만 반환합니다. `runCueLine`은 생성 후 지속 controller 관측 대기, caller 인계 또는 종료 상태까지 진행합니다. owner가 없는 `controller_response_pending`에 정상 전송된 턴이 정확히 하나이고 `safeNextAction: observe`가 표시되면 같은 Pro 응답을 읽기 전용으로 관측하기 위한 대기입니다. 잠시 뒤 계속하고 재전송하지 마세요. `safeNextAction: reconcile`은 모호하거나 수동 전송되었거나 보류 턴이 여러 개인 경우에 사용합니다. owner가 없는 `caller_jobs_pending`은 정상적인 로컬 인계이며 orphan이나 ChatGPT 대기가 아닙니다. CLI의 `run status`는 인계에 필요한 metadata만 출력하며 task 본문, caller identity, task hash, workdir, runtime owner ID를 포함하지 않습니다. 정식 claim 뒤에만 API가 정확한 task와 workdir를 승인된 caller에게 반환합니다.
+
+### ChatGPT controller 대화 고정
+
+run의 ChatGPT Pro controller 대화가 `/c/<conversation-id>` URL로 영속 결속되면, CueLine은 해당 대화가 웹 사이드바의 Pinned 섹션에 나타나도록 자동으로 보장합니다. 이 동작은 멱등입니다. 사이드바 메뉴에 이미 있는 `Unpin chat` 항목이 대화가 이미 고정되어 있다는 증명이며, 새로운 Pin 클릭도 같은 증명을 만들어야 합니다. 고정 상태는 run 단위이므로 병렬 run은 각자 자기 대화를 독립적으로 고정합니다. CueLine은 완료된 대화의 고정을 자동으로 해제하지 않으며, 수동으로 고정한 채팅도 건드리지 않습니다.
 
 ### 대화 컨텍스트 소진 시 전환
 

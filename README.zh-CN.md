@@ -89,6 +89,23 @@ cueline doctor
 
 `cueline install` 只创建一个软链接：把内置的 skill 接到 `$CODEX_HOME/skills/cueline`（默认 `~/.codex/skills/cueline`）。它拒绝覆盖不属于自己的路径，重复执行也不会产生副作用。`cueline uninstall` 只移除那一个链接；若该位置换成了别人的文件，它会保留而不删除。
 
+### MCP server
+
+配置 MCP client，通过换行分隔的 stdio 启动 CueLine：
+
+```json
+{
+  "mcpServers": {
+    "cueline": {
+      "command": "cueline",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+这个零运行时依赖的 server 实现 MCP `2025-11-25`，提供 start、continue、脱敏的 status/doctor/list，以及带围栏的 caller claim/start/heartbeat/progress 工具。它绝不返回原始转录。除非该次工具调用同时设置 `executor: "process"` 与 `allowProcessExecution: true`，否则进程执行保持关闭；第一次成功的 caller 工具调用会把这条 stdio 会话绑定到一个稳定且明确的 `callerId`，之后每次都要携带精确的 claim ID 与围栏 token。会推进浏览器的调用需要 server 宿主注入 CueLine 内置的 Browser binding；没有它的普通子进程会返回 `IAB_BROWSER_MISSING`，但持久化的 start/status/doctor/list 与 caller 围栏仍然可用。只有 JSON-safe 的 API 选项会跨越协议；Browser、环境、时钟与中止 binding 一律由宿主注入。
+
 ### 从源码安装
 
 ```bash
@@ -110,6 +127,22 @@ cueline doctor
 4. 保留返回的 `runId`。被中断的运行要续跑，就靠它。
 
 内置的 `cueline` skill 是从 Codex 自身的 Node runtime 驱动这个包的——内置浏览器对象就存在于那里。另外单独启动的 `node` 进程不会继承它。
+
+Claude Code Desktop 也可以通过打包的文件邮箱二进制程序承载同一个 controller。参见 [从 Claude Code Desktop 驱动 CueLine](docs/claude-desktop-host.md)。
+
+### Claude Code Desktop host
+
+npm 包捆绑了 `cueline-host` skill 和两个命令：
+
+```bash
+export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
+cueline-claude-desktop-lane status
+cueline-claude-desktop-lane daemon "<task>"
+```
+
+按上文配置 CueLine MCP server，然后用 Claude Code Desktop 的 shell 工具以 **Run in background** 模式运行 daemon。不要添加 shell 的 `&`、`nohup` 或 `disown`；后台任务由 Desktop harness 管理。host skill 一次只认领一个邮箱请求，只执行一次浏览器操作，并把原始结果发布到 `cueline-claude-desktop-mailbox`。如果 status 报告操作结果未知，请检查持久化的 lane 证据，而不是重试该操作。
+
+完整的设置、请求方式、阶段协议与恢复规则：[从 Claude Code Desktop 驱动 CueLine](docs/claude-desktop-host.md)。
 
 ## 从代码驱动
 
@@ -178,6 +211,10 @@ if (result.status === "complete") {
 在 Codex 的 runtime 里，import `cueline api path` 打印出的那个绝对路径模块——那就是你安装的那份包构建出来的 API。
 
 `startCueLineRun` 只创建持久 run 并返回 `ready`；`runCueLine` 创建并推进到持久 controller 观测暂停、caller 交接或终态。缺少 owner 的 `controller_response_pending` 若只有一个正常发送的回合且显示 `safeNextAction: observe`，表示同一个 Pro 回复仍待只读观测；稍后继续即可且不得重发。`safeNextAction: reconcile` 只用于模糊、人工发送或多个待对账回合。缺少 owner 的 `caller_jobs_pending` 是正常本地交接，并非 orphan，也不是仍在等 ChatGPT。CLI 的 `run status` 只输出交接所需元数据，不包含 task 正文、caller 身份、task hash、workdir 或 runtime owner ID；正式 claim 后，API 才把精确 task 与 workdir 交给获授权的 caller。
+
+### 置顶的 ChatGPT 主控会话
+
+当某场 run 的 ChatGPT Pro 主控会话以 `/c/<conversation-id>` URL 持久绑定后，CueLine 会自动确保该会话出现在网页侧边栏的 Pinned 区。这个操作是幂等的：侧边栏菜单已有 `Unpin chat` 项即证明会话已置顶，新的 Pin 点击也必须产生同样的证明。置顶状态以 run 为单位，并行的 run 会各自独立置顶自己的会话。CueLine 不会自动取消已完成会话的置顶，也不会动手动置顶的聊天。
 
 ### 对话上下文耗尽时轮换
 

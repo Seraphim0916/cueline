@@ -89,6 +89,23 @@ cueline doctor
 
 `cueline install` 只建立一個符號連結：把內建的 skill 接到 `$CODEX_HOME/skills/cueline`（預設 `~/.codex/skills/cueline`）。它拒絕覆寫不屬於自己的路徑，重複執行也不會有副作用。`cueline uninstall` 只移除那一個連結；若該位置換成了別人的檔案，它會保留而不刪除。
 
+### MCP server
+
+設定 MCP client 以換行分隔的 stdio 啟動 CueLine：
+
+```json
+{
+  "mcpServers": {
+    "cueline": {
+      "command": "cueline",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+這個零執行期相依的 server 實作 MCP `2025-11-25`，提供 start、continue、去敏感化的 status/doctor/list，以及有圍欄的 caller claim/start/heartbeat/progress 工具。它絕不回傳原始逐字稿。除非該次工具呼叫同時設定 `executor: "process"` 與 `allowProcessExecution: true`，否則行程執行保持關閉；第一次成功的 caller 工具呼叫會把這條 stdio session 綁定到一個穩定且明確的 `callerId`，之後每次都要帶精確的 claim ID 與圍欄 token。會推進瀏覽器的呼叫需要 server 宿主注入 CueLine 內建的 Browser binding；沒有它的單純子行程會回傳 `IAB_BROWSER_MISSING`，但持久化的 start/status/doctor/list 與 caller 圍欄仍然可用。只有 JSON-safe 的 API 選項會跨越協定；Browser、環境、時鐘與中止 binding 一律由宿主注入。
+
 ### 從原始碼安裝
 
 ```bash
@@ -219,6 +236,10 @@ ChatGPT 顯示精確的 `Message delivery timed out. Please try again.` assistan
 在 Codex 的 runtime 裡，import `cueline api path` 印出的那個絕對路徑模組——那就是你安裝的那份套件建置出來的 API。
 
 `startCueLineRun` 只建立持久 run 並回傳 `ready`；`runCueLine` 會建立並推進到持久 controller 觀測暫停、caller 交接或終態。續跑前先執行 `cueline run status <run-id> --json`。單一正常送出、非人工、具精確 URL、無 job／pending command／取消的 stale caller observer 可被 fencing 後唯讀恢復；其他 stale 狀態仍須正式接管。`caller_work_pending`、`caller_work_claimed`、`caller_work_running` 分別只允許 `claim_caller_work`、`start_caller_work`、`continue_caller_work`，主控的 `dispatch` 本身不代表本機工作已開始。CLI 的 `run status` 只輸出交接所需 metadata，不包含 task 內文、caller 身分、task hash、workdir 或 runtime owner ID；完成正式 claim 後，API 才會把精確 task 與 workdir 交給獲授權的 caller。
+
+### 釘選的 ChatGPT 主控對話
+
+當某場 run 的 ChatGPT Pro 主控對話以 `/c/<conversation-id>` URL 持久綁定後，CueLine 會自動確保該對話出現在網頁側邊欄的 Pinned 區。這個操作是冪等的：側邊欄選單已有 `Unpin chat` 項目即證明對話已釘選，新的 Pin 點擊也必須產生同樣的證明。釘選狀態以 run 為單位，平行的 run 會各自獨立釘選自己的對話。CueLine 不會自動解除已完成對話的釘選，也不會動到手動釘選的聊天。
 
 ### 對話脈絡耗盡時輪替
 
