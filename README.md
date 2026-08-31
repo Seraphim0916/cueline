@@ -81,7 +81,7 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.7.5
+npm install -g cueline@0.7.6
 cueline install
 cueline doctor
 ```
@@ -89,7 +89,7 @@ cueline doctor
 As a fallback, install the packaged tarball from the [v0.7.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5), which also carries its `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.5/cueline-0.7.5.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.6/cueline-0.7.6.tgz
 cueline install
 cueline doctor
 ```
@@ -265,7 +265,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.7.5
+CueLine 0.7.6
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid

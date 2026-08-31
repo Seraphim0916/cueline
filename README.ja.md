@@ -74,7 +74,7 @@ ChatGPT Pro のサブスクリプションと、選択された Pro モデルは
 npm レジストリからインストールします。
 
 ```bash
-npm install -g cueline@0.7.5
+npm install -g cueline@0.7.6
 cueline install
 cueline doctor
 ```
@@ -82,7 +82,7 @@ cueline doctor
 フォールバックとして、[v0.7.5 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.5/cueline-0.7.5.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.6/cueline-0.7.6.tgz
 cueline install
 cueline doctor
 ```
@@ -230,7 +230,7 @@ CLI はブラウザーを駆動しません。状態を書き込むコマンド�
 
 ```console
 $ cueline doctor
-CueLine 0.7.5
+CueLine 0.7.6
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
