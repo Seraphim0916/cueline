@@ -22,7 +22,7 @@ import { join } from "node:path";
 
 import { createClaudeDesktopIabBrowser } from "../src/browser/claude-desktop/iab-shim.js";
 import { createFileBridgeTools } from "../src/browser/claude-desktop/file-bridge.js";
-import { CLAUDE_DESKTOP_IAB_TIMING_OPTIONS } from "../src/browser/claude-desktop/lane-options.js";
+import { resolveClaudeDesktopIabTimingOptions } from "../src/browser/claude-desktop/lane-options.js";
 import { waitForCueLineLaneContinuation } from "../src/browser/claude-desktop/lane-status-guard.js";
 import { createNodeFileBridgeFs } from "../src/browser/claude-desktop/node-file-bridge-fs.js";
 import type { CueLineResult } from "../src/core/controller-types.js";
@@ -85,7 +85,7 @@ if (command === "status") {
   // browser, create the run before any send so the durable runId survives a
   // first-send failure, then advance one step at a time.
   const browser = createCodexIabAdapter({
-    ...CLAUDE_DESKTOP_IAB_TIMING_OPTIONS,
+    ...resolveClaudeDesktopIabTimingOptions(),
     browser: createClaudeDesktopIabBrowser({
       tools: createFileBridgeTools({ root: bridgeRoot, fs: createNodeFileBridgeFs() }),
     }),

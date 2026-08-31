@@ -53,6 +53,13 @@ for repeated stability reads. Browser host operations retain a 180-second
 ceiling; shared defaults remain 30 seconds for composer readiness and 10 seconds
 per Browser operation.
 
+Set `CUELINE_COMPOSER_READY_TIMEOUT_MS` or
+`CUELINE_BROWSER_OPERATION_TIMEOUT_MS` to override those limits independently;
+their respective defaults are `120000` and `180000` milliseconds. Values must be
+decimal positive-integer strings from `1000` through `3600000`, inclusive; an
+invalid set value fails closed with an error rather than falling back. Turn-based
+LLM hosts may need wider limits because probing, clicking, and typing span turns.
+
 Launch `cueline-claude-desktop-lane daemon ...` with Claude Code Desktop's
 shell-tool **Run in background** mode. Do not combine shell `&`, `disown`, or
 `nohup` with harness backgrounding, and never restart solely because the launch

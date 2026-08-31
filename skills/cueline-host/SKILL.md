@@ -100,6 +100,13 @@ ceiling. The previous real Claude Desktop run needed
 about 41 seconds for that probe, so the helper reduces overhead but does not by
 itself satisfy the previous 30-second window; the lane override removes that blocker.
 
+Set `CUELINE_COMPOSER_READY_TIMEOUT_MS` or
+`CUELINE_BROWSER_OPERATION_TIMEOUT_MS` to override those limits independently;
+their respective defaults are `120000` and `180000` milliseconds. Values must be
+decimal positive-integer strings from `1000` through `3600000`, inclusive; an
+invalid set value fails closed with an error rather than falling back. Turn-based
+LLM hosts may need wider limits because probing, clicking, and typing span turns.
+
 Manual phase handling below is recovery documentation only.
 
 Repeat until stopped:
