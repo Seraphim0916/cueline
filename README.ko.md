@@ -113,11 +113,11 @@ git clone https://github.com/Seraphim0916/cueline.git
 cd cueline
 npm ci
 npm run build
-./install.sh      # ~/.codex/skills/cueline 과 ~/.local/bin/cueline 심볼릭 링크 생성
+./install.sh      # Codex와 Claude Code용 심볼릭 링크 다섯 개 생성
 cueline doctor
 ```
 
-`install.sh`는 이 두 개의 심볼릭 링크만 만듭니다. 자신이 소유하지 않은 경로는 덮어쓰기를 거부하며, `./install.sh --uninstall` 역시 자신이 만든 링크만 제거합니다.
+`install.sh`는 심볼릭 링크 다섯 개만 만듭니다: `~/.codex/skills/cueline`, `~/.claude/skills/cueline-host`(`CLAUDE_CONFIG_DIR`가 설정된 경우 그 아래의 `skills/cueline-host`), `~/.local/bin/cueline`, `~/.local/bin/cueline-claude-desktop-lane`, `~/.local/bin/cueline-claude-desktop-mailbox`입니다. 기본으로 두 플랫폼을 함께 설치하며, 범위를 제한하려면 `--codex-only` 또는 `--claude-only`를 사용합니다. 자신이 소유하지 않은 경로는 덮어쓰기를 거부하며, `./install.sh --uninstall` 역시 선택한 범위에서 자신이 만든 링크만 제거합니다.
 
 그다음 Codex에서:
 

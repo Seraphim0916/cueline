@@ -120,11 +120,11 @@ git clone https://github.com/Seraphim0916/cueline.git
 cd cueline
 npm ci
 npm run build
-./install.sh      # symlinks ~/.codex/skills/cueline and ~/.local/bin/cueline
+./install.sh      # symlinks CueLine for Codex and Claude Code
 cueline doctor
 ```
 
-`install.sh` creates those two symlinks and nothing else; it refuses to overwrite a path it does not own, and `./install.sh --uninstall` removes only its own links.
+`install.sh` creates five symlinks and nothing else: `~/.codex/skills/cueline`, `~/.claude/skills/cueline-host` (or `$CLAUDE_CONFIG_DIR/skills/cueline-host` when set), and `~/.local/bin/cueline`, `~/.local/bin/cueline-claude-desktop-lane`, and `~/.local/bin/cueline-claude-desktop-mailbox`. It installs both platforms by default; pass `--codex-only` or `--claude-only` to limit the scope. It refuses to overwrite a path it does not own, and `./install.sh --uninstall` removes only its own links within the selected scope.
 
 Then, in Codex:
 

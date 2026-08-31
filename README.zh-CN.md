@@ -113,11 +113,11 @@ git clone https://github.com/Seraphim0916/cueline.git
 cd cueline
 npm ci
 npm run build
-./install.sh      # 创建 ~/.codex/skills/cueline 与 ~/.local/bin/cueline 两个软链接
+./install.sh      # 为 Codex 和 Claude Code 创建五个软链接
 cueline doctor
 ```
 
-`install.sh` 只创建这两个软链接，不做别的；它拒绝覆盖不属于自己的路径，而 `./install.sh --uninstall` 也只移除自己创建的链接。
+`install.sh` 只创建五个软链接，不做别的：`~/.codex/skills/cueline`、`~/.claude/skills/cueline-host`（设置 `CLAUDE_CONFIG_DIR` 时改用该目录下的 `skills/cueline-host`），以及 `~/.local/bin/cueline`、`~/.local/bin/cueline-claude-desktop-lane`、`~/.local/bin/cueline-claude-desktop-mailbox`。默认同时安装两个平台；使用 `--codex-only` 或 `--claude-only` 可限制范围。它拒绝覆盖不属于自己的路径，而 `./install.sh --uninstall` 也只会在选定范围移除自己创建的链接。
 
 然后，在 Codex 里：
 

@@ -113,11 +113,11 @@ git clone https://github.com/Seraphim0916/cueline.git
 cd cueline
 npm ci
 npm run build
-./install.sh      # ~/.codex/skills/cueline と ~/.local/bin/cueline のシンボリックリンクを作成
+./install.sh      # Codex と Claude Code 用の 5 つのシンボリックリンクを作成
 cueline doctor
 ```
 
-`install.sh` が作るのはこの 2 つのシンボリックリンクだけです。自分が所有していないパスの上書きは拒否し、`./install.sh --uninstall` も自分が作ったリンクだけを削除します。
+`install.sh` が作るのは 5 つのシンボリックリンクだけです：`~/.codex/skills/cueline`、`~/.claude/skills/cueline-host`（`CLAUDE_CONFIG_DIR` が設定されている場合はその配下の `skills/cueline-host`）、`~/.local/bin/cueline`、`~/.local/bin/cueline-claude-desktop-lane`、`~/.local/bin/cueline-claude-desktop-mailbox`。デフォルトでは両方のプラットフォームをインストールします。範囲を絞るには `--codex-only` または `--claude-only` を使います。自分が所有していないパスの上書きは拒否し、`./install.sh --uninstall` も選択した範囲内で自分が作ったリンクだけを削除します。
 
 次に、Codex で：
 

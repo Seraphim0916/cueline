@@ -11,6 +11,8 @@ CueLine (Node)                      bridge dir                 Claude Code host
   createCodexIabAdapter  (unchanged codex-iab logic)
 ```
 
+For a source checkout, run `./install.sh`. A global npm installation already places all three binaries on `PATH`; for the Claude Code host, link only `cueline-host` into `~/.claude/skills/cueline-host` (or `$CLAUDE_CONFIG_DIR/skills/cueline-host`).
+
 ## Wiring
 
 ```ts
