@@ -2352,27 +2352,41 @@ test("jobs discovers an immutable terminal anchor when the replaceable status fi
   assert.doesNotMatch(result.stdout, /DURABLE_TERMINAL_ANCHOR/);
 });
 
-test("install and uninstall manage the Codex skill link idempotently", async () => {
+test("install and uninstall manage both skill links idempotently", async () => {
   const context = await fixture();
-  const target = path.join(context.home, "codex", "skills", "cueline");
-  const environment = { ...context.environment, CODEX_HOME: path.join(context.home, "codex") };
+  const codexTarget = path.join(context.home, "codex", "skills", "cueline");
+  const claudeTarget = path.join(context.home, "claude", "skills", "cueline-host");
+  const environment = {
+    ...context.environment,
+    CODEX_HOME: path.join(context.home, "codex"),
+    CLAUDE_CONFIG_DIR: path.join(context.home, "claude"),
+  };
 
   for (const attempt of [1, 2]) {
     const installed = invoke(["install"], environment);
     assert.equal(installed.status, 0, `attempt ${attempt}: ${installed.stderr}`);
-    assert.equal(await readlink(target), path.join(packageRoot, "skills", "cueline"));
+    assert.equal(await readlink(codexTarget), path.join(packageRoot, "skills", "cueline"));
+    assert.equal(
+      await readlink(claudeTarget),
+      path.join(packageRoot, "skills", "cueline-host"),
+    );
   }
 
   const removed = invoke(["uninstall"], environment);
   assert.equal(removed.status, 0, removed.stderr);
-  await assert.rejects(readlink(target), { code: "ENOENT" });
+  await assert.rejects(readlink(codexTarget), { code: "ENOENT" });
+  await assert.rejects(readlink(claudeTarget), { code: "ENOENT" });
 });
 
 test("install refuses a foreign skill path and uninstall preserves it", async () => {
   const context = await fixture();
   const codexHome = path.join(context.home, "codex");
   const target = path.join(codexHome, "skills", "cueline");
-  const environment = { ...context.environment, CODEX_HOME: codexHome };
+  const environment = {
+    ...context.environment,
+    CODEX_HOME: codexHome,
+    CLAUDE_CONFIG_DIR: path.join(context.home, "claude"),
+  };
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, "foreign\n", "utf8");
 

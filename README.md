@@ -14,19 +14,28 @@
   <b>English</b> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
 </p>
 
-**CueLine hands the wheel to an open ChatGPT web conversation: it plans the run and calls each next step, while CueLine checks every text command and the current Codex does the permitted local work.**
-
-**Why it exists.** Letting an AI act on your machine usually means handing it unchecked shell access. CueLine removes that trade-off: the web side can only emit text, CueLine validates every command against fail-closed bounds and authorization before anything runs, and each action is recorded.
-
-**In one example.** Open a ChatGPT conversation and ask it to run your test suite or refactor a module. It issues one command per round; CueLine checks each one, enforces resource limits, and only approved work runs locally — no blind `rm -rf`, no runaway loops, and a full run history you can inspect.
-
-The web page never touches your machine and has no local tools. It only emits one text command per round. CueLine decides whether that command is well-formed and belongs to this run. By default, it persists caller jobs for the current Codex: `advise` is a coordination-only handoff, while `work` requires a durable claim and start before any mutation. An explicitly double-authorized process executor can instead run registered local workers. CueLine keeps bounded controller evidence and the full local record.
+CueLine lets one ChatGPT web conversation, using a Pro model, decide the next step while local Codex or Claude Code performs explicitly claimed work.
+It is for developers who want web-model judgment without giving the web page local tools.
+It keeps each run resumable and auditable, and stops instead of guessing when evidence is unclear.
 
 <img alt="CueLine architecture: a ChatGPT web conversation issues one text command per round, CueLine validates and records it, and the current Codex performs the permitted local work." src="docs/assets/cueline-architecture-en.svg" width="100%">
 
 CueLine is a standalone implementation with **no runtime npm dependencies**. It is not a wrapper around Omnilane.
 
-## Latest release: 0.7.5
+## When CueLine is uncertain, it stops
+
+CueLine is fail-closed. If a send may or may not have landed, a response names the wrong run, round, or request, or the active ChatGPT tab is ambiguous, CueLine freezes the run and asks for an explicit `reconcile`. It does not guess and does not automatically resend.
+
+That behavior matters because ChatGPT has no local tools. The controller only returns text instructions; the local Codex or Claude Code side supplies repository evidence, explicitly claims work, and decides what may run locally.
+
+## Latest release: 0.7.6
+
+- `cueline install` now connects both Codex and Claude Code by default through two managed skill symlinks; npm supplies the three CLI binaries. Use `--codex-only` or `--claude-only` to limit the scope; uninstall removes only links CueLine created and rejects foreign paths.
+- Claude Code host-lane readiness and browser-operation windows can be overridden with `CUELINE_COMPOSER_READY_TIMEOUT_MS` and `CUELINE_BROWSER_OPERATION_TIMEOUT_MS`. Defaults are 120000 and 180000 ms; valid values are 1000–3600000, and invalid values raise named errors.
+
+Read the [0.7.6 changelog](CHANGELOG.md#076---2026-08-31).
+
+### 0.7.5 hardening retained
 
 - Hardens post-fix retry reconciliation: after an unreadable post-submit state,
   a dedicated reconciliation phase demands fresh read-only not-sent proof before
@@ -62,6 +71,8 @@ That process route is an allow-list, not a sandbox. A registered worker runs wit
 
 ## Run states
 
+Every run is stored under `~/.cueline/runs` with a complete append-only event timeline. A disconnect, crash, or new local session does not erase the run; resume it by its durable `runId`.
+
 <img alt="CueLine run states: ready, awaiting_controller, awaiting_caller, awaiting_caller_work, complete, blocked, cancelled — and what each one means." src="docs/assets/cueline-states-en.svg" width="100%">
 
 `cueline run status <run-id> --json` reports the durable state plus a `safeNextAction`; `cueline run doctor <run-id> --json` turns the same snapshot into stable finding codes and one safe next step. When anything is ambiguous — a possibly-sent click, an expired started claim, a manual attachment send — CueLine stops and asks for an explicit reconcile instead of resending. The full recovery contract lives in [state and recovery](docs/state-and-recovery.md).
@@ -76,17 +87,21 @@ A ChatGPT Pro subscription and the selected Pro model are two different things. 
 
 ## Quick start
 
+### Codex
+
+The commands below use the default installer, which connects both Codex and Claude Code. To limit installation to Codex, run `cueline install --codex-only` instead.
+
 You need Node.js 22+, Codex with its built-in Browser, and — for the bundled default lane — the `codex` CLI on `PATH`.
 
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.7.6
+npm install -g cueline
 cueline install
 cueline doctor
 ```
 
-As a fallback, install the packaged tarball from the [v0.7.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5), which also carries its `.sha256` checksum:
+As a fallback after the 0.7.6 GitHub package is available, install its versioned tarball and verify the published `.sha256` checksum:
 
 ```bash
 npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.6/cueline-0.7.6.tgz
@@ -94,7 +109,22 @@ cueline install
 cueline doctor
 ```
 
-`cueline install` creates one symlink, the bundled skill at `$CODEX_HOME/skills/cueline` (`~/.codex/skills/cueline` by default). It refuses to replace a path it does not own, and running it twice is a no-op. `cueline uninstall` removes that link and nothing else; a foreign path in its place is preserved, not deleted.
+`cueline install` creates exactly two managed skill symlinks and connects Codex and Claude Code by default. The three CLI binaries come from npm through `package.json`'s `bin` mappings; this command does not create `~/.local/bin` links. Use `--codex-only` or `--claude-only` to limit scope. `cueline uninstall` removes only links CueLine created and refuses to replace or remove a foreign path.
+
+### Claude Code
+
+```bash
+npm install -g cueline
+cueline install --claude-only
+cueline doctor
+export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
+cueline-claude-desktop-lane status
+cueline-claude-desktop-lane daemon "<task>"
+```
+
+Configure the MCP server shown below, then run the daemon from Claude Code Desktop's shell tool in **Run in background** mode. Do not add `&`, `nohup`, or `disown`. Keep the returned `runId` for status, recovery, and continuation.
+
+The default install is `cueline install`, which connects both platforms. Model-driven browser hosts may need wider windows; use `CUELINE_COMPOSER_READY_TIMEOUT_MS` or `CUELINE_BROWSER_OPERATION_TIMEOUT_MS` as described under Configuration.
 
 ### MCP server
 
@@ -255,6 +285,8 @@ CueLine does not guess a 90K/400K soft limit or reuse an API context window as C
 
 ## The CLI
 
+Core commands are `cueline run status`, `run doctor`, `run timeline`, `run verify`, `run export`, `run reconcile`, `run takeover`, and `run cancel`. Use `cueline runs sweep` to clean up orphaned runs, `cueline protocol lint` to validate controller envelopes offline, and `cueline mcp serve` to expose bounded tools over stdio.
+
 The CLI does not drive the browser. Run `cueline help` for every positional argument and option before using a state-changing command.
 
 | Group | Commands | Effect |
@@ -308,6 +340,8 @@ Use `run takeover` only when `run status` reports an exact stale owner. It refus
 
 ## Configuration
 
+For the Claude Code host lane, `CUELINE_COMPOSER_READY_TIMEOUT_MS` and `CUELINE_BROWSER_OPERATION_TIMEOUT_MS` override the 120000 ms and 180000 ms defaults. Each must be an integer from 1000 through 3600000; invalid values raise named errors rather than silently using a default.
+
 `CUELINE_CONFIG` selects a routing file; `CUELINE_HOME` moves local state (default `~/.cueline`).
 
 Caller execution needs no spawned route. When `executor: "process"` and `allowProcessExecution: true` are both selected, the bundled `default` lane holds one candidate, `codex-default`: isolated `codex exec --ignore-user-config` with the task on stdin, `read-only` for `advise`, and `workspace-write` for `work`. To register a different process worker, copy [`config/routing.default.json`](config/routing.default.json), add your candidate, and point `CUELINE_CONFIG` at it.
@@ -349,7 +383,7 @@ npm pack --dry-run
 
 `npm run smoke:fake` exercises the whole controller loop against a fake browser and fake runner, offline. It proves the loop, not the live page — only a real completed turn through the in-app Browser proves that.
 
-## Limits in 0.1
+## Known limits in 0.7.6
 
 Text commands only. One conversation per run. Selecting `Pro` is the only model switch CueLine makes. Automatic long-text-to-attachment conversion is supported, but deliberate file upload, images, Deep Research, Projects, and Apps are not. Caller `work` requires an explicit durable claim/start, executor heartbeats, and executor-reported completed-progress checkpoints for long work; CueLine does not infer progress from LLM text. Process execution requires two explicit authorization fields. No automatic retry or fallback starts work twice. macOS is the primary desktop target and Linux is the CI target; Windows is unverified. The adapter depends on the current ChatGPT web UI, so a UI change surfaces explicitly, never as a fabricated answer.
 

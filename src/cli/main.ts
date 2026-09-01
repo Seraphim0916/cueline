@@ -37,7 +37,7 @@ import { handleHealthCommand } from "./health-commands.js";
 import type { CliIo } from "./io.js";
 import { handleObservationCommand } from "./observation-commands.js";
 import { safeCueLineRunStatus } from "../core/run-status-view.js";
-import { installSkill, uninstallSkill } from "./skill-links.js";
+import { installSkill, type SkillLinkScope, uninstallSkill } from "./skill-links.js";
 
 const processIo: CliIo = {
   stdout: (line) => process.stdout.write(`${line}\n`),
@@ -55,8 +55,8 @@ function help(): string {
     usage(),
     "",
     "commands:",
-    "  install        link the bundled skill into Codex",
-    "  uninstall      remove only the skill link owned by this package",
+    "  install        link bundled skills into Codex and Claude Code; npm supplies binaries",
+    "  uninstall      remove only bundled skill links owned by this package",
     "  doctor         report Node, caller readiness, state home, and process lanes",
     "  self-test      exercise the controller loop offline with temporary state",
     "  upgrade preflight  check upgrade safety without changing state or configuration",
@@ -93,8 +93,8 @@ function help(): string {
     "  version        print the CueLine version",
     "",
     "command syntax:",
-    "  cueline install",
-    "  cueline uninstall",
+    "  cueline install [--codex-only|--claude-only]",
+    "  cueline uninstall [--codex-only|--claude-only]",
     "  cueline doctor [--json]",
     "  cueline self-test [--json]",
     "  cueline upgrade preflight --to <version> [--json]",
@@ -173,6 +173,23 @@ function help(): string {
 function errorMessage(error: unknown): string {
   if (error instanceof CueLineError) return `${error.code}: ${error.message}`;
   return error instanceof Error ? error.message : String(error);
+}
+
+function parseSkillLinkScope(
+  command: "install" | "uninstall",
+  arguments_: readonly string[],
+): SkillLinkScope {
+  const usageMessage = `usage: cueline ${command} [--codex-only|--claude-only]`;
+  if (arguments_.includes("--codex-only") && arguments_.includes("--claude-only")) {
+    throw new CueLineError(
+      "CLI_ARGUMENTS_INVALID",
+      `--codex-only and --claude-only are mutually exclusive; ${usageMessage}`,
+    );
+  }
+  if (arguments_.length === 0) return "all";
+  if (arguments_.length === 1 && arguments_[0] === "--codex-only") return "codex-only";
+  if (arguments_.length === 1 && arguments_[0] === "--claude-only") return "claude-only";
+  throw new CueLineError("CLI_ARGUMENTS_INVALID", usageMessage);
 }
 
 async function mcpServeCommand(environment: NodeJS.ProcessEnv): Promise<number> {
@@ -621,12 +638,12 @@ export async function main(
     if (args[0] === "mcp" && args[1] === "serve" && args.length === 2) {
       return await mcpServeCommand(environment);
     }
-    if (args[0] === "install" && args.length === 1) {
-      io.stdout(await installSkill(environment));
+    if (args[0] === "install") {
+      io.stdout(await installSkill(environment, parseSkillLinkScope("install", args.slice(1))));
       return 0;
     }
-    if (args[0] === "uninstall" && args.length === 1) {
-      io.stdout(await uninstallSkill(environment));
+    if (args[0] === "uninstall") {
+      io.stdout(await uninstallSkill(environment, parseSkillLinkScope("uninstall", args.slice(1))));
       return 0;
     }
     if (args[0] === "self-test") {

@@ -3,6 +3,7 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 WORK=$(mktemp -d /tmp/cueline-npm-package.XXXXXX)
+export npm_config_cache="$WORK/npm-cache"
 EXPECTED_VERSION=$(node -e 'const fs = require("node:fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).version)' "$ROOT/package.json")
 
 fail() {
@@ -20,6 +21,8 @@ npm install --global --prefix "$WORK/prefix" "$WORK/pack/$TARBALL" --ignore-scri
 CLI="$WORK/prefix/bin/cueline"
 CODEX_ROOT="$WORK/home/.codex"
 SKILL_LINK="$CODEX_ROOT/skills/cueline"
+CLAUDE_ROOT="$WORK/home/.claude"
+CLAUDE_SKILL_LINK="$CLAUDE_ROOT/skills/cueline-host"
 TEST_PATH="$WORK/prefix/bin:$WORK/fake-bin:$PATH"
 
 test -x "$CLI" || fail "global CLI missing"
@@ -28,16 +31,23 @@ API_PATH=$(HOME="$WORK/home" CODEX_HOME="$CODEX_ROOT" PATH="$TEST_PATH" "$CLI" a
 test -f "$API_PATH" || fail "api path does not reach packaged API"
 node --input-type=module --eval 'const api = await import(process.argv[1]); if (typeof api.runCueLine !== "function") process.exit(1)' "$API_PATH" || fail "packaged API is not importable"
 
-HOME="$WORK/home" CODEX_HOME="$CODEX_ROOT" PATH="$TEST_PATH" "$CLI" install
+HOME="$WORK/home" CODEX_HOME="$CODEX_ROOT" CLAUDE_CONFIG_DIR="$CLAUDE_ROOT" PATH="$TEST_PATH" "$CLI" install
 test -L "$SKILL_LINK" || fail "skill link missing"
 test -f "$SKILL_LINK/SKILL.md" || fail "skill link does not reach packaged skill"
+test -L "$CLAUDE_SKILL_LINK" || fail "Claude skill link missing"
+test -f "$CLAUDE_SKILL_LINK/SKILL.md" || fail "Claude skill link does not reach packaged skill"
+for binary in cueline cueline-claude-desktop-lane cueline-claude-desktop-mailbox; do
+  test -x "$WORK/prefix/bin/$binary" || fail "npm binary missing: $binary"
+  test ! -e "$WORK/home/.local/bin/$binary" || fail "CLI created unexpected ~/.local/bin link: $binary"
+done
 
 DOCTOR_OUTPUT=$(HOME="$WORK/home" CODEX_HOME="$CODEX_ROOT" PATH="$TEST_PATH" "$CLI" doctor) || fail "doctor command failed"
 printf '%s\n' "$DOCTOR_OUTPUT" | grep -Eq '^status[[:space:]]+ok$' || fail "doctor did not report ok"
 printf '%s\n' "$DOCTOR_OUTPUT" | grep -Eq '^caller_ready[[:space:]]+yes$' || fail "doctor did not report caller readiness"
 printf '%s\n' "$DOCTOR_OUTPUT" | grep -Eq '^process_available_lanes[[:space:]]+1$' || fail "doctor did not report the packaged process lane"
 
-HOME="$WORK/home" CODEX_HOME="$CODEX_ROOT" PATH="$TEST_PATH" "$CLI" uninstall
+HOME="$WORK/home" CODEX_HOME="$CODEX_ROOT" CLAUDE_CONFIG_DIR="$CLAUDE_ROOT" PATH="$TEST_PATH" "$CLI" uninstall
 test ! -e "$SKILL_LINK" && test ! -L "$SKILL_LINK" || fail "skill link survived uninstall"
+test ! -e "$CLAUDE_SKILL_LINK" && test ! -L "$CLAUDE_SKILL_LINK" || fail "Claude skill link survived uninstall"
 
 printf 'PASS npm tarball global install, skill install, doctor, uninstall\n'

@@ -3,7 +3,17 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const skillSource = fileURLToPath(new URL("../../../skills/cueline", import.meta.url));
+const codexSkillSource = fileURLToPath(new URL("../../../skills/cueline", import.meta.url));
+const claudeSkillSource = fileURLToPath(
+  new URL("../../../skills/cueline-host", import.meta.url),
+);
+
+export type SkillLinkScope = "all" | "codex-only" | "claude-only";
+
+interface SkillLink {
+  source: string;
+  target: string;
+}
 
 function codexHome(environment: NodeJS.ProcessEnv): string {
   if (environment.CODEX_HOME) return path.resolve(environment.CODEX_HOME);
@@ -11,8 +21,24 @@ function codexHome(environment: NodeJS.ProcessEnv): string {
   return path.join(home, ".codex");
 }
 
-function skillTarget(environment: NodeJS.ProcessEnv): string {
-  return path.join(codexHome(environment), "skills", "cueline");
+function claudeConfigDir(environment: NodeJS.ProcessEnv): string {
+  if (environment.CLAUDE_CONFIG_DIR) return path.resolve(environment.CLAUDE_CONFIG_DIR);
+  const home = environment.HOME || homedir();
+  return path.join(home, ".claude");
+}
+
+function skillLinks(environment: NodeJS.ProcessEnv, scope: SkillLinkScope): readonly SkillLink[] {
+  const codexLink = {
+    source: codexSkillSource,
+    target: path.join(codexHome(environment), "skills", "cueline"),
+  };
+  const claudeLink = {
+    source: claudeSkillSource,
+    target: path.join(claudeConfigDir(environment), "skills", "cueline-host"),
+  };
+  if (scope === "codex-only") return [codexLink];
+  if (scope === "claude-only") return [claudeLink];
+  return [codexLink, claudeLink];
 }
 
 async function pathExists(candidate: string): Promise<boolean> {
@@ -37,28 +63,49 @@ async function linkMatches(target: string, source: string): Promise<boolean> {
   }
 }
 
-export async function installSkill(environment: NodeJS.ProcessEnv): Promise<string> {
-  const target = skillTarget(environment);
-  await access(path.join(skillSource, "SKILL.md"));
-  if (await linkMatches(target, skillSource)) {
-    return `CueLine skill already installed: ${target}`;
+export async function installSkill(
+  environment: NodeJS.ProcessEnv,
+  scope: SkillLinkScope = "all",
+): Promise<string> {
+  const links = skillLinks(environment, scope);
+  const installed = new Set<string>();
+
+  for (const link of links) {
+    await access(path.join(link.source, "SKILL.md"));
+    if (await linkMatches(link.target, link.source)) {
+      installed.add(link.target);
+    } else if (await pathExists(link.target)) {
+      throw new Error(`refusing to replace foreign path: ${link.target}`);
+    }
   }
-  if (await pathExists(target)) {
-    throw new Error(`refusing to replace foreign path: ${target}`);
+
+  const messages: string[] = [];
+  for (const link of links) {
+    if (installed.has(link.target)) {
+      messages.push(`CueLine skill already installed: ${link.target}`);
+      continue;
+    }
+    await mkdir(path.dirname(link.target), { recursive: true });
+    await symlink(link.source, link.target, process.platform === "win32" ? "junction" : "dir");
+    messages.push(`CueLine skill installed: ${link.target}`);
   }
-  await mkdir(path.dirname(target), { recursive: true });
-  await symlink(skillSource, target, process.platform === "win32" ? "junction" : "dir");
-  return `CueLine skill installed: ${target}`;
+  return messages.join("\n");
 }
 
-export async function uninstallSkill(environment: NodeJS.ProcessEnv): Promise<string> {
-  const target = skillTarget(environment);
-  if (await linkMatches(target, skillSource)) {
-    await unlink(target);
-    return `CueLine skill removed: ${target}`;
+export async function uninstallSkill(
+  environment: NodeJS.ProcessEnv,
+  scope: SkillLinkScope = "all",
+): Promise<string> {
+  const messages: string[] = [];
+  for (const link of skillLinks(environment, scope)) {
+    if (await linkMatches(link.target, link.source)) {
+      await unlink(link.target);
+      messages.push(`CueLine skill removed: ${link.target}`);
+    } else if (await pathExists(link.target)) {
+      messages.push(`CueLine preserved foreign path: ${link.target}`);
+    } else {
+      messages.push(`CueLine skill not installed: ${link.target}`);
+    }
   }
-  if (await pathExists(target)) {
-    return `CueLine preserved foreign path: ${target}`;
-  }
-  return `CueLine skill not installed: ${target}`;
+  return messages.join("\n");
 }
