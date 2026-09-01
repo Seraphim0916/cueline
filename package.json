@@ -59,7 +59,10 @@
     "README.ko.md",
     "README.zh-CN.md",
     "README.zh-TW.md",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "!dist/**/*.bak*",
+    "!dist/**/*.orig",
+    "!dist/**/*.rej"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
