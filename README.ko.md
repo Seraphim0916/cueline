@@ -14,19 +14,28 @@
   <a href="README.md">English</a> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <b>한국어</b>
 </p>
 
-**CueLine은 열린 ChatGPT 웹 대화에 판단을 맡깁니다. 대화는 텍스트 명령을 내리고, CueLine이 검증하며, 현재 Codex가 허용된 로컬 작업을 수행합니다.**
-
-**왜 존재하는가.** AI에게 당신의 머신에서 작업하게 하는 것은 보통 무제한 셸 접근 권한을 넘겨주는 것을 뜻합니다. CueLine은 그 트레이드오프를 없앱니다. 웹 쪽은 텍스트만 내보낼 수 있고, CueLine은 무엇이든 실행되기 전에 모든 명령을 fail-closed 경계와 승인으로 검증하며, 각 동작을 기록합니다.
-
-**하나의 예로.** ChatGPT 대화를 열고 테스트 실행이나 모듈 리팩터링을 요청합니다. 대화는 라운드마다 명령 하나를 내리고, CueLine이 각각을 검증하고 리소스 상한을 강제하며, 허용된 작업만 로컬에서 실행됩니다. 맹목적인 `rm -rf`도 폭주 루프도 없고, 감사 가능한 완전한 실행 기록이 남습니다.
-
-웹 페이지는 당신의 머신에 닿을 수 없고 로컬 도구도 없습니다. 라운드마다 텍스트 명령 하나만 내보냅니다. 기본 `caller` 실행에서 `advise`는 조정용 인계이며, `work`는 지속 claim과 start가 필요합니다. 등록된 워커를 띄우는 process executor는 이중 명시 승인이 필요합니다.
+CueLine은 Pro 모델을 사용하는 하나의 ChatGPT 웹 대화가 다음 단계를 결정하고, 로컬 Codex 또는 Claude Code가 명시적으로 claim한 작업을 수행하게 합니다.
+웹 모델의 판단은 사용하되 웹 페이지에 로컬 도구를 넘기고 싶지 않은 개발자를 위한 도구입니다.
+각 run은 재개 가능하고 감사할 수 있으며, 증거가 불명확하면 CueLine은 추측하지 않고 멈춥니다.
 
 <img alt="CueLine 아키텍처: ChatGPT 웹 대화가 라운드마다 텍스트 명령 하나를 내리고, CueLine이 검증·기록하며, 현재 Codex가 허용된 로컬 작업을 수행합니다." src="docs/assets/cueline-architecture-ko.svg" width="100%">
 
-CueLine은 독립적인 구현이며 **런타임 npm 의존성이 전혀 없습니다**. Omnilane을 감싼 래퍼가 아닙니다.
+CueLine은 독립 구현이며 **runtime npm 의존성이 없습니다**. Omnilane의 래퍼가 아닙니다.
 
-## 최신 릴리스: 0.7.5
+## CueLine이 확신할 수 없으면 멈춥니다
+
+CueLine은 페일 클로즈드(fail-closed) 방식입니다. 전송이 실제로 도착했는지 불분명하거나, 응답의 run·round·request 식별자가 맞지 않거나, 활성 ChatGPT 탭이 모호하면 CueLine은 run을 동결하고 명시적인 `reconcile`을 요구합니다. 추측하거나 자동으로 다시 전송하지 않습니다.
+
+이 동작이 중요한 이유는 ChatGPT에 로컬 도구가 없기 때문입니다. 컨트롤러는 텍스트 지시만 반환하고, 로컬 Codex 또는 Claude Code가 저장소 증거를 제공하고 작업을 명시적으로 claim하며 로컬에서 실행할 수 있는 작업을 결정합니다.
+
+## 최신 릴리스: 0.7.6
+
+- `cueline install`은 관리되는 skill 심볼릭 링크 두 개로 기본적으로 Codex와 Claude Code를 모두 연결합니다. CLI 실행 파일 세 개는 npm이 제공합니다. `--codex-only` 또는 `--claude-only`로 범위를 제한할 수 있으며, uninstall은 CueLine이 만든 링크만 제거하고 외부 경로는 거부합니다.
+- Claude Code host lane의 composer 준비 및 브라우저 작업 시간 창은 `CUELINE_COMPOSER_READY_TIMEOUT_MS`와 `CUELINE_BROWSER_OPERATION_TIMEOUT_MS`로 재정의할 수 있습니다. 기본값은 120000 및 180000밀리초입니다. 유효한 값은 1000–3600000이며, 잘못된 값은 이름이 지정된 오류를 발생시킵니다.
+
+자세한 내용은 [0.7.6 changelog](CHANGELOG.md#076---2026-08-31)를 참조하세요.
+
+### 0.7.5 강화 사항 유지
 
 - 수정 후 재시도(post-fix retry)의 대사를 강화했습니다. 제출 후 상태를 읽을 수 없으면 전용 대사 단계로 들어가며, 새로운 읽기 전용 「미전송」 증거가 있어야 두 번째 Send를 허용합니다. 증거가 부족하면 안전하게 동결을 유지합니다.
 - zero-send 재시도 대사를 유계화하고, 미전송 첨부 재시도는 좌표 폴백 전에 시맨틱 전송 컨트롤을 우선합니다.
@@ -55,6 +64,8 @@ Process 모드는 `executor: "process"`와 `allowProcessExecution: true`가 모�
 
 ## run 상태
 
+각 run은 `~/.cueline/runs` 아래에 완전한 추가 전용(append-only) 이벤트 타임라인으로 저장됩니다. 연결 끊김, 충돌 또는 새 로컬 session이 run을 지우지 않으며, 영속화된 `runId`로 재개할 수 있습니다.
+
 <img alt="CueLine run 상태: ready, awaiting_controller, awaiting_caller, awaiting_caller_work, complete, blocked, cancelled — 각 상태의 의미." src="docs/assets/cueline-states-ko.svg" width="100%">
 
 `cueline run status <run-id> --json`은 지속 상태와 `safeNextAction`을 보고하고, `cueline run doctor <run-id> --json`은 같은 스냅샷을 안정적인 finding 코드와 안전한 다음 한 걸음으로 바꿔 줍니다. 모호한 것 — 보냈을 수도 있는 클릭, 만료된 시작 claim, 수동 첨부 전송 — 앞에서 CueLine은 재전송 대신 멈추고 명시적 reconcile을 요구합니다. 복구 계약 전문은 [state and recovery](docs/state-and-recovery.md)를 보세요.
@@ -69,17 +80,21 @@ ChatGPT Pro 구독과 선택된 Pro 모델은 서로 다른 것입니다. 계정
 
 ## 빠른 시작
 
-필요한 것: Node.js 22 이상, 내장 브라우저를 갖춘 Codex, 그리고 — 기본 제공 레인을 쓴다면 — `PATH` 위의 `codex` CLI.
+### Codex
 
-npm 레지스트리에서 설치합니다:
+아래 명령은 기본 설치 프로그램을 사용하며 Codex와 Claude Code를 모두 연결합니다. Codex로만 설치 범위를 제한하려면 `cueline install --codex-only`를 실행하세요.
+
+Node.js 22 이상, 내장 Browser가 있는 Codex, 그리고 번들 기본 lane을 사용한다면 `PATH`의 `codex` CLI가 필요합니다.
+
+npm registry에서 설치합니다.
 
 ```bash
-npm install -g cueline@0.7.6
+npm install -g cueline
 cueline install
 cueline doctor
 ```
 
-대안으로, [v0.7.5 릴리스](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5)의 패키지 tarball을 설치할 수도 있습니다. 같은 릴리스에 `.sha256` 체크섬도 함께 있습니다.
+대안으로 버전이 지정된 tarball을 설치하고 게시된 `.sha256` checksum을 검증할 수 있습니다.
 
 ```bash
 npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.6/cueline-0.7.6.tgz
@@ -87,11 +102,26 @@ cueline install
 cueline doctor
 ```
 
-`cueline install`이 만드는 심볼릭 링크는 하나뿐입니다. 번들된 스킬을 `$CODEX_HOME/skills/cueline`(기본값 `~/.codex/skills/cueline`)에 연결합니다. 자신이 소유하지 않은 경로는 덮어쓰기를 거부하고, 두 번 실행해도 아무것도 달라지지 않습니다. `cueline uninstall`은 그 링크만 제거하며, 그 자리에 다른 파일이 있으면 지우지 않고 보존합니다.
+`cueline install`은 관리되는 skill 심볼릭 링크를 정확히 두 개 만들고, 기본적으로 Codex와 Claude Code를 연결합니다. CLI 실행 파일 세 개는 npm이 `package.json`의 `bin` 매핑을 통해 제공합니다. 이 명령은 `~/.local/bin` 링크를 만들지 않습니다. `--codex-only` 또는 `--claude-only`로 범위를 제한할 수 있습니다. `cueline uninstall`은 CueLine이 만든 링크만 제거하며 외부 경로의 교체 또는 제거를 거부합니다.
+
+### Claude Code
+
+```bash
+npm install -g cueline
+cueline install --claude-only
+cueline doctor
+export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
+cueline-claude-desktop-lane status
+cueline-claude-desktop-lane daemon "<task>"
+```
+
+다음 절에 나온 MCP server를 구성한 뒤 Claude Code Desktop의 셸 도구에서 daemon을 **Run in background** 모드로 실행하세요. `&`, `nohup`, `disown`을 추가하지 마세요. 상태 확인, 복구 및 계속 실행에 사용할 반환된 `runId`를 보관하세요.
+
+기본 설치는 두 플랫폼을 연결하는 `cueline install`입니다. 모델이 브라우저를 구동하는 host에는 더 긴 시간 창이 필요할 수 있습니다. “설정”에서 설명한 `CUELINE_COMPOSER_READY_TIMEOUT_MS` 또는 `CUELINE_BROWSER_OPERATION_TIMEOUT_MS`를 사용하세요.
 
 ### MCP server
 
-줄바꿈으로 구분되는 stdio로 CueLine을 시작하도록 MCP client를 설정합니다:
+줄바꿈으로 구분된 stdio를 통해 CueLine을 시작하도록 MCP client를 구성합니다.
 
 ```json
 {
@@ -104,7 +134,7 @@ cueline doctor
 }
 ```
 
-이 제로 런타임 의존성 server는 MCP `2025-11-25`를 구현하며 start, continue, 민감 정보가 제거된 status/doctor/list, 그리고 펜스가 적용된 caller claim/start/heartbeat/progress 도구를 제공합니다. 원본 대화 기록은 절대 반환하지 않습니다. 해당 도구 호출이 `executor: "process"`와 `allowProcessExecution: true`를 모두 설정하지 않는 한 프로세스 실행은 꺼진 상태로 유지됩니다. 처음 성공한 caller 도구 호출이 이 stdio 세션을 안정적이고 명시적인 `callerId`에 결속하며, 이후 호출은 매번 정확한 claim ID와 펜싱 token을 제시해야 합니다. 브라우저를 진행시키는 호출에는 server 호스트가 CueLine 내장 Browser binding을 주입해야 합니다. 그것이 없는 일반 하위 프로세스는 `IAB_BROWSER_MISSING`을 반환하지만, 영속화된 start/status/doctor/list와 caller 펜싱은 계속 사용할 수 있습니다. 프로토콜을 넘는 것은 JSON-safe API 옵션뿐이며, Browser·환경·시계·중단 binding은 항상 호스트가 주입합니다.
+런타임 의존성이 없는 이 server는 MCP `2025-11-25`를 구현하고 start, continue, 정제된 status/doctor/list, fencing이 적용된 caller claim/start/heartbeat/progress 도구를 노출합니다. 원본 transcript는 반환하지 않습니다. 정확한 도구 호출에서 `executor: "process"`와 `allowProcessExecution: true`를 모두 설정하지 않는 한 process 실행은 꺼진 상태로 유지됩니다. 처음 성공한 caller 도구 호출은 stdio session을 안정적이고 명시적인 `callerId`에 연결하고, 이후 정확한 claim ID와 fencing token이 이어집니다. 브라우저를 진행시키는 호출에는 server host가 CueLine의 내장 Browser binding을 노출해야 합니다. 이 binding이 없는 일반 subprocess는 `IAB_BROWSER_MISSING`을 반환하지만, 영속적인 start/status/doctor/list와 caller fencing은 계속 사용할 수 있습니다. JSON에 안전한 API 옵션만 프로토콜을 건너며 Browser, 환경, 시계, abort binding은 host가 주입한 상태로 남습니다.
 
 ### 소스에서 설치하기
 
@@ -113,26 +143,24 @@ git clone https://github.com/Seraphim0916/cueline.git
 cd cueline
 npm ci
 npm run build
-./install.sh      # Codex와 Claude Code용 심볼릭 링크 다섯 개 생성
+./install.sh      # Codex와 Claude Code의 심볼릭 링크 생성
 cueline doctor
 ```
 
-`install.sh`는 심볼릭 링크 다섯 개만 만듭니다: `~/.codex/skills/cueline`, `~/.claude/skills/cueline-host`(`CLAUDE_CONFIG_DIR`가 설정된 경우 그 아래의 `skills/cueline-host`), `~/.local/bin/cueline`, `~/.local/bin/cueline-claude-desktop-lane`, `~/.local/bin/cueline-claude-desktop-mailbox`입니다. 기본으로 두 플랫폼을 함께 설치하며, 범위를 제한하려면 `--codex-only` 또는 `--claude-only`를 사용합니다. 자신이 소유하지 않은 경로는 덮어쓰기를 거부하며, `./install.sh --uninstall` 역시 선택한 범위에서 자신이 만든 링크만 제거합니다.
+`install.sh`는 심볼릭 링크 다섯 개만 만들고 다른 작업은 하지 않습니다. `~/.codex/skills/cueline`, `~/.claude/skills/cueline-host`(`CLAUDE_CONFIG_DIR`가 설정된 경우 그 아래의 `skills/cueline-host`), `~/.local/bin/cueline`, `~/.local/bin/cueline-claude-desktop-lane`, `~/.local/bin/cueline-claude-desktop-mailbox`입니다. 기본적으로 두 플랫폼을 설치하며, `--codex-only` 또는 `--claude-only`를 전달하면 범위를 제한할 수 있습니다. 자신이 소유하지 않은 경로는 덮어쓰지 않으며, `./install.sh --uninstall`은 선택한 범위에서 자신이 만든 링크만 제거합니다.
 
-그다음 Codex에서:
+다음으로 Codex에서 진행합니다.
 
-1. Codex의 내장 브라우저로 `https://chatgpt.com`을 열고 로그인합니다.
-2. 지휘를 맡길 대화를 선택한 상태로 둡니다. 그 페이지가 컨트롤러입니다. 선택된 탭이 없고 일치하는 ChatGPT 탭이 여러 개면, CueLine은 첫 번째 탭을 마음대로 고르는 대신 `IAB_CHATGPT_TAB_AMBIGUOUS`를 반환합니다. 그 컴포저는 반드시 `Pro` 모델이어야 하며, 그렇지 않으면 CueLine이 `Pro`를 대신 선택하고, 선택하지 못하면 전송을 거부합니다.
-3. Codex에게 CueLine으로 처리해 달라고 요청합니다: *"CueLine을 써서, 열려 있는 ChatGPT Pro 대화가 이 작업을 지휘하게 해 줘."*
-4. 반환된 `runId`를 보관하세요. 중단된 실행을 이어서 진행하는 열쇠입니다.
+1. Codex의 내장 Browser에서 `https://chatgpt.com`을 열고 로그인합니다.
+2. 컨트롤러로 사용할 대화를 선택한 상태로 둡니다. 해당 페이지가 컨트롤러입니다. 선택된 탭이 없고 일치하는 ChatGPT 탭이 여러 개라면 CueLine은 첫 번째를 임의로 고르지 않고 `IAB_CHATGPT_TAB_AMBIGUOUS`를 반환합니다. composer는 `Pro` 모델에 있어야 합니다. 그렇지 않으면 CueLine은 먼저 `Pro`를 선택하며, 선택할 수 없으면 전송을 거부합니다.
+3. Codex에 CueLine으로 작업을 처리해 달라고 요청합니다. *“CueLine을 사용해서 열려 있는 ChatGPT Pro 대화가 이 작업을 지휘하게 해 주세요.”*
+4. 반환된 `runId`를 보관합니다. 중단된 run은 이 값으로 재개합니다.
 
-기본 제공 `cueline` 스킬은 Codex 자체의 Node 런타임에서 이 패키지를 구동합니다. 내장 브라우저 객체가 바로 그곳에 있기 때문입니다. 옆에서 따로 띄운 평범한 `node` 프로세스는 그것을 물려받지 못합니다.
-
-Claude Code Desktop도 패키지에 포함된 파일 메일박스 바이너리를 통해 같은 controller를 호스팅할 수 있습니다. [Claude Code Desktop에서 CueLine 구동하기](docs/claude-desktop-host.md)를 참고하세요.
+번들 `cueline` skill은 내장 Browser 객체가 있는 Codex 자체의 Node runtime에서 이 패키지를 구동합니다. 옆에서 따로 시작한 일반 `node` 프로세스는 이를 상속하지 않습니다. Claude Code Desktop도 패키지의 파일 mailbox 바이너리를 통해 동일한 컨트롤러를 host할 수 있습니다. [Claude Code Desktop에서 CueLine 구동하기](docs/claude-desktop-host.md)를 참조하세요.
 
 ### Claude Code Desktop host
 
-npm 패키지에는 `cueline-host` skill과 두 개의 명령이 포함되어 있습니다:
+npm 패키지에는 `cueline-host` skill과 두 개의 명령이 포함됩니다.
 
 ```bash
 export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
@@ -140,9 +168,7 @@ cueline-claude-desktop-lane status
 cueline-claude-desktop-lane daemon "<task>"
 ```
 
-위와 같이 CueLine MCP server를 설정한 다음, Claude Code Desktop의 shell 도구를 **Run in background** 모드로 하여 daemon을 실행합니다. shell의 `&`, `nohup`, `disown`을 추가하지 마세요. 백그라운드 작업은 Desktop harness가 관리합니다. host skill은 한 번에 하나의 메일박스 요청만 인수하고, 브라우저 동작을 정확히 한 번만 수행하며, 그 원본 결과를 `cueline-claude-desktop-mailbox`에 게시합니다. status가 동작 결과를 알 수 없다고 보고하면 동작을 재시도하지 말고 영속화된 lane 증거를 확인하세요.
-
-전체 설정, 요청 방법, 단계 프로토콜, 복구 규칙: [Claude Code Desktop에서 CueLine 구동하기](docs/claude-desktop-host.md).
+위의 CueLine MCP server를 구성한 뒤 Claude Code Desktop의 셸 도구에서 daemon을 **Run in background** 모드로 실행하세요. 셸의 `&`, `nohup`, `disown`을 추가하지 마세요. Desktop harness가 백그라운드 작업을 관리합니다. host skill은 mailbox request 하나를 claim하고 브라우저 작업을 정확히 한 번 수행한 다음 원본 결과를 `cueline-claude-desktop-mailbox`로 게시합니다. status가 알 수 없는 작업 결과를 보고하면 해당 작업을 다시 시도하지 말고 영속적인 lane 증거를 검사하세요. 전체 설정, request 방식, phase protocol, 복구 규칙은 [Claude Code Desktop에서 CueLine 구동하기](docs/claude-desktop-host.md)를 참조하세요.
 
 ## 코드에서 구동하기
 
@@ -220,6 +246,8 @@ CueLine은 90K／400K 임계값을 추측하지 않으며 API context window를 
 
 ## CLI
 
+핵심 명령은 `cueline run status`, `run doctor`, `run timeline`, `run verify`, `run export`, `run reconcile`, `run takeover`, `run cancel`입니다. 고아 run은 `cueline runs sweep`으로 정리하고, 컨트롤러 envelope는 `cueline protocol lint`로 오프라인 검증하며, `cueline mcp serve`로 stdio를 통해 범위가 정해진 도구를 노출합니다.
+
 CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에는 `cueline help`로 전체 인수를 확인하세요.
 
 | 그룹 | 명령 | 효과 |
@@ -273,6 +301,8 @@ Node 버전이 너무 낮거나 활성화된 caller 레인이 하나도 없으�
 
 ## 설정
 
+Claude Code host lane에서는 `CUELINE_COMPOSER_READY_TIMEOUT_MS`와 `CUELINE_BROWSER_OPERATION_TIMEOUT_MS`로 기본값인 120000밀리초와 180000밀리초를 재정의할 수 있습니다. 둘 다 1000–3600000 범위의 정수여야 합니다. 잘못된 값은 이름이 지정된 오류를 발생시키며, 기본값으로 조용히 되돌아가지 않습니다.
+
 `CUELINE_CONFIG`는 라우팅 설정 파일을 고르고, `CUELINE_HOME`은 로컬 상태의 위치를 옮깁니다(기본값 `~/.cueline`).
 
 Caller는 프로세스를 띄우지 않습니다. `executor: "process"`와 `allowProcessExecution: true`를 함께 지정한 경우에만 `default` 레인의 `codex-default`가 격리된 `codex exec --ignore-user-config`를 실행합니다. 독립 `advise`의 기본 동시 실행 상한은 전체/레인당 2이고, `work`가 포함된 배치는 직렬입니다. 다른 process worker를 등록하려면 [`config/routing.default.json`](config/routing.default.json)을 복사해 후보를 추가하고 `CUELINE_CONFIG`를 그쪽으로 지정하세요.
@@ -314,7 +344,7 @@ npm pack --dry-run
 
 `npm run smoke:fake`는 가짜 브라우저와 가짜 runner를 상대로 컨트롤러 루프 전체를 오프라인으로 돌립니다. 이것이 증명하는 것은 루프이지 실제 페이지가 아닙니다. 후자는 내장 브라우저를 통해 실제로 완료된 한 라운드만이 증명할 수 있습니다.
 
-## 0.1의 한계
+## 0.7.6의 알려진 제한 사항
 
 텍스트 명령 전용입니다. run 하나당 대화는 하나입니다. `Pro` 선택이 CueLine이 하는 유일한 모델 전환입니다. 긴 텍스트의 자동 첨부 변환은 지원하지만 의도적 파일 업로드, 이미지, Deep Research, Projects, Apps는 지원하지 않습니다. Caller work는 명시적 claim/start와, 긴 작업에는 heartbeat가 필요합니다. process 실행은 이중 승인이 필요합니다. 모호한 전송이나 이미 시작된 작업은 자동 재시도하지 않습니다. macOS가 주 데스크톱 대상이고 Linux가 CI 대상이며 Windows는 검증되지 않았습니다. 어댑터는 현재 ChatGPT 웹 UI에 의존하므로, UI 변경은 지어낸 답이 아니라 명시적 오류로 드러납니다.
 

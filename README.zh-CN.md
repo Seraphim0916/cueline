@@ -14,19 +14,28 @@
   <a href="README.md">English</a> · <a href="README.zh-TW.md">繁體中文</a> · <b>简体中文</b> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
 </p>
 
-**CueLine 把方向盘交给一个已经打开的 ChatGPT 网页会话：由它规划运行、发出每一步文本指令；CueLine 负责校验，当前 Codex 才在本机执行获准的工作。**
-
-**它为何存在。** 让 AI 在你的机器上动手，通常等于交出不受限的 shell 权限。CueLine 拿掉这个取舍：网页那端只能发文本，CueLine 在任何东西执行前，先用 fail-closed 边界与授权校验每一条指令，且每个动作都留有记录。
-
-**用一个例子说。** 打开一个 ChatGPT 会话，让它跑你的测试或重构某个模块。它每一轮发出一条指令；CueLine 逐一校验、强制资源上限，只有获准的工作才在本机执行——不会有盲目的 `rm -rf`、不会有失控循环，还有可供审计的完整运行记录。
-
-那个网页碰不到你的机器，也没有本地工具。它每一轮只发出一条文本控制指令。CueLine 默认把 caller 作业持久化：`advise` 是协调式交接；`work` 必须先获得持久 claim 并正式 start。只有双重显式授权 `process` executor，才会启动已注册的本地 worker。
+CueLine 让一个使用 Pro 模型的 ChatGPT 网页会话决定下一步，再由本地 Codex 或 Claude Code 执行已明确认领的工作。
+它面向希望利用网页模型判断、又不想把本地工具交给网页端的开发者。
+每次运行都可续接、可审计；证据不清楚时，CueLine 会停下来，而不是猜测。
 
 <img alt="CueLine 架构：ChatGPT 网页会话每轮发出一条文本指令，CueLine 校验并记录，当前 Codex 执行获准的本地工作。" src="docs/assets/cueline-architecture-zh-CN.svg" width="100%">
 
 CueLine 是独立实现，**没有任何运行时 npm 依赖**，也不是 Omnilane 的包装层。
 
-## 最新版本：0.7.5
+## CueLine 遇到不确定时会停下来
+
+CueLine 采用故障关闭（fail-closed）设计。如果一次发送可能成功也可能没有送达、回复中的 run、round 或 request 身份不匹配，或者当前 ChatGPT 标签页存在歧义，CueLine 会冻结这次运行并要求明确执行 `reconcile`。它不会猜测，也不会自动重发。
+
+这条边界很重要：ChatGPT 没有本地工具，控制器只返回文本指令；本地的 Codex 或 Claude Code 负责提供仓库证据、明确认领工作，并决定哪些操作可以在本地执行。
+
+## 最新版本：0.7.6
+
+- `cueline install` 现在默认通过两条受管理的 skill 符号链接连接 Codex 和 Claude Code；三个 CLI 可执行程序由 npm 提供。使用 `--codex-only` 或 `--claude-only` 可限制范围；卸载只会移除 CueLine 创建的链接，并会拒绝处理外来路径。
+- Claude Code 宿主车道的 composer 就绪和浏览器操作时窗可通过 `CUELINE_COMPOSER_READY_TIMEOUT_MS` 与 `CUELINE_BROWSER_OPERATION_TIMEOUT_MS` 覆盖。默认值分别为 120000 和 180000 毫秒；合法值为 1000–3600000，非法值会抛出具名错误。
+
+完整内容请参阅 [0.7.6 changelog](CHANGELOG.md#076---2026-08-31)。
+
+### 保留的 0.7.5 强化项
 
 - 强化修复后重试（post-fix retry）的对账：提交后状态不可读时，进入专属对账阶段，必须取得新的只读「未发送」证据才允许第二次 Send；证据不足就安全保持冻结。
 - zero-send 重试对账有界化；未发送附件的重试优先使用语义 send 控件，之后才退回坐标点击。
@@ -55,6 +64,8 @@ Process 模式必须同时指定 `executor: "process"` 与 `allowProcessExecutio
 
 ## 运行状态
 
+每次运行都会保存在 `~/.cueline/runs` 下，并具有完整的只追加（append-only）事件时间线。断线、崩溃或新的本地会话都不会抹掉这次运行；可通过持久化的 `runId` 继续执行。
+
 <img alt="CueLine 运行状态：ready、awaiting_controller、awaiting_caller、awaiting_caller_work、complete、blocked、cancelled，以及每个状态的含义。" src="docs/assets/cueline-states-zh-CN.svg" width="100%">
 
 `cueline run status <run-id> --json` 报告持久状态和 `safeNextAction`；`cueline run doctor <run-id> --json` 把同一份快照转成稳定的 finding 代码和一个安全的下一步。任何模糊情形——可能已发送的点击、过期的已启动 claim、人工附件发送——CueLine 都会停下来要求显式 reconcile，而不是重发。完整恢复契约见 [state and recovery](docs/state-and-recovery.md)。
@@ -69,17 +80,21 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 
 ## 五分钟上手
 
-你需要 Node.js 22 以上、带内置浏览器的 Codex，以及——若使用内置的默认通道——`PATH` 上有 `codex` CLI。
+### Codex
+
+以下命令使用默认安装程序，会同时连接 Codex 和 Claude Code。若只需安装 Codex，请改用 `cueline install --codex-only`。
+
+你需要 Node.js 22 以上、带内置浏览器的 Codex，以及——如果使用内置默认车道——`PATH` 上的 `codex` CLI。
 
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.7.6
+npm install -g cueline
 cueline install
 cueline doctor
 ```
 
-作为后备，也可以安装 [v0.7.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5) 上的打包 tarball，该 release 同时附带它的 `.sha256` 校验值：
+作为备用安装方式，可安装版本化 tarball，并校验已发布的 `.sha256` 校验和：
 
 ```bash
 npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.6/cueline-0.7.6.tgz
@@ -87,11 +102,26 @@ cueline install
 cueline doctor
 ```
 
-`cueline install` 只创建一个软链接：把内置的 skill 接到 `$CODEX_HOME/skills/cueline`（默认 `~/.codex/skills/cueline`）。它拒绝覆盖不属于自己的路径，重复执行也不会产生副作用。`cueline uninstall` 只移除那一个链接；若该位置换成了别人的文件，它会保留而不删除。
+`cueline install` 会创建恰好两条受管理的 skill 符号链接，默认连接 Codex 和 Claude Code。三个 CLI 可执行程序由 npm 通过 `package.json` 的 `bin` 映射提供；该命令不会创建 `~/.local/bin` 链接。使用 `--codex-only` 或 `--claude-only` 可限制范围。`cueline uninstall` 只会移除 CueLine 创建的链接，并拒绝替换或删除外来路径。
+
+### Claude Code
+
+```bash
+npm install -g cueline
+cueline install --claude-only
+cueline doctor
+export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
+cueline-claude-desktop-lane status
+cueline-claude-desktop-lane daemon "<task>"
+```
+
+请配置下一节所示的 MCP server，然后从 Claude Code Desktop 的 shell 工具中以 **Run in background** 模式运行 daemon。不要添加 `&`、`nohup` 或 `disown`。保留返回的 `runId`，以便查询状态、恢复及继续执行。
+
+默认安装命令是 `cueline install`，会连接两个平台。由模型驱动浏览器的宿主可能需要更长的时窗；请按“配置”一节使用 `CUELINE_COMPOSER_READY_TIMEOUT_MS` 或 `CUELINE_BROWSER_OPERATION_TIMEOUT_MS`。
 
 ### MCP server
 
-配置 MCP client，通过换行分隔的 stdio 启动 CueLine：
+配置 MCP client，通过以换行分隔的 stdio 启动 CueLine：
 
 ```json
 {
@@ -104,7 +134,7 @@ cueline doctor
 }
 ```
 
-这个零运行时依赖的 server 实现 MCP `2025-11-25`，提供 start、continue、脱敏的 status/doctor/list，以及带围栏的 caller claim/start/heartbeat/progress 工具。它绝不返回原始转录。除非该次工具调用同时设置 `executor: "process"` 与 `allowProcessExecution: true`，否则进程执行保持关闭；第一次成功的 caller 工具调用会把这条 stdio 会话绑定到一个稳定且明确的 `callerId`，之后每次都要携带精确的 claim ID 与围栏 token。会推进浏览器的调用需要 server 宿主注入 CueLine 内置的 Browser binding；没有它的普通子进程会返回 `IAB_BROWSER_MISSING`，但持久化的 start/status/doctor/list 与 caller 围栏仍然可用。只有 JSON-safe 的 API 选项会跨越协议；Browser、环境、时钟与中止 binding 一律由宿主注入。
+这个无运行时依赖的 server 实现 MCP `2025-11-25`，并提供 start、continue、已脱敏的 status/doctor/list，以及带栅栏的 caller claim/start/heartbeat/progress 工具。它绝不会返回原始对话记录。除非精确的工具调用同时设置 `executor: "process"` 和 `allowProcessExecution: true`，否则进程执行仍处于关闭状态；第一次成功的 caller 工具调用会把 stdio 会话绑定到一个稳定且明确的 `callerId`，后续再使用精确的 claim ID 和 fencing token。推进浏览器的调用要求 server 宿主暴露 CueLine 的内置 Browser 绑定；没有该绑定的普通子进程会返回 `IAB_BROWSER_MISSING`，而持久化的 start/status/doctor/list 与 caller 栅栏仍可使用。只有 JSON 安全的 API 选项会跨越协议；Browser、环境、时钟和 abort 绑定仍由宿主注入。
 
 ### 从源码安装
 
@@ -113,22 +143,20 @@ git clone https://github.com/Seraphim0916/cueline.git
 cd cueline
 npm ci
 npm run build
-./install.sh      # 为 Codex 和 Claude Code 创建五个软链接
+./install.sh      # 为 Codex 和 Claude Code 创建符号链接
 cueline doctor
 ```
 
-`install.sh` 只创建五个软链接，不做别的：`~/.codex/skills/cueline`、`~/.claude/skills/cueline-host`（设置 `CLAUDE_CONFIG_DIR` 时改用该目录下的 `skills/cueline-host`），以及 `~/.local/bin/cueline`、`~/.local/bin/cueline-claude-desktop-lane`、`~/.local/bin/cueline-claude-desktop-mailbox`。默认同时安装两个平台；使用 `--codex-only` 或 `--claude-only` 可限制范围。它拒绝覆盖不属于自己的路径，而 `./install.sh --uninstall` 也只会在选定范围移除自己创建的链接。
+`install.sh` 只创建五条符号链接，不做其他操作：`~/.codex/skills/cueline`、`~/.claude/skills/cueline-host`（设置 `CLAUDE_CONFIG_DIR` 时改为其下的 `skills/cueline-host`），以及 `~/.local/bin/cueline`、`~/.local/bin/cueline-claude-desktop-lane`、`~/.local/bin/cueline-claude-desktop-mailbox`。默认安装两个平台；传入 `--codex-only` 或 `--claude-only` 可限制范围。它会拒绝覆盖不属于自己的路径；`./install.sh --uninstall` 只会在所选范围内移除自己创建的链接。
 
-然后，在 Codex 里：
+然后，在 Codex 中：
 
-1. 用 Codex 的内置浏览器打开 `https://chatgpt.com` 并登录。
-2. 让你想让它当控制器的那个会话保持选中——该页面就是控制器。若没有已选中的标签页、且同时存在多个匹配的 ChatGPT 标签页，CueLine 会返回 `IAB_CHATGPT_TAB_AMBIGUOUS`，而不是擅自挑第一个。它的输入框必须停在 `Pro` 模型；若不是，CueLine 会替你选成 `Pro`，否则就拒绝发送。
-3. 让 Codex 用 CueLine 处理任务：*“用 CueLine，让那个打开的 ChatGPT Pro 会话来指挥这项任务。”*
-4. 保留返回的 `runId`。被中断的运行要续跑，就靠它。
+1. 使用 Codex 的内置浏览器打开 `https://chatgpt.com` 并登录。
+2. 保持你希望作为控制器的对话处于选中状态——该页面就是控制器。如果没有选中的标签页且存在多个匹配的 ChatGPT 标签页，CueLine 会返回 `IAB_CHATGPT_TAB_AMBIGUOUS`，而不是任选第一个。composer 必须位于 `Pro` 模型；如果不是，CueLine 会先为你选择 `Pro`，否则拒绝发送。
+3. 请 Codex 使用 CueLine 处理任务：*“使用 CueLine，让打开的 ChatGPT Pro 会话指挥这项任务。”*
+4. 保留返回的 `runId`。中断的运行通过它恢复。
 
-内置的 `cueline` skill 是从 Codex 自身的 Node runtime 驱动这个包的——内置浏览器对象就存在于那里。另外单独启动的 `node` 进程不会继承它。
-
-Claude Code Desktop 也可以通过打包的文件邮箱二进制程序承载同一个 controller。参见 [从 Claude Code Desktop 驱动 CueLine](docs/claude-desktop-host.md)。
+内置的 `cueline` skill 会从 Codex 自己的 Node runtime 驱动该包，内置 Browser 对象就位于那里；旁边单独启动的 `node` 进程不会继承它。Claude Code Desktop 可以通过打包的文件邮箱二进制程序承载同一个控制器。请参阅[从 Claude Code Desktop 驱动 CueLine](docs/claude-desktop-host.md)。
 
 ### Claude Code Desktop host
 
@@ -140,9 +168,7 @@ cueline-claude-desktop-lane status
 cueline-claude-desktop-lane daemon "<task>"
 ```
 
-按上文配置 CueLine MCP server，然后用 Claude Code Desktop 的 shell 工具以 **Run in background** 模式运行 daemon。不要添加 shell 的 `&`、`nohup` 或 `disown`；后台任务由 Desktop harness 管理。host skill 一次只认领一个邮箱请求，只执行一次浏览器操作，并把原始结果发布到 `cueline-claude-desktop-mailbox`。如果 status 报告操作结果未知，请检查持久化的 lane 证据，而不是重试该操作。
-
-完整的设置、请求方式、阶段协议与恢复规则：[从 Claude Code Desktop 驱动 CueLine](docs/claude-desktop-host.md)。
+请配置上方所示的 CueLine MCP server，然后从 Claude Code Desktop 的 shell 工具中以 **Run in background** 模式运行 daemon。不要添加 shell 的 `&`、`nohup` 或 `disown`；Desktop harness 会管理后台任务。宿主 skill 会认领一个邮箱请求、恰好执行一个浏览器操作，并通过 `cueline-claude-desktop-mailbox` 发布原始结果。如果 status 报告未知的操作结果，请检查持久化的车道证据，而不是重试该操作。完整的设置、请求方式、阶段协议和恢复规则请参阅：[从 Claude Code Desktop 驱动 CueLine](docs/claude-desktop-host.md)。
 
 ## 从代码驱动
 
@@ -222,6 +248,8 @@ CueLine 不猜测 90K／400K 软阈值，也不会把 API context window 当成 
 
 ## CLI
 
+核心命令包括 `cueline run status`、`run doctor`、`run timeline`、`run verify`、`run export`、`run reconcile`、`run takeover` 和 `run cancel`。使用 `cueline runs sweep` 清理孤立运行，使用 `cueline protocol lint` 离线校验控制器信封，并使用 `cueline mcp serve` 通过 stdio 暴露有界工具。
+
 CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 核对完整参数。
 
 | 分组 | 命令 | 效果 |
@@ -275,6 +303,8 @@ run_...	requested	affected_jobs=0
 
 ## 配置
 
+对于 Claude Code 宿主车道，`CUELINE_COMPOSER_READY_TIMEOUT_MS` 与 `CUELINE_BROWSER_OPERATION_TIMEOUT_MS` 可覆盖默认的 120000 毫秒和 180000 毫秒。两者都必须是 1000–3600000 的整数；非法值会抛出具名错误，不会静默回退到默认值。
+
 `CUELINE_CONFIG` 用于指定路由配置文件；`CUELINE_HOME` 用于迁移本地状态（默认 `~/.cueline`）。
 
 Caller 模式不会启动路由进程。只有同时选择 `executor: "process"` 与 `allowProcessExecution: true` 时，内置 `default` 通道才以 `codex-default` 运行隔离的 `codex exec --ignore-user-config`；独立 `advise` 默认全局/每 lane 并发上限均为 2，包含 `work` 的批次保持串行。要注册不同的 process worker，复制 [`config/routing.default.json`](config/routing.default.json)、加入你的候选项，再把 `CUELINE_CONFIG` 指过去。
@@ -316,7 +346,7 @@ npm pack --dry-run
 
 `npm run smoke:fake` 用假的浏览器与假的 runner，离线跑完整个控制循环。它证明的是循环，而不是线上页面——只有通过内置浏览器真正完成一轮，才能证明后者。
 
-## 0.1 的限制
+## 0.7.6 的已知限制
 
 仅支持文本控制命令。一次运行只对应一个会话。选成 `Pro` 是 CueLine 唯一会做的模型切换。支持 ChatGPT 自动将长文本转为附件，但不支持主动文件上传、图片、Deep Research、Projects 或 Apps。Caller `work` 必须显式 claim/start，长工作需要 heartbeat；process 执行必须双重授权。模糊发送和已启动工作都不会被自动重试。macOS 是主要桌面目标、Linux 是 CI 目标；Windows 未验证。adapter 依赖当前 ChatGPT 网页 UI，UI 改版会被显式暴露，绝不会变成捏造的答案。
 

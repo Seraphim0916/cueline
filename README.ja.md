@@ -14,19 +14,28 @@
   <a href="README.md">English</a> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.zh-CN.md">简体中文</a> · <b>日本語</b> · <a href="README.ko.md">한국어</a>
 </p>
 
-**CueLine は、開いている ChatGPT のウェブ会話に判断を任せます。会話側はテキストコマンドを出し、CueLine が検証し、現在の Codex が許可されたローカル作業を実行します。**
-
-**なぜ存在するのか。** AI にマシン上で作業させることは、通常、無制限のシェルアクセスを渡すことを意味します。CueLine はそのトレードオフをなくします。ウェブ側はテキストしか出せず、CueLine は何かが実行される前にすべてのコマンドを fail-closed の境界と承認で検証し、各操作を記録します。
-
-**一つの例で。** ChatGPT の会話を開き、テストの実行やモジュールのリファクタリングを頼みます。会話は 1 ラウンドに 1 コマンドを出し、CueLine がそれぞれを検証してリソース上限を強制し、許可された作業だけがローカルで実行されます。盲目的な `rm -rf` も暴走ループもなく、監査できる完全な実行履歴が残ります。
-
-ウェブページはあなたのマシンに触れず、ローカルツールもありません。1 ラウンドに出すのはテキストコマンド 1 つだけです。既定の `caller` 実行では、`advise` は協調用の引き渡し、`work` は永続 claim と start が必要です。登録済みワーカーを起動する process executor には二重の明示的承認が必要です。
+CueLine は、Pro モデルを使用する 1 つの ChatGPT Web 会話に次の手順を判断させ、ローカルの Codex または Claude Code が明示的に claim した作業を実行します。
+Web モデルの判断を使いつつ、Web ページにローカルツールを渡したくない開発者向けです。
+各 run は再開可能で監査可能です。証拠が不明確な場合、CueLine は推測せずに停止します。
 
 <img alt="CueLine のアーキテクチャ：ChatGPT ウェブ会話が 1 ラウンドに 1 つのテキストコマンドを出し、CueLine が検証・記録し、現在の Codex が許可されたローカル作業を実行する。" src="docs/assets/cueline-architecture-ja.svg" width="100%">
 
-CueLine は独立した実装で、**ランタイムの npm 依存はゼロ**です。Omnilane のラッパーではありません。
+CueLine は独立した実装であり、**runtime npm 依存関係はありません**。Omnilane のラッパーではありません。
 
-## 最新リリース：0.7.5
+## CueLine は不確かな場合に停止します
+
+CueLine はフェイルクローズ（fail-closed）です。送信が届いたか不明な場合、応答の run、round、request の識別子が一致しない場合、またはアクティブな ChatGPT タブが曖昧な場合、CueLine は run を凍結し、明示的な `reconcile` を求めます。推測も自動再送も行いません。
+
+この挙動が重要なのは、ChatGPT にはローカルツールがないためです。コントローラーはテキストの指示だけを返し、ローカルの Codex または Claude Code がリポジトリの証拠を提供し、作業を明示的に claim し、ローカルで実行してよい内容を判断します。
+
+## 最新リリース：0.7.6
+
+- `cueline install` は、管理対象の skill シンボリックリンク 2 本で標準では Codex と Claude Code の両方を接続します。3 つの CLI 実行ファイルは npm が提供します。`--codex-only` または `--claude-only` で範囲を限定できます。アンインストールは CueLine が作成したリンクだけを削除し、外部のパスは拒否します。
+- Claude Code host lane の composer 準備待ちとブラウザー操作の時間枠は、`CUELINE_COMPOSER_READY_TIMEOUT_MS` と `CUELINE_BROWSER_OPERATION_TIMEOUT_MS` で上書きできます。既定値は 120000 と 180000 ミリ秒です。有効な値は 1000–3600000 で、無効な値は名前付きエラーを送出します。
+
+詳細は [0.7.6 changelog](CHANGELOG.md#076---2026-08-31) を参照してください。
+
+### 0.7.5 の強化は継続
 
 - 修復後リトライ（post-fix retry）の照合を強化しました。送信後の状態が読み取れない場合、専用の照合フェーズに入り、新しい読み取り専用の「未送信」証拠がなければ 2 回目の Send を許可しません。証拠が不足していれば安全に凍結を維持します。
 - zero-send リトライ照合を有界化し、未送信添付のリトライは座標フォールバックの前にセマンティックな送信コントロールを優先します。
@@ -55,11 +64,13 @@ Process モードは `executor: "process"` と `allowProcessExecution: true` の
 
 ## run の状態
 
+各 run は `~/.cueline/runs` に完全な追記専用（append-only）のイベント時系列として保存されます。切断、クラッシュ、新しいローカル session が run を消すことはありません。永続化された `runId` で再開できます。
+
 <img alt="CueLine の run 状態：ready、awaiting_controller、awaiting_caller、awaiting_caller_work、complete、blocked、cancelled と、それぞれの意味。" src="docs/assets/cueline-states-ja.svg" width="100%">
 
 `cueline run status <run-id> --json` は永続状態と `safeNextAction` を報告し、`cueline run doctor <run-id> --json` は同じスナップショットを安定した finding コードと安全な次の一手に変換します。曖昧なもの——送信されたかもしれないクリック、期限切れの開始済み claim、手動の添付送信——に対して、CueLine は再送せず停止し、明示的な reconcile を求めます。復旧の完全な契約は [state and recovery](docs/state-and-recovery.md) を参照してください。
 
-## コントローラーは Pro モデルでなければならない
+## コントローラーは Pro モデルでなければなりません
 
 コンポーザーのモデルセレクターが `Pro` を示していないかぎり、CueLine は送信を拒否します。会話が別のモデルにある場合、CueLine はまずコンポーザーを `Pro` に切り替えます——それが唯一許されたモデル切り替えです。検証済みのライブ実行では、Instant を Pro に切り替え、応答は `gpt-5-6-pro` として返りました。
 
@@ -69,17 +80,21 @@ ChatGPT Pro のサブスクリプションと、選択された Pro モデルは
 
 ## クイックスタート
 
-必要なもの：Node.js 22 以上、組み込みブラウザーを備えた Codex、そして——同梱の既定レーンを使う場合は——`PATH` 上の `codex` CLI。
+### Codex
 
-npm レジストリからインストールします。
+以下のコマンドは標準インストーラーを使い、Codex と Claude Code の両方を接続します。Codex だけに限定する場合は、代わりに `cueline install --codex-only` を実行してください。
+
+Node.js 22 以降、内蔵 Browser を備えた Codex、さらに同梱の既定 lane を使う場合は `PATH` 上の `codex` CLI が必要です。
+
+npm registry からインストールします。
 
 ```bash
-npm install -g cueline@0.7.6
+npm install -g cueline
 cueline install
 cueline doctor
 ```
 
-フォールバックとして、[v0.7.5 リリース](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5) のパッケージ済み tarball をインストールすることもできます。同じリリースに `.sha256` チェックサムも置いてあります。
+代替として、バージョン付き tarball をインストールし、公開された `.sha256` checksum を検証できます。
 
 ```bash
 npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.6/cueline-0.7.6.tgz
@@ -87,11 +102,26 @@ cueline install
 cueline doctor
 ```
 
-`cueline install` が作るシンボリックリンクは 1 つだけ、同梱スキルを `$CODEX_HOME/skills/cueline`（既定では `~/.codex/skills/cueline`）に張ります。自分が所有していないパスの置き換えは拒否し、二度実行しても何も変わりません。`cueline uninstall` はそのリンクだけを外します。そこに他人のファイルがあれば、削除せず保持します。
+`cueline install` は管理対象の skill シンボリックリンクをちょうど 2 本作成し、標準では Codex と Claude Code を接続します。3 つの CLI 実行ファイルは npm が `package.json` の `bin` マッピングを通じて提供します。このコマンドは `~/.local/bin` のリンクを作成しません。`--codex-only` または `--claude-only` で範囲を限定できます。`cueline uninstall` は CueLine が作成したリンクだけを削除し、外部のパスを置換または削除することを拒否します。
+
+### Claude Code
+
+```bash
+npm install -g cueline
+cueline install --claude-only
+cueline doctor
+export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
+cueline-claude-desktop-lane status
+cueline-claude-desktop-lane daemon "<task>"
+```
+
+次節の MCP server を設定してから、Claude Code Desktop のシェルツールで daemon を **Run in background** モードで起動してください。`&`、`nohup`、`disown` は追加しないでください。状態確認、復旧、継続に使うため、返された `runId` を保持してください。
+
+標準インストールは両プラットフォームを接続する `cueline install` です。モデル駆動のブラウザー host では、より長い時間枠が必要になる場合があります。「設定」で説明する `CUELINE_COMPOSER_READY_TIMEOUT_MS` または `CUELINE_BROWSER_OPERATION_TIMEOUT_MS` を使用してください。
 
 ### MCP server
 
-改行区切りの stdio で CueLine を起動するよう MCP client を設定します:
+改行区切りの stdio で CueLine を起動するよう MCP client を設定します。
 
 ```json
 {
@@ -104,35 +134,33 @@ cueline doctor
 }
 ```
 
-このゼロランタイム依存の server は MCP `2025-11-25` を実装し、start、continue、サニタイズ済みの status/doctor/list、フェンス付きの caller claim/start/heartbeat/progress ツールを提供します。生のトランスクリプトを返すことは決してありません。当該ツール呼び出しが `executor: "process"` と `allowProcessExecution: true` の両方を設定しない限り、プロセス実行は無効のままです。最初に成功した caller ツール呼び出しがこの stdio セッションを安定した明示的な `callerId` に束縛し、以降の呼び出しは毎回正確な claim ID とフェンシング token を必要とします。ブラウザーを前進させる呼び出しには、server ホストが CueLine 内蔵の Browser binding を注入する必要があります。それを持たない素のサブプロセスは `IAB_BROWSER_MISSING` を返しますが、永続化された start/status/doctor/list と caller フェンシングは引き続き利用できます。プロトコルを越えるのは JSON-safe な API オプションだけで、Browser、環境、時計、中止の binding は常にホストが注入します。
+実行時依存関係を持たないこの server は MCP `2025-11-25` を実装し、start、continue、サニタイズ済み status/doctor/list、フェンシング付き caller claim/start/heartbeat/progress ツールを公開します。生の transcript を返すことはありません。正確なツール呼び出しが `executor: "process"` と `allowProcessExecution: true` の両方を設定しない限り、process 実行は無効のままです。最初に成功した caller ツール呼び出しは stdio session を安定した明示的な `callerId` に結び付け、その後に正確な claim ID と fencing token が続きます。ブラウザーを進める呼び出しでは、server host が CueLine の内蔵 Browser binding を公開している必要があります。これを持たない通常の subprocess は `IAB_BROWSER_MISSING` を返しますが、永続的な start/status/doctor/list と caller fencing は利用できます。プロトコルを越えるのは JSON 安全な API オプションだけで、Browser、環境、時計、abort binding は host から注入されたままです。
 
-### ソースからインストールする
+### ソースからインストール
 
 ```bash
 git clone https://github.com/Seraphim0916/cueline.git
 cd cueline
 npm ci
 npm run build
-./install.sh      # Codex と Claude Code 用の 5 つのシンボリックリンクを作成
+./install.sh      # Codex と Claude Code のシンボリックリンクを作成
 cueline doctor
 ```
 
-`install.sh` が作るのは 5 つのシンボリックリンクだけです：`~/.codex/skills/cueline`、`~/.claude/skills/cueline-host`（`CLAUDE_CONFIG_DIR` が設定されている場合はその配下の `skills/cueline-host`）、`~/.local/bin/cueline`、`~/.local/bin/cueline-claude-desktop-lane`、`~/.local/bin/cueline-claude-desktop-mailbox`。デフォルトでは両方のプラットフォームをインストールします。範囲を絞るには `--codex-only` または `--claude-only` を使います。自分が所有していないパスの上書きは拒否し、`./install.sh --uninstall` も選択した範囲内で自分が作ったリンクだけを削除します。
+`install.sh` は 5 本のシンボリックリンクだけを作成し、それ以外は行いません。`~/.codex/skills/cueline`、`~/.claude/skills/cueline-host`（`CLAUDE_CONFIG_DIR` が設定されている場合はその配下の `skills/cueline-host`）、`~/.local/bin/cueline`、`~/.local/bin/cueline-claude-desktop-lane`、`~/.local/bin/cueline-claude-desktop-mailbox` です。標準では両プラットフォームをインストールします。`--codex-only` または `--claude-only` を渡すと範囲を限定できます。所有していないパスの上書きを拒否し、`./install.sh --uninstall` は選択した範囲で自分が作成したリンクだけを削除します。
 
-次に、Codex で：
+次に Codex で操作します。
 
-1. Codex の組み込みブラウザーで `https://chatgpt.com` を開き、サインインします。
-2. 主導させたい会話を選択したままにします。そのページがコントローラーです。選択中のタブがなく、一致する ChatGPT タブが複数ある場合、CueLine は先頭を勝手に選ばず `IAB_CHATGPT_TAB_AMBIGUOUS` を返します。そのコンポーザーは `Pro` モデルでなければなりません。そうでない場合、CueLine が `Pro` を選び、選べなければ送信を拒否します。
-3. Codex にこう頼みます：*「CueLine を使って、開いている ChatGPT Pro の会話にこのタスクを指揮させて。」*
-4. 返ってきた `runId` を控えておきます。中断した実行を再開する手がかりになります。
+1. Codex の内蔵 Browser で `https://chatgpt.com` を開き、サインインします。
+2. コントローラーにしたい会話を選択したままにします。そのページがコントローラーです。選択中のタブがなく、条件に一致する ChatGPT タブが複数ある場合、CueLine は先頭を勝手に選ばず `IAB_CHATGPT_TAB_AMBIGUOUS` を返します。composer は `Pro` モデルでなければなりません。そうでない場合、CueLine は先に `Pro` を選択し、それができなければ送信を拒否します。
+3. Codex に CueLine でタスクを処理するよう依頼します。*「CueLine を使い、開いている ChatGPT Pro の会話にこのタスクを指揮させてください。」*
+4. 返された `runId` を保持します。中断した run を再開する際に使います。
 
-同梱の `cueline` スキルは、Codex 自身の Node ランタイムからこのパッケージを駆動します。組み込みブラウザーのオブジェクトはそこに存在するためです。別に起動したプレーンな `node` プロセスはそれを継承しません。
-
-Claude Code Desktop も、パッケージ同梱のファイルメールボックスバイナリを通じて同じ controller をホストできます。[Claude Code Desktop から CueLine を駆動する](docs/claude-desktop-host.md) を参照してください。
+同梱の `cueline` skill は、内蔵 Browser オブジェクトが存在する Codex 自身の Node runtime からこのパッケージを駆動します。脇で起動した通常の `node` プロセスはそれを継承しません。Claude Code Desktop も、同梱のファイル mailbox バイナリを通して同じコントローラーを host できます。[Claude Code Desktop から CueLine を駆動する](docs/claude-desktop-host.md)を参照してください。
 
 ### Claude Code Desktop host
 
-npm パッケージには `cueline-host` skill と 2 つのコマンドが同梱されています:
+npm パッケージには `cueline-host` skill と 2 つのコマンドが含まれます。
 
 ```bash
 export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
@@ -140,9 +168,7 @@ cueline-claude-desktop-lane status
 cueline-claude-desktop-lane daemon "<task>"
 ```
 
-上記のとおり CueLine MCP server を設定し、Claude Code Desktop の shell ツールを **Run in background** モードにして daemon を実行します。shell の `&`、`nohup`、`disown` は追加しないでください。バックグラウンドタスクは Desktop harness が管理します。host skill は一度に 1 つのメールボックスリクエストだけを引き受け、ブラウザー操作をちょうど 1 回だけ実行し、その生の結果を `cueline-claude-desktop-mailbox` に公開します。status が操作結果不明を報告した場合は、操作を再試行せず、永続化された lane 証拠を確認してください。
-
-セットアップ、リクエスト方法、フェーズプロトコル、リカバリールールの全容:[Claude Code Desktop から CueLine を駆動する](docs/claude-desktop-host.md)。
+上記の CueLine MCP server を設定し、Claude Code Desktop のシェルツールから daemon を **Run in background** モードで実行してください。シェルの `&`、`nohup`、`disown` は追加しないでください。Desktop harness がバックグラウンドタスクを管理します。host skill は mailbox request を 1 件 claim し、ブラウザー操作をちょうど 1 回実行して、未加工の結果を `cueline-claude-desktop-mailbox` で公開します。status が操作結果不明を報告した場合は、操作を再試行せず、永続化された lane の証拠を確認してください。完全な設定、request 方法、phase protocol、復旧規則は[Claude Code Desktop から CueLine を駆動する](docs/claude-desktop-host.md)を参照してください。
 
 ## コードから駆動する
 
@@ -220,6 +246,8 @@ CueLine は 90K／400K のしきい値を推測せず、API の context window �
 
 ## CLI
 
+主なコマンドは `cueline run status`、`run doctor`、`run timeline`、`run verify`、`run export`、`run reconcile`、`run takeover`、`run cancel` です。孤立した run は `cueline runs sweep` で整理し、コントローラーのエンベロープは `cueline protocol lint` でオフライン検証し、`cueline mcp serve` で stdio 経由の境界付きツールを公開します。
+
 CLI はブラウザーを駆動しません。状態を書き込むコマンドの前に `cueline help` で完全な引数を確認してください。
 
 | グループ | コマンド | 効果 |
@@ -273,6 +301,8 @@ Node が古すぎる場合、または有効な caller レーンが一つもな�
 
 ## 設定
 
+Claude Code host lane では、`CUELINE_COMPOSER_READY_TIMEOUT_MS` と `CUELINE_BROWSER_OPERATION_TIMEOUT_MS` により、既定の 120000 ミリ秒と 180000 ミリ秒を上書きできます。どちらも 1000–3600000 の整数でなければなりません。無効な値は名前付きエラーを送出し、既定値へ黙って戻ることはありません。
+
 `CUELINE_CONFIG` はルーティング設定ファイルを選び、`CUELINE_HOME` はローカル状態の置き場所を移します（既定は `~/.cueline`）。
 
 Caller はプロセスを起動しません。`executor: "process"` と `allowProcessExecution: true` を同時に指定した場合だけ、`default` レーンの `codex-default` が隔離された `codex exec --ignore-user-config` を実行します。独立した `advise` の既定同時実行数は全体／レーンごとに 2、`work` を含むバッチは直列です。別の process worker を登録するには、[`config/routing.default.json`](config/routing.default.json) をコピーして候補を追加し、`CUELINE_CONFIG` をそこへ向けます。
@@ -314,7 +344,7 @@ npm pack --dry-run
 
 `npm run smoke:fake` は、偽のブラウザーと偽の runner を相手に、コントローラーループ全体をオフラインで走らせます。証明できるのはループであって、ライブのページではありません。後者を証明できるのは、組み込みブラウザーを通じて実際に完了した 1 ラウンドだけです。
 
-## 0.1 の制限
+## 0.7.6 での既知の制限
 
 テキストコマンドのみ。1 回の run につき会話は 1 つです。`Pro` の選択が CueLine が行う唯一のモデル切り替えです。長文の自動添付変換は対応しますが、意図的なファイルアップロード、画像、Deep Research、Projects、Apps は非対応です。Caller work は明示的な claim/start と、長時間作業では heartbeat が必要です。process 実行は二重承認が必要です。曖昧な送信や開始済みジョブを自動再試行しません。macOS が主要デスクトップターゲット、Linux が CI ターゲットで、Windows は未検証です。アダプターは現行の ChatGPT ウェブ UI に依存するため、UI 変更は捏造された回答ではなく明示的なエラーとして表面化します。
 

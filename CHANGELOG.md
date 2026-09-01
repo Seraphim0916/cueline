@@ -5,7 +5,7 @@
 ### Added
 
 - Claude Code host lane composer-readiness and browser-operation windows can now be overridden with `CUELINE_COMPOSER_READY_TIMEOUT_MS` and `CUELINE_BROWSER_OPERATION_TIMEOUT_MS`; defaults remain 120000 and 180000 milliseconds, values must be integers from 1000 through 3600000, and malformed or out-of-range values raise named errors instead of silently reverting to defaults so model-driven browser hosts can complete composer preparation beyond the former 120-second window.
-- CueLine installation now installs both Codex and Claude platform integrations by default, creating all five managed symlinks; `--codex-only` and `--claude-only` select one platform, and `--uninstall` applies the same scope while foreign-path rejection and removal of only CueLine-created links remain unchanged.
+- CueLine now installs the Codex and Claude Code integrations together by default, so a single install reaches both hosts. `cueline install` creates the two bundled skill symlinks and leaves the three executables to the npm `bin` mappings, while `./install.sh` creates those two skill links plus the three `~/.local/bin` executables for source checkouts. Both accept `--codex-only` and `--claude-only`, `--uninstall` applies the same scope, and foreign-path rejection and removal of only CueLine-created links remain unchanged.
 
 ## 0.7.5 - 2026-08-16
 
