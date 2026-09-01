@@ -89,7 +89,7 @@ Node.js 22 이상, 내장 Browser가 있는 Codex, 그리고 번들 기본 lane�
 npm registry에서 설치합니다.
 
 ```bash
-npm install -g cueline
+npm install -g cueline@0.7.6
 cueline install
 cueline doctor
 ```
@@ -107,7 +107,7 @@ cueline doctor
 ### Claude Code
 
 ```bash
-npm install -g cueline
+npm install -g cueline@0.7.6
 cueline install --claude-only
 cueline doctor
 export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"

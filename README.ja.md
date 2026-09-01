@@ -89,7 +89,7 @@ Node.js 22 以降、内蔵 Browser を備えた Codex、さらに同梱の既定
 npm registry からインストールします。
 
 ```bash
-npm install -g cueline
+npm install -g cueline@0.7.6
 cueline install
 cueline doctor
 ```
@@ -107,7 +107,7 @@ cueline doctor
 ### Claude Code
 
 ```bash
-npm install -g cueline
+npm install -g cueline@0.7.6
 cueline install --claude-only
 cueline doctor
 export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"

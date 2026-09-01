@@ -89,7 +89,7 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline
+npm install -g cueline@0.7.6
 cueline install
 cueline doctor
 ```
@@ -107,7 +107,7 @@ cueline doctor
 ### Claude Code
 
 ```bash
-npm install -g cueline
+npm install -g cueline@0.7.6
 cueline install --claude-only
 cueline doctor
 export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"

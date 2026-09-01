@@ -96,7 +96,7 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline
+npm install -g cueline@0.7.6
 cueline install
 cueline doctor
 ```
@@ -114,7 +114,7 @@ cueline doctor
 ### Claude Code
 
 ```bash
-npm install -g cueline
+npm install -g cueline@0.7.6
 cueline install --claude-only
 cueline doctor
 export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
