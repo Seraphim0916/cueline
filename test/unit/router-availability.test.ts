@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -57,4 +57,32 @@ test("executableAvailability reports availability and caches per executable", as
 test("executableAvailability treats a candidate with no executable as unavailable", () => {
   const checker = executableAvailability({ PATH: "/usr/bin" });
   assert.equal(checker.isAvailable({ id: "x", argv: [] } as RouteCandidate, "default"), false);
+});
+
+test("findExecutable rejects directories in direct relative and PATH configuration", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cueline-avail-directory-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const runner = path.join(dir, "runner");
+  await mkdir(runner);
+  assert.equal(findExecutable(runner, { PATH: "" }), undefined);
+  assert.equal(findExecutable("./runner", { PATH: "" }, dir), undefined);
+  assert.equal(findExecutable("runner", { PATH: dir }), undefined);
+});
+
+test("findExecutable skips a PATH directory match and finds the later executable", async (t) => {
+  const first = await mkdtemp(path.join(tmpdir(), "cueline-avail-path-first-"));
+  const second = await dirWithExecutable("worker");
+  t.after(() => Promise.all([rm(first, { recursive: true, force: true }), rm(second.dir, { recursive: true, force: true })]));
+  await mkdir(path.join(first, "worker"));
+  assert.equal(findExecutable("worker", { PATH: [first, second.dir].join(path.delimiter) }), second.file);
+});
+
+test("findExecutable preserves ordinary symlinked executable wrappers", async (t) => {
+  if (process.platform === "win32") { t.skip("Creating symlinks can require Windows developer privileges"); return; }
+  const { dir, file } = await dirWithExecutable("wrapper");
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const link = path.join(dir, "worker");
+  await symlink(file, link);
+  assert.equal(findExecutable(link, { PATH: "" }), link);
+  assert.equal(findExecutable("worker", { PATH: dir }), link);
 });

@@ -2511,3 +2511,33 @@ test("an incomplete state-changing command exits with the documented usage code"
   assert.match(result.stderr, /CLI_ARGUMENTS_INVALID/);
   assert.match(result.stderr, /--manual-send-confirmed/);
 });
+
+for (const fallback of [false, true]) {
+  test(`routing diagnoses a configured directory with fallback=${fallback}`, async () => {
+    const context = await fixture();
+    const directory = path.join(context.home, "runner-folder");
+    await mkdir(directory, { recursive: true });
+    await writeFile(context.config, JSON.stringify({ version: 1, lanes: { default: {
+      enabled: true, candidates: [
+        { id: "folder", argv: [directory], task_input: "stdin" },
+        ...(fallback ? [{ id: "node", argv: [process.execPath], task_input: "stdin" }] : []),
+      ],
+    } } }));
+    const routing = invoke(["routing", "--json"], context.environment);
+    assert.equal(routing.status, fallback ? 0 : 1, routing.stderr);
+    const report = JSON.parse(routing.stdout);
+    assert.equal(report.config.valid, true);
+    assert.equal(report.availableLanes, fallback ? 1 : 0);
+    assert.equal(report.lanes[0].status, fallback ? "available" : "unavailable");
+    assert.equal(report.lanes[0].selectedRunnerId, fallback ? "node" : null);
+    if (!fallback) assert.equal(report.lanes[0].errorCode, "ROUTE_NO_CANDIDATE");
+    const explanation = invoke(["routing", "explain", "--json"], context.environment);
+    const explained = JSON.parse(explanation.stdout);
+    assert.equal(explained.lanes[0].candidates[0].reasonCode, "RUNNER_UNAVAILABLE");
+    const doctor = invoke(["doctor", "--json"], context.environment);
+    assert.equal(doctor.status, 0, doctor.stderr);
+    const health = JSON.parse(doctor.stdout);
+    assert.equal(health.caller.ready, true);
+    assert.equal(health.process.availableLanes, fallback ? 1 : 0);
+  });
+}
