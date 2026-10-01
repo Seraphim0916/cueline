@@ -19,6 +19,9 @@ import type {
 import { ProcessRunner } from "../../src/runners/process-runner.js";
 import { RunnerRegistry } from "../../src/runners/registry.js";
 
+// Filesystem/process readiness is real even when a runner deadline is mocked.
+const realSetTimeout = setTimeout;
+
 function hasCode(code: string): (error: unknown) => boolean {
   return (error) => error instanceof CueLineError && error.code === code;
 }
@@ -288,19 +291,35 @@ async function descendantProcessSpec(
 async function waitForDescendantPid(descendantPidPath: string): Promise<number> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
-      return Number(await readFile(descendantPidPath, "utf8"));
+      const contents = (await readFile(descendantPidPath, "utf8")).trim();
+      const pid = Number(contents);
+      // The file may be visible before its contents are written. Never let
+      // Number("") become PID 0, which signals our own process group on POSIX.
+      if (/^[1-9]\d*$/.test(contents) && Number.isSafeInteger(pid) && pid <= 2_147_483_647) {
+        return pid;
+      }
     } catch {
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      // The child may not have created its readiness file yet.
     }
+    await new Promise<void>((resolve) => realSetTimeout(resolve, 10));
   }
   throw new Error("descendant PID was not persisted before the deadline");
 }
 
 async function waitForProcessExit(pid: number): Promise<void> {
   for (let attempt = 0; attempt < 100 && processIsAlive(pid); attempt += 1) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    await new Promise<void>((resolve) => realSetTimeout(resolve, 10));
   }
 }
+
+test("descendant readiness never accepts an invalid PID file", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-invalid-descendant-pid-"));
+  await Promise.all(["", "0", "-1", "2147483648"].map(async (contents, index) => {
+    const pidPath = path.join(directory, `${index}.pid`);
+    await writeFile(pidPath, contents);
+    await assert.rejects(waitForDescendantPid(pidPath), /descendant PID was not persisted/);
+  }));
+});
 
 test("runs a registered argv without a shell and captures stdout and stderr", async () => {
   const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
@@ -521,26 +540,75 @@ test("cancelling an advise process terminates its descendant process tree", asyn
   assert.equal(processIsAlive(descendantPid), false);
 });
 
-test("timing out an advise process terminates its descendant process tree", async (t) => {
-  if (process.platform === "win32") {
-    t.skip("POSIX process groups are not available on Windows");
-    return;
-  }
-  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
-  const fixture = await descendantProcessSpec("timeout-tree", { timeoutMs: 200 });
-  const running = runner.run(fixture.runnerSpec);
-  const descendantPid = await waitForDescendantPid(fixture.descendantPidPath);
-  t.after(() => {
-    if (processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
+for (const startupDelayMs of [0, 300]) {
+  test(`timing out an advise process terminates its descendant process tree${startupDelayMs > 0 ? " after delayed startup" : ""}`, { timeout: 10_000 }, async (t) => {
+    if (process.platform === "win32") {
+      t.skip("POSIX process groups are not available on Windows");
+      return;
+    }
+    const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+    const controller = new AbortController();
+    const fixture = await descendantProcessSpec("timeout-tree", {
+      timeoutMs: 200,
+      signal: controller.signal,
+    });
+    if (startupDelayMs > 0) {
+      // Deliberately take longer than the runner deadline to build the real
+      // process tree. Readiness must not race that independently tested clock.
+      fixture.runnerSpec.argv = [process.execPath, "-e",
+        `setTimeout(() => {\n${fixture.runnerSpec.argv[2]}\n}, ${startupDelayMs});`];
+    }
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let runnerPid: number | undefined;
+    let descendantPid: number | undefined;
+    let settled = false;
+    const running = runner.run(fixture.runnerSpec, {
+      onSpawn(pid) { runnerPid = pid; },
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+    // Register before readiness: a broken fixture must not leak the real
+    // process group while its deadline is paused on the controlled clock.
+    t.after(async () => {
+      controller.abort();
+      t.mock.timers.tick(250);
+      if (runnerPid !== undefined) {
+        try {
+          process.kill(-runnerPid, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
+      if (descendantPid !== undefined && processIsAlive(descendantPid)) {
+        process.kill(descendantPid, "SIGKILL");
+      }
+      await running;
+    });
+    descendantPid = await waitForDescendantPid(fixture.descendantPidPath);
+    assert.ok(runnerPid);
+    assert.equal(processIsAlive(runnerPid), true);
+    assert.equal(processIsAlive(descendantPid), true);
+
+    t.mock.timers.tick(199);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "runner must not finish before its deadline");
+    assert.equal(processIsAlive(runnerPid), true);
+    assert.equal(processIsAlive(descendantPid), true);
+    t.mock.timers.tick(1);
+    // Drive the real runner's force-kill grace too, so TERM-resistant children
+    // cannot leave the test waiting on another paused timer.
+    t.mock.timers.tick(250);
+    const result = await running;
+    await waitForProcessExit(descendantPid);
+
+    assert.equal(result.status, "timed_out");
+    assert.equal(result.timedOut, true);
+    assert.equal(result.cancelled, false);
+    assert.equal(processIsAlive(runnerPid), false);
+    assert.equal(processIsAlive(descendantPid), false);
   });
-
-  const result = await running;
-  await waitForProcessExit(descendantPid);
-
-  assert.equal(result.status, "timed_out");
-  assert.equal(result.timedOut, true);
-  assert.equal(processIsAlive(descendantPid), false);
-});
+}
 
 test("a normally exiting runner cannot leave a detached descendant in its process group", async (t) => {
   if (process.platform === "win32") {
