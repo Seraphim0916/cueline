@@ -1,4 +1,4 @@
-import { constants, accessSync } from "node:fs";
+import { constants, accessSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { runtimeCwd, runtimeEnvironment, runtimePlatform } from "../core/runtime.js";
@@ -16,6 +16,7 @@ function executableNames(command: string, environment: NodeJS.ProcessEnv): strin
 
 function canExecute(filePath: string): boolean {
   try {
+    if (!statSync(filePath).isFile()) return false;
     accessSync(filePath, runtimePlatform() === "win32" ? constants.F_OK : constants.X_OK);
     return true;
   } catch {
