@@ -86,3 +86,37 @@ test("findExecutable preserves ordinary symlinked executable wrappers", async (t
   assert.equal(findExecutable(link, { PATH: "" }), link);
   assert.equal(findExecutable("worker", { PATH: dir }), link);
 });
+
+for (const owner of ["job", "coordinator"] as const) {
+  test(`relative PATH entries resolve in the job cwd when the ${owner} owns the executable`, async (t) => {
+    const root = await mkdtemp(path.join(tmpdir(), "cueline-avail-relative-path-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const coordinator = path.join(root, "coordinator");
+    const job = path.join(root, "job");
+    const fallback = path.join(root, "fallback");
+    await Promise.all([coordinator, job].map((dir) => mkdir(path.join(dir, "tools"), { recursive: true })));
+    await mkdir(fallback);
+    const localWorker = path.join(owner === "job" ? job : coordinator, "tools", "worker");
+    const fallbackWorker = path.join(fallback, "worker");
+    for (const file of [localWorker, fallbackWorker]) {
+      await writeFile(file, "executable fixture\n", "utf8");
+      await chmod(file, 0o755);
+    }
+
+    const originalCwd = process.cwd();
+    try {
+      // All assertions are synchronous: never yield while the test changes cwd.
+      process.chdir(coordinator);
+      for (const relative of ["tools", `.${path.sep}tools`]) {
+        assert.equal(findExecutable("worker", { PATH: relative }, job), owner === "job" ? localWorker : undefined);
+        assert.equal(findExecutable("worker", { PATH: [relative, fallback].join(path.delimiter) }, job),
+          owner === "job" ? localWorker : fallbackWorker);
+      }
+      // Preserve the existing policy that empty PATH entries are not searched.
+      assert.equal(findExecutable("worker", { PATH: "" }, job), undefined);
+      assert.equal(findExecutable("worker", { PATH: path.delimiter }, job), undefined);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+}

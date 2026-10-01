@@ -38,7 +38,7 @@ export function findExecutable(
   const directories = (environment.PATH ?? "").split(path.delimiter).filter(Boolean);
   for (const directory of directories) {
     for (const name of executableNames(command, environment)) {
-      const candidate = path.join(directory, name);
+      const candidate = path.resolve(cwd, directory, name);
       if (canExecute(candidate)) return candidate;
     }
   }
