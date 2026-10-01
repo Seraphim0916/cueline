@@ -2541,3 +2541,47 @@ for (const fallback of [false, true]) {
     assert.equal(health.process.availableLanes, fallback ? 1 : 0);
   });
 }
+
+for (const [command, flag] of [
+  ["timeline", "--after"],
+  ["graph", "--after"],
+  ["watch", "--after"],
+  ["watch", "--timeout-ms"],
+] as const) {
+  test(`${command} ${flag} rejects blank numeric values while retaining explicit zero`, async () => {
+    const context = await fixture();
+    const runId = await seedActiveRun(context.home);
+    const eventsPath = runPaths(context.home, runId).events;
+    const before = await readEvents(eventsPath);
+    const latestSequence = before.at(-1)!.sequence;
+    const argsFor = (value: string, id = runId): string[] => {
+      if (flag === "--timeout-ms") {
+        return ["run", command, id, "--after", String(latestSequence), flag, value, "--json"];
+      }
+      return ["run", command, id, flag, value,
+        ...(command === "watch" ? ["--timeout-ms", "0"] : ["--limit", "1"]), "--json"];
+    };
+
+    for (const value of ["", "   ", "\t\n"]) {
+      for (const id of [runId, "run_not_created"]) {
+        const invalid = invoke(argsFor(value, id), context.environment);
+        assert.equal(invalid.status, 2, invalid.stderr);
+        assert.equal(invalid.stdout, "");
+        assert.match(invalid.stderr, /CLI_ARGUMENTS_INVALID/);
+      }
+    }
+    const zero = invoke(argsFor("0"), context.environment);
+    assert.equal(zero.status, 0, zero.stderr);
+    assert.equal(zero.stderr, "");
+    const report = JSON.parse(zero.stdout);
+    if (command === "watch") {
+      assert.equal(report.previousSequence, flag === "--after" ? 0 : latestSequence);
+      assert.equal(report.currentSequence, latestSequence);
+      assert.equal(report.outcome, flag === "--after" ? "changed" : "timed_out");
+    } else {
+      assert.equal(report.afterSequence, 0);
+      assert.equal(report.returnedEvents, 1);
+    }
+    assert.deepEqual(await readEvents(eventsPath), before);
+  });
+}

@@ -443,14 +443,16 @@ export async function handleObservationCommand(
       if (
         argument === "--after" &&
         afterSequence === undefined &&
-        typeof args[index + 1] === "string"
+        typeof args[index + 1] === "string" &&
+        args[index + 1]?.trim() !== ""
       ) {
         afterSequence = Number(args[index + 1]);
         index += 1;
       } else if (
         argument === "--timeout-ms" &&
         timeoutMs === undefined &&
-        typeof args[index + 1] === "string"
+        typeof args[index + 1] === "string" &&
+        args[index + 1]?.trim() !== ""
       ) {
         timeoutMs = Number(args[index + 1]);
         index += 1;
@@ -531,7 +533,8 @@ export async function handleObservationCommand(
       if (
         argument === "--after" &&
         !afterProvided &&
-        typeof args[index + 1] === "string"
+        typeof args[index + 1] === "string" &&
+        args[index + 1]?.trim() !== ""
       ) {
         afterSequence = Number(args[index + 1]);
         afterProvided = true;
@@ -577,7 +580,8 @@ export async function handleObservationCommand(
       if (
         argument === "--after" &&
         !afterProvided &&
-        typeof args[index + 1] === "string"
+        typeof args[index + 1] === "string" &&
+        args[index + 1]?.trim() !== ""
       ) {
         afterSequence = Number(args[index + 1]);
         afterProvided = true;
