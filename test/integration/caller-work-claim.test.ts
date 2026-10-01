@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rename, symlink, unlink } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, realpath, rename, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -29,7 +30,8 @@ import { JobStatusStore } from "../../src/jobs/status.js";
 import type { RunEvent } from "../../src/state/event-log.js";
 import { readEvents } from "../../src/state/event-log.js";
 import { runPaths } from "../../src/state/paths.js";
-import { RuntimeLease } from "../../src/state/runtime-lease.js";
+import { readRuntimeLease, RuntimeLease } from "../../src/state/runtime-lease.js";
+import { readAuthoritativeRunEvents } from "../../src/state/store.js";
 import { FakeBrowserAdapter } from "../fakes/fake-browser.js";
 
 function reply(
@@ -1434,4 +1436,132 @@ test("executor-owned caller work lease rejects an unsafe heartbeat cadence befor
   const status = await loadCueLineRunStatus(runId, { home });
   assert.equal(status.phase, "caller_work_claimed");
   assert.equal(status.safeNextAction, "start_caller_work");
+});
+
+for (const storage of ["anchor", "unanchored"] as const) {
+  for (const timing of ["before_takeover", "after_takeover"] as const) {
+    test(`terminal recovery requires authoritative ${storage} result intent ${timing}`, { timeout: 15_000 }, async (t) => {
+      const runId = `run_result_intent_${storage}_${timing}`;
+      const { home, job } = await fixture(runId);
+      let current = new Date("2026-07-22T00:00:00.000Z");
+      const now = () => current;
+      const claim = await claimCueLineCallerJob(runId, job.jobId, { home, now, callerId: "authority-fixture", ttlMs: 300_000 });
+      await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+      const input = { home, runId, jobId: job.jobId, jobKey: job.jobKey, lane: job.spec.lane, proof: proof(claim), timing };
+      const source = `
+        const input = JSON.parse(process.argv[1]);
+        const { RuntimeLease } = await import(${JSON.stringify(new URL("../../src/state/runtime-lease.js", import.meta.url).href)});
+        const { loadPersistedRunStore } = await import(${JSON.stringify(new URL("../../src/core/persisted-run.js", import.meta.url).href)});
+        const { appendEvent, readEvents } = await import(${JSON.stringify(new URL("../../src/state/event-log.js", import.meta.url).href)});
+        const { runPaths } = await import(${JSON.stringify(new URL("../../src/state/paths.js", import.meta.url).href)});
+        const { JobStatusStore } = await import(${JSON.stringify(new URL("../../src/jobs/status.js", import.meta.url).href)});
+        const now = () => new Date("2026-07-22T00:00:00.000Z");
+        const lease = await RuntimeLease.claim({ home: input.home, runId: input.runId, now, heartbeatIntervalMs: 60_000 });
+        const payload = { job_id: input.jobId, claim_id: input.proof.claimId, caller_id: input.proof.callerId,
+          fencing_token: input.proof.fencingToken, status: "succeeded" };
+        if (input.timing === "before_takeover") {
+          const store = await loadPersistedRunStore(input.home, input.runId);
+          store.bindRuntimeOwner(lease.ownerId);
+          await store.append("caller_work_result_submission_started", payload);
+        }
+        const resume = new Promise(resolve => process.once("message", resolve));
+        process.send("ready");
+        await resume;
+        if (input.timing === "after_takeover") {
+          // Inject a delayed old-format writer's physical event after its cutoff.
+          // The supported reader must retain it for audit but deny it authority.
+          const eventsPath = runPaths(input.home, input.runId).events;
+          const events = await readEvents(eventsPath);
+          await appendEvent(eventsPath, { sequence: events.at(-1).sequence + 1,
+            timestamp: "2026-07-22T00:01:00.000Z", type: "caller_work_result_submission_started",
+            runtime_owner_id: lease.ownerId, payload });
+        }
+        await new JobStatusStore(input.home).write({ jobId: input.jobId, runId: input.runId,
+          jobKey: input.jobKey, lane: input.lane, mode: "work", execution: "foreground",
+          status: "succeeded", startedAt: "2026-07-22T00:00:00.000Z", finishedAt: "2026-07-22T00:00:01.000Z" });
+        await lease.release();
+        process.disconnect();
+      `;
+      const child = spawn(process.execPath, ["--input-type=module", "-e", source, JSON.stringify(input)], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+      t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+      let stderr = "";
+      child.stderr!.on("data", (data) => { stderr += String(data); });
+      let readyResolve!: () => void;
+      let announced = false;
+      const ready = new Promise<void>((resolve) => { readyResolve = resolve; });
+      child.once("message", (message) => { announced = message === "ready"; readyResolve(); });
+      const done = new Promise<void>((resolve, reject) => {
+        child.once("error", (error) => { readyResolve(); reject(error); });
+        child.once("close", (code) => {
+          readyResolve();
+          try { assert.equal(code, 0, stderr); resolve(); } catch (error) { reject(error); }
+        });
+      });
+      let oldOwner: string | undefined;
+      await Promise.all([done, (async () => {
+        await ready;
+        assert.equal(announced, true);
+        current = new Date("2026-07-22T00:01:00.000Z");
+        const stale = await readRuntimeLease(home, runId, { now });
+        oldOwner = stale.ownerId;
+        assert.equal(stale.pid, String(child.pid));
+        assert.equal(stale.ownership, "stale");
+        const winner = await RuntimeLease.takeoverStale({ home, runId, now,
+          expectedOwnerId: stale.ownerId!, expectedHeartbeatAt: stale.heartbeatAt! });
+        await winner.release();
+        child.send("finish-delayed-write");
+      })()]);
+      assert.ok(current.getTime() < Date.parse(claim.expiresAt), "claim remains live independently of runtime retirement");
+      const physical = await readEvents(runPaths(home, runId).events);
+      assert.equal(physical.filter((event) => event.type === "caller_work_result_submission_started" && event.runtime_owner_id === oldOwner).length, 1);
+      const statuses = new JobStatusStore(home);
+      const authoritative = await readAuthoritativeRunEvents(home, runId);
+      assert.equal(authoritative.filter((event) => event.type === "caller_work_result_submission_started").length,
+        timing === "before_takeover" ? 1 : 0);
+      if (storage === "unanchored") await unlink(statuses.terminalPathFor(job.jobId));
+      const evidencePath = storage === "anchor" ? statuses.terminalPathFor(job.jobId) : statuses.pathFor(job.jobId);
+      const anchorBefore = await readFile(evidencePath, "utf8");
+      const submit = () => submitCueLineCallerJobResult(runId, job.jobId, { status: "succeeded" }, { home, now, claim: proof(claim) });
+      if (timing === "before_takeover") {
+        assert.equal((await submit()).outcome, "submitted");
+        assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.status, "succeeded");
+      } else {
+        await assert.rejects(submit(), { code: "CALLER_JOB_RESULT_CONFLICT" });
+        assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.status, "running");
+        assert.deepEqual(await readEvents(runPaths(home, runId).events), physical);
+      }
+      assert.equal(await readFile(evidencePath, "utf8"), anchorBefore);
+    });
+  }
+}
+
+test("authoritative legacy terminal success remains idempotent without a result intent", async () => {
+  const runId = "run_legacy_terminal_without_intent";
+  const { home, job } = await fixture(runId);
+  const now = () => new Date("2026-07-22T00:00:00.000Z");
+  const claim = await claimCueLineCallerJob(runId, job.jobId, { home, now, callerId: "legacy-terminal-owner" });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+  const statuses = new JobStatusStore(home);
+  await statuses.write({
+    jobId: job.jobId, runId, jobKey: job.jobKey, lane: job.spec.lane, mode: "work",
+    execution: "foreground", status: "succeeded", startedAt: now().toISOString(),
+    finishedAt: now().toISOString(),
+  });
+  const lease = await RuntimeLease.claim({ home, runId, now });
+  try {
+    const store = await loadPersistedRunStore(home, runId);
+    store.bindRuntimeOwner(lease.ownerId);
+    await store.append("job_status", { job_id: job.jobId, status: "succeeded", output: "LEGACY_AUTHORITATIVE_SUCCESS" });
+  } finally {
+    await lease.release();
+  }
+  const before = await readEvents(runPaths(home, runId).events);
+  assert.equal(before.some((event) => event.type === "caller_work_result_submission_started"), false);
+  const terminal = await readFile(statuses.terminalPathFor(job.jobId), "utf8");
+  const result = await submitCueLineCallerJobResult(runId, job.jobId, { status: "succeeded", stdout: "DO_NOT_REPLACE" },
+    { home, now, claim: proof(claim) });
+  assert.equal(result.outcome, "already_terminal");
+  assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
+  assert.equal(await readFile(statuses.terminalPathFor(job.jobId), "utf8"), terminal);
+  assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.output, "LEGACY_AUTHORITATIVE_SUCCESS");
 });

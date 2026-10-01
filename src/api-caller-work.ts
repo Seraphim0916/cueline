@@ -320,6 +320,25 @@ async function persistStartedClaimAmbiguous(
   return reason;
 }
 
+/** Shared result-intent proof for submission retries and expiry reconciliation. */
+export function callerWorkResultIntentStatus(
+  events: Awaited<ReturnType<typeof readAuthoritativeRunEvents>>,
+  jobId: string,
+  proof: CueLineCallerWorkClaimProof,
+): string | undefined {
+  for (const event of events) {
+    if (event.type !== "caller_work_result_submission_started") continue;
+    const payload = typeof event.payload === "object" && event.payload !== null && !Array.isArray(event.payload)
+      ? event.payload as Record<string, unknown> : {};
+    if (
+      payload.job_id === jobId && payload.claim_id === proof.claimId &&
+      payload.caller_id === proof.callerId && payload.fencing_token === proof.fencingToken &&
+      typeof payload.status === "string"
+    ) return payload.status;
+  }
+  return undefined;
+}
+
 async function releaseExpiredUnstartedClaim(
   store: RunStore<CueLineRunState>,
   job: StoredJob,
