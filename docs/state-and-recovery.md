@@ -144,7 +144,7 @@ Always run `cueline run status <run-id> --json` before continuation. `continueCu
 - deterministic job IDs suppress a repeated dispatch already present in state
 - caller jobs are returned as `awaiting_caller`; after local execution, `submitCueLineCallerJobResult` persists the full result and continuation sends bounded evidence to the same controller
 - caller `work` is returned as `awaiting_caller_work`; claim/start/heartbeat/result events are append-only, duplicate claims are fenced, an expired unstarted claim is releasable, and continuation settles an expired started claim as `ambiguous` before another controller turn
-- `caller_work_result_submission_started` is persisted before the terminal status; an exact matching intent lets a post-crash retry import that durable terminal result even if the claim TTL elapsed between the two writes. A started caller work result other than `succeeded` is normalized to `ambiguous`
+- `caller_work_result_submission_started` is persisted before the terminal status; an exact matching intent lets a post-crash retry import that durable terminal result even if the claim TTL elapsed between the two writes. A started caller work result other than `succeeded` is normalized to `ambiguous`, while `timedOut` and `cancelled` preserve the observed termination cause.
 - `complete` and `blocked` are rejected while any required or optional job is pending/running, so a terminal command cannot orphan background work
 - any non-normal process-loop exit cancels and settles its owned active jobs before releasing the runtime lease, including round-limit and controller-validation failures
 - process jobs can be observed or waited through their persisted status

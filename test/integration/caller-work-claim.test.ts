@@ -908,36 +908,40 @@ test("failed caller output and error stay complete in job status but bounded in 
   assert.ok((payload.error as string).length < 20_000);
 });
 
-test("a non-success result after caller work starts is terminally ambiguous", async () => {
-  const runId = "run_caller_failed_work_is_ambiguous";
-  const { home, job } = await fixture(runId);
-  const claim = await claimCueLineCallerJob(runId, job.jobId, {
-    home,
-    callerId: "codex-failed-work-owner",
+for (const status of ["failed", "cancelled", "timed_out", "ambiguous"] as const) {
+  test(`the ${status} result after caller work starts is terminally ambiguous`, async () => {
+    const runId = `run_caller_${status}_work_is_ambiguous`;
+    const { home, job } = await fixture(runId);
+    const claim = await claimCueLineCallerJob(runId, job.jobId, {
+      home,
+      callerId: "codex-failed-work-owner",
+    });
+    await startCueLineCallerJob(runId, job.jobId, proof(claim), { home });
+
+    const submitted = await submitCueLineCallerJobResult(
+      runId,
+      job.jobId,
+      {
+        status,
+        stdout: "partial local mutation may exist",
+        stderr: "worker exited before verification",
+        exitCode: 1,
+      },
+      { home, claim: proof(claim) },
+    );
+
+    assert.equal(submitted.outcome, "submitted");
+    const state = await loadCueLineRunState(runId, { home });
+    assert.equal(state.jobs[job.jobId]?.status, "ambiguous");
+    const persisted = await new JobStatusStore(home).read(job.jobId);
+    assert.equal(persisted?.status, "ambiguous");
+    assert.equal(persisted?.result?.status, "ambiguous");
+    assert.equal(persisted?.result?.ambiguousSideEffects, true);
+    assert.equal(persisted?.result?.timedOut, status === "timed_out");
+    assert.equal(persisted?.result?.cancelled, status === "cancelled");
+    assert.match(persisted?.result?.output ?? "", /partial local mutation may exist/);
   });
-  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home });
-
-  const submitted = await submitCueLineCallerJobResult(
-    runId,
-    job.jobId,
-    {
-      status: "failed",
-      stdout: "partial local mutation may exist",
-      stderr: "worker exited before verification",
-      exitCode: 1,
-    },
-    { home, claim: proof(claim) },
-  );
-
-  assert.equal(submitted.outcome, "submitted");
-  const state = await loadCueLineRunState(runId, { home });
-  assert.equal(state.jobs[job.jobId]?.status, "ambiguous");
-  const persisted = await new JobStatusStore(home).read(job.jobId);
-  assert.equal(persisted?.status, "ambiguous");
-  assert.equal(persisted?.result?.status, "ambiguous");
-  assert.equal(persisted?.result?.ambiguousSideEffects, true);
-  assert.match(persisted?.result?.output ?? "", /partial local mutation may exist/);
-});
+}
 
 test("caller work proof is fenced across start heartbeat release and terminal result", async () => {
   const runId = "run_caller_claim_proof";
