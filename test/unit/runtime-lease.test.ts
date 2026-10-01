@@ -949,6 +949,10 @@ test("runtime lease aborts owned work when heartbeat ownership becomes unreadabl
   );
 
   await new Promise<void>((resolve, reject) => {
+    if (lease.signal.aborted) {
+      resolve();
+      return;
+    }
     const timer = setTimeout(() => reject(new Error("lease loss was not observed")), 500);
     lease.signal.addEventListener(
       "abort",
