@@ -23,6 +23,7 @@ import {
 } from "../../src/api.js";
 import type { BrowserTurnInput, ControllerTurn } from "../../src/browser/browser-adapter.js";
 import { CueLineError } from "../../src/core/errors.js";
+import { reconcileExpiredCallerWorkClaims } from "../../src/api-caller-work.js";
 import { jobSpecHash } from "../../src/core/ids.js";
 import { loadPersistedRunStore } from "../../src/core/persisted-run.js";
 import { reduceRunState } from "../../src/core/state-machine.js";
@@ -729,6 +730,82 @@ test("a durable work-result intent recovers a terminal status after the claim ex
     1,
   );
 });
+
+for (const evidenceCase of ["missing_intent", "wrong_intent", "wrong_run", "ambiguous_anchor", "ambiguous_with_success_intent", "stale_status_read"] as const) {
+  test(`expired caller work handles ${evidenceCase} without replacing terminal evidence`, async (t) => {
+    const runId = `run_expired_terminal_${evidenceCase}`;
+    const { home, job } = await fixture(runId);
+    let current = new Date("2026-07-22T00:00:00.000Z");
+    const now = () => current;
+    const claim = await claimCueLineCallerJob(runId, job.jobId, {
+      home, now, callerId: "terminal-evidence-owner", ttlMs: 1_000,
+    });
+    await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+    if (evidenceCase === "wrong_intent" || evidenceCase === "wrong_run" || evidenceCase === "ambiguous_with_success_intent" || evidenceCase === "stale_status_read") {
+      const lease = await RuntimeLease.claim({ home, runId, now });
+      try {
+        const store = await loadPersistedRunStore(home, runId);
+        store.bindRuntimeOwner(lease.ownerId);
+        await store.append("caller_work_result_submission_started", {
+          job_id: job.jobId, claim_id: claim.claimId, caller_id: claim.callerId,
+          fencing_token: claim.fencingToken + (evidenceCase === "wrong_intent" ? 1 : 0),
+          status: "succeeded",
+        });
+      } finally {
+        await lease.release();
+      }
+    }
+    const ambiguous = evidenceCase === "ambiguous_anchor" || evidenceCase === "ambiguous_with_success_intent";
+    const statuses = new JobStatusStore(home);
+    const runningStatus = await statuses.read(job.jobId);
+    await statuses.write({
+      jobId: job.jobId, runId: evidenceCase === "wrong_run" ? "run_different_owner" : runId,
+      jobKey: job.jobKey, lane: job.spec.lane, mode: "work", execution: "foreground",
+      status: ambiguous ? "ambiguous" : "succeeded",
+      startedAt: current.toISOString(), finishedAt: "2026-07-22T00:00:00.500Z",
+      ...(ambiguous ? { error: "Previously committed ambiguity" } : {}),
+    });
+    if (evidenceCase === "stale_status_read") {
+      // Model success winning immediately after the guard's non-terminal
+      // read. The immutable writer must reject ambiguity before any event.
+      let firstRead = true;
+      const readStatus = JobStatusStore.prototype.read;
+      t.mock.method(JobStatusStore.prototype, "read", async function(this: JobStatusStore, id: string) {
+        if (id === job.jobId && firstRead) {
+          firstRead = false;
+          return runningStatus;
+        }
+        return readStatus.call(this, id);
+      });
+    }
+    const before = await readEvents(runPaths(home, runId).events);
+    const originalFiles = await Promise.all([
+      readFile(statuses.pathFor(job.jobId), "utf8"),
+      readFile(statuses.terminalPathFor(job.jobId), "utf8"),
+    ]);
+    current = new Date("2026-07-22T00:00:02.000Z");
+    if (ambiguous) {
+      assert.equal(await reconcileExpiredCallerWorkClaims(runId, { home, now }), 1);
+      assert.equal(await reconcileExpiredCallerWorkClaims(runId, { home, now }), 0);
+      const state = await loadCueLineRunState(runId, { home });
+      assert.equal(state.jobs[job.jobId]?.status, "ambiguous");
+      assert.equal(state.jobs[job.jobId]?.error, "Previously committed ambiguity");
+      const events = await readEvents(runPaths(home, runId).events);
+      assert.equal(events.filter((event) => event.type === "job_status").length, 1);
+      assert.equal(events.some((event) => event.type === "caller_work_became_ambiguous"), false);
+    } else {
+      await assert.rejects(reconcileExpiredCallerWorkClaims(runId, { home, now }),
+        (error: unknown) => error instanceof CueLineError && error.code ===
+          (evidenceCase === "stale_status_read" ? "JOB_STATUS_TERMINAL_CONFLICT" : "CALLER_JOB_RESULT_CONFLICT"));
+      assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
+      assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.status, "running");
+    }
+    assert.deepEqual(await Promise.all([
+      readFile(statuses.pathFor(job.jobId), "utf8"),
+      readFile(statuses.terminalPathFor(job.jobId), "utf8"),
+    ]), originalFiles);
+  });
+}
 
 test("caller work mutations reject a regressed clock before reporting success", async () => {
   const runId = "run_caller_claim_clock_regression";

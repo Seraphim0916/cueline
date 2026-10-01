@@ -28,6 +28,108 @@ function runChild(home: string, runId: string, mode: string) {
   return { pid: child.pid, output: JSON.parse(child.stdout.trim()) as Record<string, unknown> };
 }
 
+test("continuation after a committed result crash preserves success beyond claim expiry", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("The fixture requires POSIX SIGKILL semantics");
+    return;
+  }
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-result-continue-crash-"));
+  const runId = "run_result_continue_after_terminal";
+  runChild(home, runId, "after-terminal");
+  const { workId } = JSON.parse(await readFile(path.join(home, "result-fixture.json"), "utf8")) as { workId: string };
+  const statuses = new JobStatusStore(home);
+  const committedFiles = await Promise.all([
+    readFile(statuses.pathFor(workId), "utf8"),
+    readFile(statuses.terminalPathFor(workId), "utf8"),
+  ]);
+  await rename(path.join(home, "workspace"), path.join(home, "completed-workspace"));
+  await mkdir(path.join(home, "workspace"));
+
+  assert.equal(runChild(home, runId, "continue").output.status, "awaiting_caller");
+  const recovered = await loadCueLineRunState(runId, { home });
+  assert.equal(recovered.jobs[workId]?.status, "succeeded");
+  assert.equal(recovered.jobs[workId]?.output, "COMMITTED_FAKE_SUCCESS");
+  assert.equal(runChild(home, runId, "retry-result").output.outcome, "already_terminal");
+  assert.equal(runChild(home, runId, "continue").output.status, "awaiting_caller");
+  assert.deepEqual(await Promise.all([
+    readFile(statuses.pathFor(workId), "utf8"),
+    readFile(statuses.terminalPathFor(workId), "utf8"),
+  ]), committedFiles);
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.some((event) => event.type === "caller_work_became_ambiguous"), false);
+  assert.equal(events.filter((event) => event.type === "caller_work_started").length, 1);
+  assert.equal(events.filter((event) => event.type === "job_status" &&
+    (event.payload as { job_id: string }).job_id === workId).length, 1);
+  assert.equal((await readFile(path.join(home, "fake-execution.jsonl"), "utf8")).trim().split("\n").length, 1);
+  assert.equal((await readFile(path.join(home, "browser-actions.jsonl"), "utf8")).trim().split("\n").length, 1);
+});
+
+test("a crash after expiry's terminal fence replays the same ambiguity without rewriting it", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("The fixture requires POSIX SIGKILL semantics");
+    return;
+  }
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-expiry-fence-crash-"));
+  const runId = "run_expiry_terminal_fence_crash";
+  runChild(home, runId, "before-terminal");
+  const crashed = runChild(home, runId, "crash-expiry");
+  assert.deepEqual(JSON.parse(await readFile(path.join(home, "crash-checkpoint.json"), "utf8")),
+    { phase: "crash-expiry", pid: crashed.pid });
+  const { workId } = JSON.parse(await readFile(path.join(home, "result-fixture.json"), "utf8")) as { workId: string };
+  const statuses = new JobStatusStore(home);
+  assert.equal((await statuses.read(workId))?.status, "ambiguous");
+  assert.equal((await loadCueLineRunState(runId, { home })).jobs[workId]?.status, "running");
+  const committedFiles = await Promise.all([
+    readFile(statuses.pathFor(workId), "utf8"), readFile(statuses.terminalPathFor(workId), "utf8"),
+  ]);
+  assert.equal(runChild(home, runId, "continue").output.status, "awaiting_caller");
+  assert.equal(runChild(home, runId, "continue").output.status, "awaiting_caller");
+  assert.equal((await loadCueLineRunState(runId, { home })).jobs[workId]?.status, "ambiguous");
+  assert.deepEqual(await Promise.all([
+    readFile(statuses.pathFor(workId), "utf8"), readFile(statuses.terminalPathFor(workId), "utf8"),
+  ]), committedFiles);
+  const events = await readEvents(runPaths(home, runId).events);
+  assert.equal(events.some((event) => event.type === "caller_work_became_ambiguous"), false);
+  assert.equal(events.filter((event) => event.type === "job_status" &&
+    (event.payload as { job_id: string }).job_id === workId).length, 1);
+  assert.equal(events.filter((event) => event.type === "caller_work_started").length, 1);
+  assert.equal((await readFile(path.join(home, "fake-execution.jsonl"), "utf8")).trim().split("\n").length, 1);
+});
+
+for (const action of ["claim", "start", "heartbeat", "progress", "review"] as const) {
+  test(`late ${action} cannot replace a crashed caller's committed success`, async (t) => {
+    if (process.platform === "win32") {
+      t.skip("The fixture requires POSIX SIGKILL semantics");
+      return;
+    }
+    const home = await mkdtemp(path.join(tmpdir(), "cueline-result-mutation-crash-"));
+    const runId = `run_result_late_${action}`;
+    runChild(home, runId, "after-terminal");
+    const { workId } = JSON.parse(await readFile(path.join(home, "result-fixture.json"), "utf8")) as { workId: string };
+    const statuses = new JobStatusStore(home);
+    const committedFiles = await Promise.all([
+      readFile(statuses.pathFor(workId), "utf8"), readFile(statuses.terminalPathFor(workId), "utf8"),
+    ]);
+    const attempted = runChild(home, runId, `attempt-${action}`);
+    if (action === "review") assert.equal(attempted.output.reviewRequested, false);
+    else assert.equal(attempted.output.errorCode, "CALLER_WORK_NOT_ACTIVE");
+    const state = await loadCueLineRunState(runId, { home });
+    assert.equal(state.jobs[workId]?.status, "succeeded");
+    assert.equal(state.jobs[workId]?.output, "COMMITTED_FAKE_SUCCESS");
+    assert.deepEqual(await Promise.all([
+      readFile(statuses.pathFor(workId), "utf8"), readFile(statuses.terminalPathFor(workId), "utf8"),
+    ]), committedFiles);
+    const events = await readEvents(runPaths(home, runId).events);
+    for (const type of ["caller_work_became_ambiguous", "caller_work_review_required", "caller_work_heartbeat", "caller_work_progress"]) {
+      assert.equal(events.some((event) => event.type === type), false, type);
+    }
+    assert.equal(events.filter((event) => event.type === "caller_work_started").length, 1);
+    assert.equal(events.filter((event) => event.type === "job_status" &&
+      (event.payload as { job_id: string }).job_id === workId).length, 1);
+    assert.equal((await readFile(path.join(home, "fake-execution.jsonl"), "utf8")).trim().split("\n").length, 1);
+  });
+}
+
 for (const boundary of ["before-terminal", "after-terminal"] as const) {
   for (const scope of ["run", "job"] as const) {
     test(`${scope} cancellation after executor death ${boundary} preserves first durable outcome`, async (t) => {

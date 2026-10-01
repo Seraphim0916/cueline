@@ -12,6 +12,7 @@ import type {
   CueLineCallerWorkProgressKind,
 } from "./api-contracts.js";
 import { CueLineError } from "./core/errors.js";
+import { boundedControllerEventEvidence } from "./core/controller-turn.js";
 import { jobSpecHash } from "./core/ids.js";
 import { loadPersistedRunStore } from "./core/persisted-run.js";
 import { runtimeEnvironment } from "./core/runtime.js";
@@ -294,6 +295,12 @@ async function markStartedClaimAmbiguous(
 ): Promise<never> {
   const reason = await persistStartedClaimAmbiguous(store, job, claim, home, now);
   await store.snapshot();
+  if (reason === undefined) {
+    throw new CueLineError(
+      "CALLER_WORK_NOT_ACTIVE",
+      `Caller work job '${job.jobId}' already has durable terminal evidence and cannot resume.`,
+    );
+  }
   throw new CueLineError("CALLER_WORK_BECAME_AMBIGUOUS", reason, {
     details: { run_id: store.runId, job_id: job.jobId, claim_id: claim.claimId },
   });
@@ -305,9 +312,13 @@ async function persistStartedClaimAmbiguous(
   claim: CallerWorkClaim,
   home: string,
   now: Date,
-): Promise<string> {
+): Promise<string | undefined> {
+  if (await restoreCallerWorkTerminalEvidence(store, job, claim, home)) return undefined;
   const reason =
     "Caller work claim expired after local work started; side effects cannot be inferred or retried.";
+  // Commit the first-terminal fence before changing authoritative replay.
+  // A racing terminal result must not leave a contradictory ambiguity event.
+  await writeClaimJobStatus(home, store, job, "ambiguous", now.toISOString(), reason);
   await store.append("caller_work_became_ambiguous", {
     job_id: job.jobId,
     claim_id: claim.claimId,
@@ -316,7 +327,6 @@ async function persistStartedClaimAmbiguous(
     reason,
     detected_at: now.toISOString(),
   });
-  await writeClaimJobStatus(home, store, job, "ambiguous", now.toISOString(), reason);
   return reason;
 }
 
@@ -337,6 +347,39 @@ export function callerWorkResultIntentStatus(
     ) return payload.status;
   }
   return undefined;
+}
+
+async function restoreCallerWorkTerminalEvidence(
+  store: RunStore<CueLineRunState>,
+  job: StoredJob,
+  claim: CallerWorkClaim,
+  home: string,
+): Promise<boolean> {
+  const terminal = await new JobStatusStore(home).read(job.jobId);
+  if (terminal === undefined || terminal.status === "pending" || terminal.status === "running") return false;
+  const proof = { claimId: claim.claimId, callerId: claim.callerId, fencingToken: claim.fencingToken };
+  exactClaim(job, proof);
+  if (
+    terminal.runId !== store.runId || terminal.jobKey !== job.jobKey ||
+    terminal.lane !== job.spec.lane || terminal.mode !== "work" || terminal.execution !== "foreground" ||
+    (terminal.status !== "succeeded" && terminal.status !== "ambiguous") ||
+    (terminal.status === "succeeded" && (claim.startedAt === null || callerWorkResultIntentStatus(
+      await readAuthoritativeRunEvents(home, store.runId), job.jobId, proof,
+    ) !== "succeeded"))
+  ) {
+    throw new CueLineError(
+      "CALLER_JOB_RESULT_CONFLICT",
+      `Persisted terminal evidence for '${job.jobId}' does not match its current caller work claim.`,
+    );
+  }
+  // Cancellation/expiry can commit ambiguity without a result intent. Success
+  // additionally needs the exact started claim's durable submission intent.
+  await store.append("job_status", {
+    job_id: job.jobId,
+    status: terminal.status,
+    ...boundedControllerEventEvidence(terminal, store.state.maxJobEvidenceChars),
+  });
+  return true;
 }
 
 async function releaseExpiredUnstartedClaim(
@@ -768,9 +811,14 @@ export async function requireCueLineCallerJobReview(
         `Caller work job '${jobId}' must be durably started before controller review.`,
       );
     }
+    if (await restoreCallerWorkTerminalEvidence(store, job, claim, home)) {
+      await store.snapshot();
+      return false;
+    }
     const currentTime = now();
     await assertClaimNotExpired(store, job, claim, home, currentTime);
     const timestamp = currentTime.toISOString();
+    await writeClaimJobStatus(home, store, job, "ambiguous", timestamp, input.reason);
     await store.append("caller_work_review_required", {
       job_id: jobId,
       claim_id: claim.claimId,
@@ -782,7 +830,6 @@ export async function requireCueLineCallerJobReview(
       requested_at: timestamp,
       last_progress_at: claim.lastProgressAt ?? claim.startedAt,
     });
-    await writeClaimJobStatus(home, store, job, "ambiguous", timestamp, input.reason);
     await store.snapshot();
     return true;
   });
