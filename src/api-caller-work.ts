@@ -844,6 +844,12 @@ export async function releaseCueLineCallerJob(
   return withCallerWorkStore(runId, options, async (store, home, now) => {
     const job = callerWorkJob(store, jobId);
     const claim = exactClaim(job, proof);
+    if (job.status !== "pending" && job.status !== "running") {
+      throw new CueLineError(
+        "CALLER_WORK_NOT_ACTIVE",
+        `Caller work job '${jobId}' has terminal status '${job.status}' and cannot be released.`,
+      );
+    }
     const currentTime = now();
     await assertClaimNotExpired(store, job, claim, home, currentTime);
     if (claim.startedAt !== null) {

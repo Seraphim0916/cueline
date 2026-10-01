@@ -9,6 +9,7 @@ import {
   DEFAULT_CALLER_WORK_HEARTBEAT_INTERVAL_MS,
   DEFAULT_CALLER_WORK_MAX_EXECUTION_MS,
   DEFAULT_CALLER_WORK_PROGRESS_TIMEOUT_MS,
+  cancelCueLineJob,
   claimCueLineCallerJob,
   continueCueLineRun,
   heartbeatCueLineCallerJob,
@@ -1641,4 +1642,62 @@ test("authoritative legacy terminal success remains idempotent without a result 
   assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
   assert.equal(await readFile(statuses.terminalPathFor(job.jobId), "utf8"), terminal);
   assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.output, "LEGACY_AUTHORITATIVE_SUCCESS");
+});
+
+test("releasing settled expired work is read-only even on repeated rejection", async () => {
+  // Reduced from bounded lifecycle seed=3: claim -> start -> expire/reconcile -> release.
+  const runId = "run_release_settled_expired_work";
+  const { home, job } = await fixture(runId);
+  let clock = Date.parse("2026-07-22T00:00:00.000Z");
+  const now = () => new Date(clock);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, { home, now, callerId: "expired-owner", ttlMs: 1_000 });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+  clock += 1_001;
+  assert.equal(await reconcileExpiredCallerWorkClaims(runId, { home, now }), 1);
+  const before = await readEvents(runPaths(home, runId).events);
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.jobs[job.jobId]?.status, "ambiguous");
+  const statuses = new JobStatusStore(home);
+  const files = await Promise.all([readFile(statuses.pathFor(job.jobId), "utf8"), readFile(statuses.terminalPathFor(job.jobId), "utf8")]);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(releaseCueLineCallerJob(runId, job.jobId, proof(claim), { home, now }), { code: "CALLER_WORK_NOT_ACTIVE" });
+    assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
+    assert.deepEqual(await loadCueLineRunState(runId, { home }), state);
+    assert.deepEqual(await Promise.all([readFile(statuses.pathFor(job.jobId), "utf8"), readFile(statuses.terminalPathFor(job.jobId), "utf8")]), files);
+  }
+});
+
+for (const ending of ["succeeded", "ambiguous", "cancelled"] as const) {
+  test(`release rejects ${ending} caller work without modifying terminal state`, async () => {
+    const runId = `run_terminal_release_${ending}`;
+    const { home, job } = await fixture(runId);
+    // Pending status predates the claim: align virtual time with the fixture's
+    // durable creation time instead of injecting a backwards cancellation.
+    const createdAt = (await new JobStatusStore(home).read(job.jobId))!.startedAt;
+    const now = () => new Date(createdAt);
+    const claim = await claimCueLineCallerJob(runId, job.jobId, { home, now, callerId: "terminal-release-owner" });
+    if (ending === "cancelled") await cancelCueLineJob(runId, job.jobId, { home, now });
+    else {
+      await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+      await submitCueLineCallerJobResult(runId, job.jobId, { status: ending === "succeeded" ? "succeeded" : "failed" }, { home, now, claim: proof(claim) });
+    }
+    const state = await loadCueLineRunState(runId, { home });
+    assert.equal(state.jobs[job.jobId]?.status, ending);
+    const before = await readEvents(runPaths(home, runId).events);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await assert.rejects(releaseCueLineCallerJob(runId, job.jobId, proof(claim), { home, now }), { code: "CALLER_WORK_NOT_ACTIVE" });
+      assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
+      assert.deepEqual(await loadCueLineRunState(runId, { home }), state);
+    }
+  });
+}
+
+test("released unstarted claim keeps the existing exact-proof rejection on a repeated release", async () => {
+  const runId = "run_repeat_unstarted_release";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, { home, callerId: "release-owner" });
+  assert.equal((await releaseCueLineCallerJob(runId, job.jobId, proof(claim), { home })).outcome, "released");
+  const before = await readEvents(runPaths(home, runId).events);
+  await assert.rejects(releaseCueLineCallerJob(runId, job.jobId, proof(claim), { home }), { code: "CALLER_WORK_CLAIM_MISMATCH" });
+  assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
 });
