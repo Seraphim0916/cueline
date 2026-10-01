@@ -122,3 +122,37 @@ test("the CLI prints, writes once with --out, and validates arguments", async ()
     2,
   );
 });
+
+for (const jsonFirst of [false, true]) {
+  test(`export honors JSON stdout with an output file (jsonFirst=${jsonFirst})`, async () => {
+    const { home, runId } = await seededHome();
+    const environment = { CUELINE_HOME: home, HOME: home };
+    const before = await readEvents(runPaths(home, runId).events);
+    const outPath = path.join(home, "combined-options.json");
+    const args = ["run", "export", runId, ...(jsonFirst ? ["--json", "--out", outPath] : ["--out", outPath, "--json"]), "--limit", "1"];
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const io: CliIo = { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) };
+    assert.equal(await main(args, environment, io), 0);
+    assert.deepEqual(stderr, []);
+    assert.equal(stdout.length, 1);
+    const serialized = stdout.join("\n");
+    const bundle = JSON.parse(serialized);
+    assert.equal(bundle.schema, "cueline-run-export/1");
+    assert.equal(bundle.protocol, "cueline-run-bundle/0.1");
+    assert.equal(bundle.runId, runId);
+    assert.equal(bundle.timeline.returnedEvents, 1);
+    assert.equal(bundle.timeline.hasMore, true);
+    assert.doesNotMatch(serialized, /PRIVATE REQUEST|PRIVATE RESULT/);
+    const onDisk = await readFile(outPath, "utf8");
+    assert.equal(onDisk, `${serialized}\n`);
+    assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
+
+    stdout.length = 0;
+    assert.equal(await main(args, environment, io), 1);
+    assert.deepEqual(stdout, [], "a rejected overwrite must not print a successful bundle");
+    assert.match(stderr.join("\n"), /RUN_BUNDLE_OUT_EXISTS/);
+    assert.equal(await readFile(outPath, "utf8"), onDisk);
+    assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
+  });
+}

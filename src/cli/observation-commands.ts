@@ -103,7 +103,7 @@ async function runExportCommand(
       throw error;
     }
   }
-  if (json && outPath === undefined) {
+  if (json) {
     io.stdout(serialized);
   } else {
     io.stdout(`run\t${bundle.runId}`);
