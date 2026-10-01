@@ -541,6 +541,9 @@ export async function startCueLineCallerJob(
     const currentTime = now();
     await assertClaimNotExpired(store, job, claim, home, currentTime);
     if (claim.startedAt !== null) {
+      // A recovered executor may be entering this path after the workspace
+      // was replaced. Idempotent start must still enforce an existing pin.
+      if (claim.workdirIdentity !== undefined) await assertClaimedWorkdir(claim);
       return {
         runId,
         jobId,

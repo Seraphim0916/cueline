@@ -218,6 +218,102 @@ test("caller work start rejects a workdir symlink retargeted after claim", async
   assert.equal(events.some((entry) => entry.type === "caller_work_started"), false);
 });
 
+test("restarting caller work in its unchanged workspace preserves the durable start", async () => {
+  const runId = "run_caller_restart_workdir_unchanged";
+  const { home, job } = await fixture(runId);
+  let current = new Date("2026-07-22T00:00:00.000Z");
+  const now = () => current;
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-unchanged-workdir-owner",
+    now,
+  });
+  const firstLease = await startCueLineCallerWorkLease(claim, { home, now });
+  await firstLease.stop();
+
+  current = new Date("2026-07-22T00:00:30.000Z");
+  const recovered = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: claim.callerId,
+    now,
+  });
+  const restarted = await startCueLineCallerWorkLease(recovered, { home, now });
+  try {
+    assert.equal(restarted.active, true);
+    assert.deepEqual(restarted.proof, proof(claim));
+    const state = await loadCueLineRunState(runId, { home });
+    const durableClaim = state.jobs[job.jobId]?.callerWork?.claim;
+    assert.equal(durableClaim?.startedAt, "2026-07-22T00:00:00.000Z");
+    assert.equal(durableClaim?.lastProgressAt, "2026-07-22T00:00:00.000Z");
+    assert.equal(durableClaim?.heartbeatAt, current.toISOString());
+    const events = await readEvents(runPaths(home, runId).events);
+    assert.equal(events.filter((entry) => entry.type === "caller_work_started").length, 1);
+    assert.equal(events.filter((entry) => entry.type === "caller_work_heartbeat").length, 1);
+  } finally {
+    await restarted.stop();
+  }
+});
+
+for (const replacement of ["directory", "symlink"] as const) {
+  test(`restarting caller work rejects a replaced ${replacement} before renewing its lease`, async () => {
+    const runId = `run_caller_restart_workdir_${replacement}`;
+    const { home, workdir, job } = await fixture(runId);
+    const originalTarget = `${workdir}-original`;
+    const replacementTarget = `${workdir}-replacement`;
+    if (replacement === "symlink") {
+      await rename(workdir, originalTarget);
+      await mkdir(replacementTarget);
+      await symlink(originalTarget, workdir, "dir");
+    }
+
+    const now = () => new Date("2026-07-22T00:00:00.000Z");
+    const claim = await claimCueLineCallerJob(runId, job.jobId, {
+      home,
+      callerId: "codex-restarted-workdir-owner",
+      now,
+    });
+    const firstLease = await startCueLineCallerWorkLease(claim, { home, now });
+    await firstLease.stop();
+    const eventsBeforeRestart = await readEvents(runPaths(home, runId).events);
+
+    if (replacement === "symlink") {
+      await unlink(workdir);
+      await symlink(replacementTarget, workdir, "dir");
+    } else {
+      await rename(workdir, originalTarget);
+      await mkdir(workdir);
+    }
+
+    const recovered = await claimCueLineCallerJob(runId, job.jobId, {
+      home,
+      callerId: claim.callerId,
+      now,
+    });
+    assert.equal(recovered.outcome, "already_claimed");
+    assert.equal(recovered.started, true);
+    assert.equal(recovered.claimId, claim.claimId);
+    await assert.rejects(
+      async () => {
+        // Stop an unexpectedly accepted lease before the assertion fails so
+        // its timers cannot renew the claim after this regression test ends.
+        const restarted = await startCueLineCallerWorkLease(recovered, { home, now });
+        await restarted.stop();
+      },
+      (error: unknown) =>
+        error instanceof CueLineError &&
+        error.code === "CALLER_WORKDIR_IDENTITY_MISMATCH",
+    );
+
+    // Rejecting the restart must neither renew ownership nor change the
+    // original execution evidence into a fresh start.
+    const eventsAfterRestart = await readEvents(runPaths(home, runId).events);
+    assert.deepEqual(eventsAfterRestart, eventsBeforeRestart);
+    const state = await loadCueLineRunState(runId, { home });
+    assert.equal(state.jobs[job.jobId]?.status, "running");
+    assert.equal(state.jobs[job.jobId]?.callerWork?.claim?.startedAt, now().toISOString());
+  });
+}
+
 test("an unstarted legacy claim is upgraded to a directory-pinned claim", async () => {
   const runId = "run_caller_legacy_workdir_upgrade";
   const { home, workdir, job } = await fixture(runId);
