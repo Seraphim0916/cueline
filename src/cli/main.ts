@@ -23,7 +23,7 @@ import {
   takeoverCueLineRuntime,
   type PrunableRunState,
 } from "../api.js";
-import { CueLineError } from "../core/errors.js";
+import { CueLineError, formatErrorMessage } from "../core/errors.js";
 import { runOfflineSelfTest } from "../diagnostics/offline-self-test.js";
 import { JobStatusStore, type JobStatus } from "../jobs/status.js";
 import { loadRoutingConfig } from "../router/config-loader.js";
@@ -172,7 +172,7 @@ function help(): string {
 
 function errorMessage(error: unknown): string {
   if (error instanceof CueLineError) return `${error.code}: ${error.message}`;
-  return error instanceof Error ? error.message : String(error);
+  return formatErrorMessage(error);
 }
 
 function parseSkillLinkScope(
