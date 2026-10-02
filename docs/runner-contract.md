@@ -18,6 +18,8 @@ Caller work requires an absolute workdir and follows one fenced lifecycle:
 
 Claim, start, heartbeat, release, result, and ambiguity transitions are append-only. Run status exposes safe claim metadata but never the claim ID or fencing token.
 
+MCP lease state is session-local: after a restart, `MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION` requires re-claiming via `cueline_claim_caller_job` with the same `callerId` before the active claim expires, then restarting `cueline_start_caller_work_lease` with the same claim ID and fencing token. A changed ID gets `CALLER_WORK_ALREADY_CLAIMED`; expired started work becomes `ambiguous` (`CALLER_WORK_BECAME_AMBIGUOUS`) rather than resuming; long work may claim with a larger `ttlMs` (default 300,000 ms, integer range 1,000–86,400,000 ms).
+
 ## Process routing happens before spawn
 
 A controller job names a lane, not arbitrary shell text. CueLine loads an enabled lane and examines candidates in configured order. Disabled or unavailable candidates are skipped before execution. The first available candidate becomes the resolved route.

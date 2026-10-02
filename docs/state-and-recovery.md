@@ -209,6 +209,8 @@ Continuation cannot reconstruct an expired ChatGPT login, a deleted conversation
 
 ## Recovery procedure
 
+After an MCP server restart, `MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION` on lease status/start requires calling `cueline_claim_caller_job` again with the same `callerId` before the active claim expires, then `cueline_start_caller_work_lease` again with the unchanged proof. A changed ID gets `CALLER_WORK_ALREADY_CLAIMED`; expired started work becomes `ambiguous` (`CALLER_WORK_BECAME_AMBIGUOUS`) and must not be retried; long work may claim with a larger `ttlMs` (default 300,000 ms, integer range 1,000–86,400,000 ms).
+
 1. Preserve `CUELINE_HOME`; do not delete the run directory.
 2. Record the `runId` from the earlier result or directory name.
 3. Restore access to the same ChatGPT conversation in Codex's built-in Browser.

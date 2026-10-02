@@ -226,6 +226,8 @@ if (result.status === "complete") {
 
 `awaiting_controller`는 재전송 없는 읽기 전용 관측, `awaiting_caller`는 advise 인계, `awaiting_caller_work`는 claim, start, 실행, heartbeat, claim proof 제출 순서입니다. Pro는 로컬 도구를 직접 쓰지 않습니다.
 
+긴 작업은 `cueline_claim_caller_job`에 더 큰 `ttlMs`(기본 300,000밀리초, 정수 범위 1,000–86,400,000밀리초)를 지정할 수 있으며, MCP 서버 재시작 후 `MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION`이 나타나면 만료 전에 같은 `callerId`로 다시 claim한 뒤 `cueline_start_caller_work_lease`를 재시작해야 하고, ID를 바꾸면 `CALLER_WORK_ALREADY_CLAIMED`, 시작한 작업의 만료는 재개할 수 없는 `ambiguous`가 되므로 자동 재실행하면 안 됩니다.
+
 `listCueLineRuns()`는 영속화된 run ID를 찾기 위한 읽기 전용·비식별화 목록입니다. 컨트롤러 텍스트, 대화 URL, job task, worker 출력은 포함하지 않습니다.
 
 `verifyCueLineRun(runId)`는 생성 marker, 이벤트 replay와 authority fence, 선택적 snapshot, runtime lease, job status 증거를 검사하는 읽기 전용 무결성 검사입니다. 지속 run 내용은 반환하지 않고 안정적인 finding만 반환합니다.

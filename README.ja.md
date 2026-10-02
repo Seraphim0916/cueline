@@ -226,6 +226,8 @@ if (result.status === "complete") {
 
 `awaiting_controller` は再送なしの読み取り専用観測、`awaiting_caller` は advise の引き渡し、`awaiting_caller_work` は claim、start、実行、heartbeat、claim proof 付き提出の順です。Pro はローカルツールを直接使いません。
 
+長時間の作業では `cueline_claim_caller_job` に大きい `ttlMs`（既定 300,000 ミリ秒、整数範囲 1,000–86,400,000 ミリ秒）を指定でき、MCP サーバー再起動後の `MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION` には期限内に同じ `callerId` で再度 claim してから `cueline_start_caller_work_lease` を再開し、ID の変更は `CALLER_WORK_ALREADY_CLAIMED`、開始済み作業の期限切れは再開不能の `ambiguous` となり、自動再実行は禁止です。
+
 `listCueLineRuns()` は永続化された run ID を見つけるための、読み取り専用でサニタイズ済みの一覧です。コントローラー本文、会話 URL、job のタスク、worker 出力は含まれません。
 
 `verifyCueLineRun(runId)` は作成 marker、イベント replay と authority fence、任意の snapshot、runtime lease、job status 証拠を対象とする読み取り専用の整合性検査です。永続 run の内容は返さず、安定した finding だけを返します。
