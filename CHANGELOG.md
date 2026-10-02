@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Process jobs now settle after timeout or cancellation even when descendants outside the process group keep inherited stdout or stderr pipes open. A bounded post-kill deadline preserves captured output and existing result statuses without delaying normal process completion.
+
 ## 0.7.6 - 2026-08-31
 
 ### Added

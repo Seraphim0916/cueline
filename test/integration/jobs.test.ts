@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 
 import { CueLineError } from "../../src/core/errors.js";
 import {
@@ -21,6 +21,7 @@ import { RunnerRegistry } from "../../src/runners/registry.js";
 
 // Filesystem/process readiness is real even when a runner deadline is mocked.
 const realSetTimeout = setTimeout;
+const realClearTimeout = clearTimeout;
 
 function hasCode(code: string): (error: unknown) => boolean {
   return (error) => error instanceof CueLineError && error.code === code;
@@ -473,6 +474,162 @@ test("terminates a process that exceeds its timeout", async () => {
   assert.equal(result.status, "timed_out");
   assert.equal(result.timedOut, true);
   assert.equal(result.retryable, false);
+});
+
+async function checkEscapedOutputPipes(
+  t: TestContext,
+  action: "timeout" | "cancel",
+  mode: RunnerSpec["mode"] = "advise",
+): Promise<void> {
+  const directory = await mkdtemp(path.join(tmpdir(), "cueline-escaped-pipes-"));
+  const descendantPidPath = path.join(directory, "descendant.pid");
+  const descendantScript = [
+    "process.on('SIGTERM', () => {});",
+    "process.stdout.write('escaped stdout\\n');",
+    "process.stderr.write('escaped stderr\\n');",
+    `require('node:fs').writeFileSync(${JSON.stringify(descendantPidPath)}, String(process.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+  const script = [
+    `require('node:child_process').spawn(${JSON.stringify(process.execPath)}, ['-e', ${JSON.stringify(descendantScript)}], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });`,
+    ...(mode === "work" ? ["process.on('SIGTERM', () => process.exit(7));"] : []),
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+  const controller = new AbortController();
+  const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let runnerPid: number | undefined;
+  let descendantPid: number | undefined;
+  let settlements = 0;
+  const running = runner.run(spec(`escaped-${action}-${mode}`, script, {
+    timeoutMs: action === "timeout" ? 200 : 10_000,
+    signal: controller.signal,
+    mode,
+  }), { onSpawn(pid) { runnerPid = pid; } }).then((result) => {
+    settlements += 1;
+    return result;
+  });
+  t.after(async () => {
+    controller.abort();
+    t.mock.timers.tick(250);
+    // Read the PID again even if readiness/assertions failed earlier.
+    if (descendantPid === undefined) {
+      try { descendantPid = await waitForDescendantPid(descendantPidPath); } catch {}
+    }
+    for (const pid of [runnerPid === undefined ? undefined : -runnerPid, descendantPid]) {
+      if (pid === undefined) continue;
+      try { process.kill(pid, "SIGKILL"); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    for (const pid of [runnerPid, descendantPid]) {
+      if (pid === undefined) continue;
+      await waitForProcessExit(pid);
+      assert.equal(processIsAlive(pid), false, `fixture PID ${pid} must be dead`);
+    }
+    // Closing the held pipes also lets the unfixed runner finish during cleanup.
+    await boundedCompletion();
+    t.mock.timers.tick(2_000);
+    assert.equal(settlements, 1, "late close must not settle twice");
+  });
+  async function boundedCompletion() {
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        running,
+        new Promise<never>((_, reject) => {
+          deadline = realSetTimeout(() => reject(new Error("job still waiting for escaped output pipes")), 500);
+        }),
+      ]);
+    } finally {
+      if (deadline !== undefined) realClearTimeout(deadline);
+    }
+  }
+  descendantPid = await waitForDescendantPid(descendantPidPath);
+  assert.equal(processIsAlive(descendantPid), true);
+  if (action === "timeout") t.mock.timers.tick(200);
+  else controller.abort();
+  // Let the real SIGTERM handler exit before advancing the mocked SIGKILL.
+  if (mode === "work") await waitForProcessExit(runnerPid!);
+  t.mock.timers.tick(250);
+  await waitForProcessExit(runnerPid!);
+  assert.equal(processIsAlive(runnerPid!), false);
+  assert.equal(processIsAlive(descendantPid), true, "escaped descendant must survive group kill");
+  assert.equal(settlements, 0, "open pipes must still be pending before the second deadline");
+  t.mock.timers.tick(999);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settlements, 0);
+  t.mock.timers.tick(1);
+  const result = await boundedCompletion();
+  assert.equal(result.status, action === "timeout" ? "timed_out" : mode === "work" ? "ambiguous" : "cancelled");
+  assert.equal(result.exitCode, mode === "work" ? 7 : null);
+  assert.equal(result.timedOut, action === "timeout");
+  assert.equal(result.cancelled, action === "cancel");
+  assert.equal(result.ambiguousSideEffects, mode === "work");
+  assert.equal(result.stdout, "escaped stdout\n");
+  assert.match(result.stderr, /^escaped stderr\n/);
+  assert.equal(result.stderr.match(/descendant outside the process group/g)?.length, 1);
+  assert.equal(result.output, result.stdout + result.stderr);
+  assert.equal(processIsAlive(descendantPid), true, "settlement must not rely on killing the escaped descendant");
+}
+
+test("timing out settles despite escaped descendants holding output pipes", async (t) => {
+  if (process.platform === "win32") return t.skip("POSIX process groups are not available on Windows");
+  await checkEscapedOutputPipes(t, "timeout");
+});
+
+test("cancelling settles despite escaped descendants holding output pipes", async (t) => {
+  if (process.platform === "win32") return t.skip("POSIX process groups are not available on Windows");
+  for (const mode of ["advise", "work"] as const) {
+    await t.test(mode, async (subtest) => checkEscapedOutputPipes(subtest, "cancel", mode));
+  }
+});
+
+test("normal close does not wait for the forced output pipe deadline", { timeout: 5_000 }, async (t) => {
+  if (process.platform === "win32") return t.skip("POSIX process groups are not available on Windows");
+  for (const resistTerm of [false, true]) {
+    await t.test(resistTerm ? "close after forced kill clears the deadline" : "close before forced kill never arms the deadline", async (subtest) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "cueline-normal-pipes-"));
+      const pidPath = path.join(directory, "child.pid");
+      const script = [
+        ...(resistTerm ? ["process.on('SIGTERM', () => {});"] : []),
+        `require('node:fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));`,
+        "setInterval(() => {}, 1000);",
+      ].join("\n");
+      subtest.mock.timers.enable({ apis: ["setTimeout"] });
+      const scheduled = subtest.mock.method(globalThis, "setTimeout");
+      const cleared = subtest.mock.method(globalThis, "clearTimeout");
+      const controller = new AbortController();
+      let runnerPid: number | undefined;
+      const runner = new ProcessRunner(registry(), { environment: cleanEnvironment() });
+      const running = runner.run(spec("normal-pipes", script, { timeoutMs: 200, signal: controller.signal }), {
+        onSpawn(pid) { runnerPid = pid; },
+      });
+      subtest.after(async () => {
+        controller.abort();
+        subtest.mock.timers.tick(250);
+        if (runnerPid !== undefined) {
+          try { process.kill(-runnerPid, "SIGKILL"); } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          }
+          await waitForProcessExit(runnerPid);
+          assert.equal(processIsAlive(runnerPid), false);
+        }
+      });
+      await waitForDescendantPid(pidPath);
+      subtest.mock.timers.tick(200);
+      if (resistTerm) subtest.mock.timers.tick(250);
+      const result = await running;
+      const deadlines = scheduled.mock.calls.filter((call) => call.arguments[1] === 1_000);
+      assert.equal(deadlines.length, resistTerm ? 1 : 0);
+      if (resistTerm) {
+        assert.ok(cleared.mock.calls.some((call) => call.arguments[0] === deadlines[0]!.result));
+      }
+      subtest.mock.timers.tick(2_000);
+      assert.equal(result.status, "timed_out");
+      assert.equal(result.stderr, "");
+    });
+  }
 });
 
 test("does not retry a work job after its process exits unsuccessfully", async () => {
