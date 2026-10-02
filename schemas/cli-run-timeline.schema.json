@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-run-timeline.schema.json",
+  "title": "cueline run timeline --json output",
+  "description": "Current serialized TypeScript shape from src/cli/observation-commands.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "cueline-timeline/0.1"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "sourceEventsPath": {
+          "type": "string"
+        },
+        "afterSequence": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "totalEvents": {
+          "type": "number"
+        },
+        "latestSequence": {
+          "type": "number"
+        },
+        "returnedEvents": {
+          "type": "number"
+        },
+        "hasMore": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "nextAfterSequence": {
+          "type": "number"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type2"
+          }
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "runId",
+        "sourceEventsPath",
+        "afterSequence",
+        "limit",
+        "totalEvents",
+        "latestSequence",
+        "returnedEvents",
+        "hasMore",
+        "nextAfterSequence",
+        "entries",
+        "version"
+      ]
+    },
+    "type2": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sequence": {
+          "type": "number"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "type": {
+          "type": "string"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "const": "other"
+            },
+            {
+              "const": "runtime"
+            },
+            {
+              "const": "controller"
+            },
+            {
+              "const": "run"
+            },
+            {
+              "const": "job"
+            },
+            {
+              "const": "caller_work"
+            },
+            {
+              "const": "cancellation"
+            }
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "attributes": {
+          "$ref": "#/$defs/type3"
+        },
+        "payloadHash": {
+          "type": "string"
+        },
+        "ownerFingerprint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sequence",
+        "timestamp",
+        "type",
+        "category",
+        "summary",
+        "attributes",
+        "payloadHash"
+      ]
+    },
+    "type3": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "const": false
+          },
+          {
+            "const": true
+          }
+        ]
+      },
+      "properties": {},
+      "required": [],
+      "description": "Free-form record; keys are not enumerated by the TypeScript contract."
+    }
+  }
+}

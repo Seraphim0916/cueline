@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-run-diff.schema.json",
+  "title": "cueline run diff --json output",
+  "description": "Current serialized TypeScript shape from src/cli/observation-commands.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "cueline-run-diff/0.1"
+        },
+        "equivalent": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "left": {
+          "$ref": "#/$defs/type2"
+        },
+        "right": {
+          "$ref": "#/$defs/type2"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type5"
+          }
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "equivalent",
+        "left",
+        "right",
+        "changes",
+        "version"
+      ]
+    },
+    "type2": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "executor": {
+          "type": "string"
+        },
+        "allowProcessExecution": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "phase": {
+          "type": "string"
+        },
+        "round": {
+          "type": "number"
+        },
+        "maxRounds": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "maxStagnantRounds": {
+          "type": "number"
+        },
+        "stagnantRounds": {
+          "type": "number"
+        },
+        "lastEventSequence": {
+          "type": "number"
+        },
+        "runtimeOwnership": {
+          "type": "string"
+        },
+        "cancellationRequested": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "pendingControllerTurns": {
+          "type": "number"
+        },
+        "acceptedCommands": {
+          "type": "number"
+        },
+        "archiveStatus": {
+          "type": "string"
+        },
+        "jobs": {
+          "$ref": "#/$defs/type3"
+        },
+        "continueAllowed": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "safeNextAction": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "status",
+        "executor",
+        "allowProcessExecution",
+        "phase",
+        "round",
+        "maxRounds",
+        "maxStagnantRounds",
+        "stagnantRounds",
+        "lastEventSequence",
+        "runtimeOwnership",
+        "cancellationRequested",
+        "pendingControllerTurns",
+        "acceptedCommands",
+        "archiveStatus",
+        "jobs",
+        "continueAllowed",
+        "safeNextAction"
+      ]
+    },
+    "type3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "total": {
+          "type": "number"
+        },
+        "counts": {
+          "$ref": "#/$defs/type4"
+        }
+      },
+      "required": [
+        "total",
+        "counts"
+      ]
+    },
+    "type4": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      },
+      "properties": {},
+      "required": [],
+      "description": "Free-form record; keys are not enumerated by the TypeScript contract."
+    },
+    "type5": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "left": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "right": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        }
+      },
+      "required": [
+        "field",
+        "left",
+        "right"
+      ]
+    }
+  }
+}

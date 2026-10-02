@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-upgrade-preflight.schema.json",
+  "title": "cueline upgrade preflight --json output",
+  "description": "Current serialized TypeScript shape from src/cli/health-commands.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "cueline-upgrade-preflight/1"
+        },
+        "version": {
+          "type": "string"
+        },
+        "targetVersion": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "ready"
+            },
+            {
+              "const": "blocked"
+            }
+          ]
+        },
+        "checks": {
+          "$ref": "#/$defs/type2"
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type7"
+          }
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "targetVersion",
+        "status",
+        "checks",
+        "findings"
+      ]
+    },
+    "type2": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node": {
+          "$ref": "#/$defs/type3"
+        },
+        "config": {
+          "$ref": "#/$defs/type4"
+        },
+        "stateHome": {
+          "$ref": "#/$defs/type5"
+        },
+        "runs": {
+          "$ref": "#/$defs/type6"
+        }
+      },
+      "required": [
+        "node",
+        "config",
+        "stateHome",
+        "runs"
+      ]
+    },
+    "type3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "requirement": {
+          "const": ">=22"
+        },
+        "ok": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "requirement",
+        "ok"
+      ]
+    },
+    "type4": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "valid": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "valid"
+      ]
+    },
+    "type5": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "const": "missing"
+            },
+            {
+              "const": "directory"
+            },
+            {
+              "const": "symlink"
+            },
+            {
+              "const": "other"
+            }
+          ]
+        },
+        "private": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "private"
+      ]
+    },
+    "type6": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "total": {
+          "type": "number"
+        },
+        "nonTerminal": {
+          "type": "number"
+        },
+        "unreadable": {
+          "type": "number"
+        },
+        "legacyJobEvidence": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "total",
+        "nonTerminal",
+        "unreadable",
+        "legacyJobEvidence"
+      ]
+    },
+    "type7": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "const": "blocker"
+            },
+            {
+              "const": "warning"
+            }
+          ]
+        },
+        "surface": {
+          "anyOf": [
+            {
+              "const": "version"
+            },
+            {
+              "const": "node"
+            },
+            {
+              "const": "config"
+            },
+            {
+              "const": "state"
+            },
+            {
+              "const": "runs"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "surface",
+        "message"
+      ]
+    }
+  }
+}

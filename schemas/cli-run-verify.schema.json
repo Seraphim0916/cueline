@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-run-verify.schema.json",
+  "title": "cueline run verify --json output",
+  "description": "Current serialized TypeScript shape from src/cli/observation-commands.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "unreadable"
+            },
+            {
+              "const": "verified"
+            },
+            {
+              "const": "degraded"
+            }
+          ]
+        },
+        "marker": {
+          "anyOf": [
+            {
+              "const": "missing"
+            },
+            {
+              "const": "invalid"
+            },
+            {
+              "const": "valid"
+            }
+          ]
+        },
+        "eventLog": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/type2"
+            },
+            {
+              "$ref": "#/$defs/type3"
+            }
+          ]
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "const": "missing"
+            },
+            {
+              "const": "stale"
+            },
+            {
+              "const": "invalid"
+            },
+            {
+              "const": "valid"
+            }
+          ]
+        },
+        "runtimeOwnership": {
+          "anyOf": [
+            {
+              "const": "missing"
+            },
+            {
+              "const": "active"
+            },
+            {
+              "const": "stale"
+            },
+            {
+              "const": "released"
+            },
+            {
+              "const": "invalid"
+            }
+          ]
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type4"
+          }
+        }
+      },
+      "required": [
+        "runId",
+        "outcome",
+        "marker",
+        "eventLog",
+        "snapshot",
+        "runtimeOwnership",
+        "findings"
+      ]
+    },
+    "type2": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "readable": {
+          "const": true
+        },
+        "totalEvents": {
+          "type": "number"
+        },
+        "authoritativeEvents": {
+          "type": "number"
+        },
+        "lastSequence": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "readable",
+        "totalEvents",
+        "authoritativeEvents",
+        "lastSequence"
+      ]
+    },
+    "type3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "readable": {
+          "const": false
+        },
+        "totalEvents": {
+          "const": 0
+        },
+        "authoritativeEvents": {
+          "const": 0
+        },
+        "lastSequence": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "readable",
+        "totalEvents",
+        "authoritativeEvents",
+        "lastSequence"
+      ]
+    },
+    "type4": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "const": "warning"
+            },
+            {
+              "const": "error"
+            }
+          ]
+        },
+        "surface": {
+          "anyOf": [
+            {
+              "const": "runtime"
+            },
+            {
+              "const": "marker"
+            },
+            {
+              "const": "events"
+            },
+            {
+              "const": "snapshot"
+            },
+            {
+              "const": "jobs"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "surface",
+        "message"
+      ]
+    }
+  }
+}

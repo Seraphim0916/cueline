@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-run-authorize-response-retry.schema.json",
+  "title": "cueline run authorize-response-retry --json output",
+  "description": "Current serialized TypeScript shape from src/cli/main.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "round": {
+          "type": "number"
+        },
+        "conversationUrl": {
+          "type": "string"
+        },
+        "evidenceHash": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "authorized"
+            },
+            {
+              "const": "already_authorized"
+            }
+          ]
+        }
+      },
+      "required": [
+        "runId",
+        "requestId",
+        "round",
+        "conversationUrl",
+        "evidenceHash",
+        "outcome"
+      ]
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-run-takeover.schema.json",
+  "title": "cueline run takeover --json output",
+  "description": "Current serialized TypeScript shape from src/cli/main.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "already_terminal"
+            },
+            {
+              "const": "taken_over"
+            },
+            {
+              "const": "already_available"
+            }
+          ]
+        },
+        "next": {
+          "anyOf": [
+            {
+              "const": "continue"
+            },
+            {
+              "const": "reconcile_runtime"
+            },
+            {
+              "const": "none"
+            }
+          ]
+        },
+        "previousOwnerId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "outcome",
+        "next"
+      ]
+    }
+  }
+}

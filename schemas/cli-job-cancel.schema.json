@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-job-cancel.schema.json",
+  "title": "cueline job cancel --json output",
+  "description": "Current serialized TypeScript shape from src/cli/main.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "jobId": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "cancelled"
+            },
+            {
+              "const": "ambiguous"
+            },
+            {
+              "const": "already_terminal"
+            },
+            {
+              "const": "requested"
+            }
+          ]
+        }
+      },
+      "required": [
+        "runId",
+        "jobId",
+        "outcome"
+      ]
+    }
+  }
+}

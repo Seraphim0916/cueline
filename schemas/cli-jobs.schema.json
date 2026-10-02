@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-jobs.schema.json",
+  "title": "cueline jobs --json output",
+  "description": "Current serialized TypeScript shape from src/cli/main.ts; records remain free-form where declared. No CLI output changes.",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/type1"
+  },
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jobId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "jobKey": {
+          "type": "string"
+        },
+        "lane": {
+          "type": "string"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "const": "advise"
+            },
+            {
+              "const": "work"
+            }
+          ]
+        },
+        "runnerId": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "number"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "lastProgressAt": {
+          "type": "string"
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "const": "foreground"
+            },
+            {
+              "const": "background"
+            }
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "failed"
+            },
+            {
+              "const": "pending"
+            },
+            {
+              "const": "running"
+            },
+            {
+              "const": "succeeded"
+            },
+            {
+              "const": "timed_out"
+            },
+            {
+              "const": "cancelled"
+            },
+            {
+              "const": "ambiguous"
+            }
+          ]
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "finishedAt": {
+          "type": "string"
+        },
+        "observedStatus": {
+          "anyOf": [
+            {
+              "const": "failed"
+            },
+            {
+              "const": "pending"
+            },
+            {
+              "const": "running"
+            },
+            {
+              "const": "succeeded"
+            },
+            {
+              "const": "timed_out"
+            },
+            {
+              "const": "cancelled"
+            },
+            {
+              "const": "ambiguous"
+            },
+            {
+              "const": "orphaned"
+            },
+            {
+              "const": "unverified"
+            },
+            {
+              "const": "conflict"
+            }
+          ]
+        },
+        "persistedStatus": {
+          "anyOf": [
+            {
+              "const": "failed"
+            },
+            {
+              "const": "pending"
+            },
+            {
+              "const": "running"
+            },
+            {
+              "const": "succeeded"
+            },
+            {
+              "const": "timed_out"
+            },
+            {
+              "const": "cancelled"
+            },
+            {
+              "const": "ambiguous"
+            }
+          ]
+        }
+      },
+      "required": [
+        "jobId",
+        "execution",
+        "status",
+        "startedAt",
+        "observedStatus"
+      ]
+    }
+  }
+}

@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-self-test.schema.json",
+  "title": "cueline self-test --json output",
+  "description": "Current serialized TypeScript shape from src/diagnostics/offline-self-test.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "cueline-offline-self-test/1"
+        },
+        "version": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "ok"
+            },
+            {
+              "const": "failed"
+            }
+          ]
+        },
+        "offline": {
+          "const": true
+        },
+        "checks": {
+          "$ref": "#/$defs/type2"
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type3"
+          }
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "status",
+        "offline",
+        "checks",
+        "findings"
+      ]
+    },
+    "type2": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "controllerRounds": {
+          "type": "number"
+        },
+        "completedJobs": {
+          "type": "number"
+        },
+        "finalDelivery": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "durableRunVerification": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        }
+      },
+      "required": [
+        "controllerRounds",
+        "completedJobs",
+        "finalDelivery",
+        "durableRunVerification"
+      ]
+    },
+    "type3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}
