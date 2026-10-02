@@ -219,3 +219,23 @@ test("the CLI wires dry-run, apply, JSON, and usage validation", async () => {
     2,
   );
 });
+
+test("a blank --stale-hours is a usage error, not a zero-hour cutoff", async () => {
+  const stateHome = await home();
+  await seedRun(stateHome, "run_orphan", "2026-07-15T00:00:00.000Z");
+  const environment = { CUELINE_HOME: stateHome, HOME: stateHome };
+  const before = await readEvents(stateHome, "run_orphan");
+
+  for (const blank of ["", "   "]) {
+    const rejected = collectingIo();
+    assert.equal(
+      await main(
+        ["runs", "sweep", "--stale-hours", blank, "--apply"],
+        environment,
+        rejected.io,
+      ),
+      2,
+    );
+    assert.equal(await readEvents(stateHome, "run_orphan"), before);
+  }
+});

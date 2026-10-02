@@ -739,7 +739,8 @@ export async function main(
         if (
           argument === "--older-than-days" &&
           olderThanDays === undefined &&
-          typeof args[index + 1] === "string"
+          typeof args[index + 1] === "string" &&
+          args[index + 1]?.trim() !== ""
         ) {
           olderThanDays = Number(args[index + 1]);
           index += 1;
@@ -784,7 +785,8 @@ export async function main(
         if (
           argument === "--stale-hours" &&
           staleHours === undefined &&
-          typeof args[index + 1] === "string"
+          typeof args[index + 1] === "string" &&
+          args[index + 1]?.trim() !== ""
         ) {
           staleHours = Number(args[index + 1]);
           index += 1;

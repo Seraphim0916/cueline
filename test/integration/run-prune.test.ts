@@ -297,3 +297,22 @@ test("the CLI wires dry-run, apply, and usage validation", async () => {
     2,
   );
 });
+
+test("a blank --older-than-days is a usage error, not a zero-day cutoff", async () => {
+  const stateHome = await home();
+  await seedRun(stateHome, "run_old_done", "2026-06-01T00:00:00.000Z", "run_completed");
+  const environment = { CUELINE_HOME: stateHome, HOME: stateHome };
+
+  for (const blank of ["", "   "]) {
+    const rejected = collectingIo();
+    assert.equal(
+      await main(
+        ["runs", "prune", "--older-than-days", blank, "--apply"],
+        environment,
+        rejected.io,
+      ),
+      2,
+    );
+    assert.equal(await exists(runPaths(stateHome, "run_old_done").runDir), true);
+  }
+});
