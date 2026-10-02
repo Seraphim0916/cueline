@@ -27,7 +27,7 @@ export function formatErrorMessage(error: unknown): string {
   const limit = 240;
   const marker = "… [truncated]";
   if (rendering.length > limit) rendering = rendering.slice(0, limit - marker.length) + marker;
-  return `Non-Error rejection (${typeof error}): ${rendering}`;
+  return `Non-Error rejection (${error === null ? "null" : typeof error}): ${rendering}`;
 }
 
 export function asCueLineError(error: unknown, code = "CUELINE_INTERNAL"): CueLineError {

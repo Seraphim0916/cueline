@@ -8,7 +8,7 @@ circular.self = circular;
 
 const cases: Array<{ name: string; value: unknown; type: string; rendering?: string }> = [
   { name: "undefined", value: undefined, type: "undefined" },
-  { name: "null", value: null, type: "object", rendering: "null" },
+  { name: "null", value: null, type: "(null)", rendering: "null" },
   { name: "string", value: "adapter rejected the turn", type: "string", rendering: "adapter rejected the turn" },
   { name: "number", value: 42, type: "number", rendering: "42" },
   { name: "boolean", value: false, type: "boolean", rendering: "false" },
