@@ -51,6 +51,7 @@ The browser adapter relies on accessible textbox/button roles, attachment chips,
 - automatic retry/fallback after a worker starts
 - cross-host transfer of browser sessions, credentials, child processes, or local runtime state
 - unattended guarantee across ChatGPT UI or authentication changes
+- reading or writing files under `CUELINE_HOME` directly; the on-disk layout is not frozen ([state and recovery](state-and-recovery.md#default-layout)) and `loadCueLineRunState` is the only promised way to load persisted state
 
 ## CLI boundary
 

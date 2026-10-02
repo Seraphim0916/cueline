@@ -21,6 +21,14 @@ ${CUELINE_HOME:-$HOME/.cueline}/
     └── <job-id>.json
 ```
 
+This tree describes what the current version writes; it is not a frozen format.
+File names, the split between `events.jsonl` and its segments, the runtime
+ownership files, and the fields inside each JSON file can change in any release,
+including a patch release. Read persisted state through
+`loadCueLineRunState(runId, ...)`, which is the only promised way to load a run
+from disk, or through the read-only CLI and MCP status commands. Tools that
+parse the files directly must expect to break on upgrade.
+
 `CUELINE_HOME` accepts an absolute or relative path. `~` and `~/...` are expanded against `HOME`. Run and job IDs are validated before they are used in filesystem paths.
 
 On POSIX hosts, CueLine-owned run, event-segment, runtime, cancellation, and
