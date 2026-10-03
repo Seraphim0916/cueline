@@ -28,21 +28,21 @@ CueLine はフェイルクローズ（fail-closed）です。送信が届いた�
 
 この挙動が重要なのは、ChatGPT にはローカルツールがないためです。コントローラーはテキストの指示だけを返し、ローカルの Codex または Claude Code がリポジトリの証拠を提供し、作業を明示的に claim し、ローカルで実行してよい内容を判断します。
 
-## 最新リリース：0.7.7
+## 最新リリース：0.7.8
+
+- 実行ディレクトリが削除された後にランタイムリースを解放すると、無限に再試行してプロセスが終わらなくなる代わりに `RUN_NOT_FOUND` で失敗します。
+- リースのハートビートがランタイムリースを保持している間に呼び出し側ジョブの結果を送信すると、すぐに `RUN_ALREADY_ACTIVE` で失敗せず、最大 10 秒待ちます。
+
+詳細は [0.7.8 changelog](CHANGELOG.md#078---2026-10-03) を参照してください。
+
+### 0.7.7 の変更は継続
 
 - Claude Desktop ホストレーン：デーモンは保存済みの実行と会話を再開し、未取得のブリッジタイムアウトだけを最大 3 回再試行し、終了または古くなったフェーズでは待機をやめ、pid ロックでブリッジごとに 1 つのデーモンに限定します。ブリッジ要求は有効期限とデーモンの識別子を持ち、期限切れや不正な要求は隔離されます。
 - 到達可能な Codex アプリ内ブラウザがない場合、継続は実行記録に触れる前に失敗します。
 - `--json` を受け付けるすべてのコマンドに厳密な JSON Schema があり、`cueline doctor` は状態ディレクトリがグループや他のユーザーに開いていると警告し、正確な `chmod` 修正コマンドを示します。
 - プロセスジョブは、子孫プロセスが出力パイプを保持していてもタイムアウトやキャンセル後に終了します。呼び出し側作業の復旧とクレーム解放も強化されました。
 
-詳細は [0.7.7 changelog](CHANGELOG.md#077---2026-10-03) を参照してください。
-
-### 0.7.6 の追加機能は継続
-
-- `cueline install` は、管理対象の skill シンボリックリンク 2 本で標準では Codex と Claude Code の両方を接続します。3 つの CLI 実行ファイルは npm が提供します。`--codex-only` または `--claude-only` で範囲を限定できます。アンインストールは CueLine が作成したリンクだけを削除し、外部のパスは拒否します。
-- Claude Code host lane の composer 準備待ちとブラウザー操作の時間枠は、`CUELINE_COMPOSER_READY_TIMEOUT_MS` と `CUELINE_BROWSER_OPERATION_TIMEOUT_MS` で上書きできます。既定値は 120000 と 180000 ミリ秒です。有効な値は 1000–3600000 で、無効な値は名前付きエラーを送出します。
-
-詳細は [changelog](CHANGELOG.md#076---2026-08-31) またはバージョン指定の [v0.7.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.6) を参照してください。
+詳細は [changelog](CHANGELOG.md#077---2026-10-03) またはバージョン指定の [v0.7.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.7) を参照してください。
 
 ## 1 回の実行は実際にどう進むか
 
@@ -89,7 +89,7 @@ Node.js 22 以降、内蔵 Browser を備えた Codex、さらに同梱の既定
 npm registry からインストールします。
 
 ```bash
-npm install -g cueline@0.7.7
+npm install -g cueline@0.7.8
 cueline install
 cueline doctor
 ```
@@ -97,7 +97,7 @@ cueline doctor
 代替として、バージョン付き tarball をインストールし、公開された `.sha256` checksum を検証できます。
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.7/cueline-0.7.7.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.8/cueline-0.7.8.tgz
 cueline install
 cueline doctor
 ```
@@ -107,7 +107,7 @@ cueline doctor
 ### Claude Code
 
 ```bash
-npm install -g cueline@0.7.7
+npm install -g cueline@0.7.8
 cueline install --claude-only
 cueline doctor
 export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
@@ -260,7 +260,7 @@ CLI はブラウザーを駆動しません。状態を書き込むコマンド�
 
 ```console
 $ cueline doctor
-CueLine 0.7.7
+CueLine 0.7.8
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -346,7 +346,7 @@ npm pack --dry-run
 
 `npm run smoke:fake` は、偽のブラウザーと偽の runner を相手に、コントローラーループ全体をオフラインで走らせます。証明できるのはループであって、ライブのページではありません。後者を証明できるのは、組み込みブラウザーを通じて実際に完了した 1 ラウンドだけです。
 
-## 0.7.7 での既知の制限
+## 0.7.8 での既知の制限
 
 テキストコマンドのみ。1 回の run につき会話は 1 つです。`Pro` の選択が CueLine が行う唯一のモデル切り替えです。長文の自動添付変換は対応しますが、意図的なファイルアップロード、画像、Deep Research、Projects、Apps は非対応です。Caller work は明示的な claim/start と、長時間作業では heartbeat が必要です。process 実行は二重承認が必要です。曖昧な送信や開始済みジョブを自動再試行しません。macOS が主要デスクトップターゲット、Linux が CI ターゲットで、Windows は未検証です。アダプターは現行の ChatGPT ウェブ UI に依存するため、UI 変更は捏造された回答ではなく明示的なエラーとして表面化します。
 

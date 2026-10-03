@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.8 - 2026-10-03
+
+### Fixed
+
+- A runtime lease mutation no longer spins forever when its run directory has been removed. The lock acquisition retried `mkdir` every millisecond on `ENOENT` without checking its deadline, so releasing a lease after its run was deleted kept the process alive indefinitely; it now fails with `RUN_NOT_FOUND`, or with `RUN_CLAIM_IN_PROGRESS` once the deadline passes.
+- Submitting a caller job result while a caller-work lease heartbeat holds the run's runtime lease now waits up to 10 seconds for it instead of failing at once with `RUN_ALREADY_ACTIVE`. Other errors, and a lease still held at the deadline, fail as before.
+- CI test jobs stop after 20 minutes instead of GitHub's default, and the MCP restart test bounds each session close so a hang fails with a named error.
+
 ## 0.7.7 - 2026-10-03
 
 ### Added

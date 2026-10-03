@@ -28,21 +28,21 @@ CueLine 採用失敗關閉（fail-closed）設計。送出結果不明、回覆�
 
 這個界線很重要：ChatGPT 沒有本機工具，主控端只回傳文字指令；本機 Codex 或 Claude Code 負責提供儲存庫證據、明確認領工作，並決定哪些動作可在本機執行。
 
-## 最新版本：0.7.7
+## 最新版本：0.7.8
+
+- 執行目錄被刪掉之後再釋放執行租約，現在會以 `RUN_NOT_FOUND` 失敗，不會無限重試、讓行程一直不結束。
+- 租約心跳正占用執行租約時送出呼叫端工作結果，會等最多 10 秒，不再立刻以 `RUN_ALREADY_ACTIVE` 失敗。
+
+完整內容請看 [0.7.8 changelog](CHANGELOG.md#078---2026-10-03)。
+
+### 保留的 0.7.7 變更
 
 - Claude Desktop 主機通道：常駐程式可接續已存的執行與對話，只重試尚未被認領的橋接逾時（最多三次），遇到終止或過期的階段就停止等待，並以 pid 鎖確保每個橋接只有一個常駐程式。橋接請求帶有效期限與常駐程式身分，過期或格式錯誤的請求會被隔離。
 - 找不到可用的 Codex 內建瀏覽器時，接續執行會在動到執行紀錄之前就失敗。
 - 每個支援 `--json` 的指令都有嚴格的 JSON Schema；`cueline doctor` 在狀態目錄對群組或其他使用者開放時會警告，並附上確切的 `chmod` 修正指令。
 - 行程工作在逾時或取消後，即使子孫行程仍握著輸出管線也會結束；呼叫端工作的恢復與認領釋放更加嚴謹。
 
-完整內容請看 [0.7.7 changelog](CHANGELOG.md#077---2026-10-03)。
-
-### 保留的 0.7.6 新增項目
-
-- `cueline install` 現在預設透過五條受管理的符號連結，同時接好 Codex 與 Claude Code。可用 `--codex-only` 或 `--claude-only` 限定範圍；解除安裝只會移除 CueLine 自己建立的連結，遇到外來路徑會拒絕處理。
-- Claude Code 宿主車道的 composer 就緒與瀏覽器操作時窗，可用 `CUELINE_COMPOSER_READY_TIMEOUT_MS` 和 `CUELINE_BROWSER_OPERATION_TIMEOUT_MS` 覆寫。預設為 120000 與 180000 毫秒；合法值為 1000–3600000，非法值會擲出具名錯誤。
-
-完整內容請看 [changelog](CHANGELOG.md#076---2026-08-31) 或版本化的 [v0.7.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.6)。
+完整內容請看 [changelog](CHANGELOG.md#077---2026-10-03) 或版本化的 [v0.7.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.7)。
 
 ## 一次執行實際上怎麼跑
 
@@ -89,15 +89,15 @@ ChatGPT Pro 訂閱方案與「選定的 Pro 模型」是兩回事。帳號或個
 從 npm registry 安裝：
 
 ```bash
-npm install -g cueline@0.7.7
+npm install -g cueline@0.7.8
 cueline install
 cueline doctor
 ```
 
-0.7.7 的 GitHub 套件發布後，也可安裝版本化 tarball，並核對隨附的 `.sha256` checksum：
+0.7.8 的 GitHub 套件發布後，也可安裝版本化 tarball，並核對隨附的 `.sha256` checksum：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.7/cueline-0.7.7.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.8/cueline-0.7.8.tgz
 cueline install
 cueline doctor
 ```
@@ -107,7 +107,7 @@ cueline doctor
 ### Claude Code
 
 ```bash
-npm install -g cueline@0.7.7
+npm install -g cueline@0.7.8
 cueline install --claude-only
 cueline doctor
 export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
@@ -291,7 +291,7 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.7.7
+CueLine 0.7.8
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -377,7 +377,7 @@ npm pack --dry-run
 
 `npm run smoke:fake` 會用假的瀏覽器與假的 runner，離線跑完整個主控迴圈。它證明的是迴圈，不是線上頁面——只有真正透過內建瀏覽器完成一輪，才能證明後者。
 
-## 0.7.7 的已知限制
+## 0.7.8 的已知限制
 
 只支援文字控制命令。一次執行只對應一個對話。選成 `Pro` 是 CueLine 唯一會做的模型切換。支援 ChatGPT 自動把長文字轉成附件，但不支援主動上傳檔案、圖片、Deep Research、Projects 或 Apps。Caller `work` 必須經過明確 claim/start；長工作需要 executor heartbeat 與 executor 回報的已完成進度 checkpoint，CueLine 不會把 LLM 文字當成進度。process 執行則要雙重明確授權。任何模糊送出或已啟動工作都不會被自動重試。macOS 是主要桌面目標、Linux 是 CI 目標；Windows 未驗證。adapter 依賴目前的 ChatGPT 網頁 UI，UI 改版會被明確浮現，絕不變成捏造的答案。
 
