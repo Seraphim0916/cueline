@@ -8,7 +8,7 @@ import type {
   FileBridgeResponse,
 } from "./file-bridge.js";
 
-const REQUEST_FILE = /^(req-\d+-\d+)\.json$/;
+const REQUEST_FILE = /^(req-(\d+)-(\d+))\.json$/;
 const REQUEST_ID = /^req-\d+-\d+$/;
 
 export interface HostMailboxWaitOptions {
@@ -88,13 +88,44 @@ export async function claimNextHostMailboxRequest(
     mkdir(responses, { recursive: true }),
   ]);
 
-  const files = (await readdir(requests)).filter((name) => REQUEST_FILE.test(name)).sort();
+  const files = (await readdir(requests)).filter((name) => REQUEST_FILE.test(name)).sort((a, b) => {
+    const left = REQUEST_FILE.exec(a)!;
+    const right = REQUEST_FILE.exec(b)!;
+    for (const part of [2, 3]) {
+      const x = BigInt(left[part]!);
+      const y = BigInt(right[part]!);
+      if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  });
   for (const file of files) {
     const match = REQUEST_FILE.exec(file);
     if (match === null) continue;
     const id = match[1]!;
     const requestPath = join(requests, file);
     const inflightPath = join(inflight, file);
+    let raw: string;
+    try {
+      raw = await readFile(requestPath, "utf8");
+    } catch (error) {
+      if (isNotFound(error)) continue;
+      throw error;
+    }
+    // Malformed requests are claimed and quarantined below so the original
+    // parse error is preserved without leaving poison work in inflight.
+    let expiresAt: unknown;
+    try {
+      expiresAt = (JSON.parse(raw) as Partial<FileBridgeRequest> | null)?.expiresAt;
+    } catch {}
+    if (typeof expiresAt === "string" && Date.parse(expiresAt) <= now()) {
+      await mkdir(join(root, "expired"), { recursive: true });
+      try {
+        await rename(requestPath, join(root, "expired", file));
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
+      }
+      continue;
+    }
     try {
       await rename(requestPath, inflightPath);
     } catch (error) {
@@ -102,7 +133,14 @@ export async function claimNextHostMailboxRequest(
       throw error;
     }
 
-    const request = parseRequest(await readFile(inflightPath, "utf8"), id);
+    let request: FileBridgeRequest;
+    try {
+      request = parseRequest(await readFile(inflightPath, "utf8"), id);
+    } catch (error) {
+      await mkdir(join(root, "rejected"), { recursive: true });
+      await rename(inflightPath, join(root, "rejected", file));
+      throw error;
+    }
     const claimed: FileBridgeInFlightRequest = {
       ...request,
       phase: "claimed",
