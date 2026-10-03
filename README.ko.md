@@ -28,21 +28,21 @@ CueLine은 페일 클로즈드(fail-closed) 방식입니다. 전송이 실제로
 
 이 동작이 중요한 이유는 ChatGPT에 로컬 도구가 없기 때문입니다. 컨트롤러는 텍스트 지시만 반환하고, 로컬 Codex 또는 Claude Code가 저장소 증거를 제공하고 작업을 명시적으로 claim하며 로컬에서 실행할 수 있는 작업을 결정합니다.
 
-## 최신 릴리스: 0.7.6
+## 최신 릴리스: 0.7.7
+
+- Claude Desktop 호스트 레인: 데몬이 저장된 실행과 대화를 재개하고, 아직 가져가지 않은 브리지 시간 초과만 최대 3번 재시도하며, 종료되었거나 오래된 단계에서는 대기를 멈추고, pid 잠금으로 브리지마다 데몬 하나만 둡니다. 브리지 요청은 만료 시각과 데몬 식별자를 담고, 만료되었거나 잘못된 요청은 격리됩니다.
+- 접근 가능한 Codex 인앱 브라우저가 없으면 이어서 실행하기가 실행 기록을 건드리기 전에 실패합니다.
+- `--json`을 받는 모든 명령에 엄격한 JSON Schema가 있으며, `cueline doctor`는 상태 디렉터리가 그룹이나 다른 사용자에게 열려 있으면 정확한 `chmod` 수정 명령과 함께 경고합니다.
+- 프로세스 작업은 하위 프로세스가 출력 파이프를 붙잡고 있어도 시간 초과나 취소 후 종료됩니다. 호출자 작업 복구와 클레임 해제도 강화되었습니다.
+
+자세한 내용은 [0.7.7 changelog](CHANGELOG.md#077---2026-10-03)를 참조하세요.
+
+### 0.7.6 추가 사항 유지
 
 - `cueline install`은 관리되는 skill 심볼릭 링크 두 개로 기본적으로 Codex와 Claude Code를 모두 연결합니다. CLI 실행 파일 세 개는 npm이 제공합니다. `--codex-only` 또는 `--claude-only`로 범위를 제한할 수 있으며, uninstall은 CueLine이 만든 링크만 제거하고 외부 경로는 거부합니다.
 - Claude Code host lane의 composer 준비 및 브라우저 작업 시간 창은 `CUELINE_COMPOSER_READY_TIMEOUT_MS`와 `CUELINE_BROWSER_OPERATION_TIMEOUT_MS`로 재정의할 수 있습니다. 기본값은 120000 및 180000밀리초입니다. 유효한 값은 1000–3600000이며, 잘못된 값은 이름이 지정된 오류를 발생시킵니다.
 
-자세한 내용은 [0.7.6 changelog](CHANGELOG.md#076---2026-08-31)를 참조하세요.
-
-### 0.7.5 강화 사항 유지
-
-- 수정 후 재시도(post-fix retry)의 대사를 강화했습니다. 제출 후 상태를 읽을 수 없으면 전용 대사 단계로 들어가며, 새로운 읽기 전용 「미전송」 증거가 있어야 두 번째 Send를 허용합니다. 증거가 부족하면 안전하게 동결을 유지합니다.
-- zero-send 재시도 대사를 유계화하고, 미전송 첨부 재시도는 좌표 폴백 전에 시맨틱 전송 컨트롤을 우선합니다.
-- 재시도 증거는 heartbeat 영속화를 넘어 보존되며, 빈 컴포저 관측은 해당 재시도 후보의 미전송 복구 증거로 인정됩니다.
-- DOM 가상화로 assistant 수가 기준선에 머무를 때 제출된 turn 복구가 정확한 delivery-timeout 엔벨로프와 대응되어 `pending`에 머물지 않습니다.
-
-전체 내용은 [changelog](CHANGELOG.md#075---2026-08-16) 또는 버전이 지정된 [v0.7.5 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.5)에서 확인할 수 있습니다.
+전체 내용은 [changelog](CHANGELOG.md#076---2026-08-31) 또는 버전이 지정된 [v0.7.6 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.6)에서 확인할 수 있습니다.
 
 ## 실행 한 번은 실제로 이렇게 흘러갑니다
 
@@ -89,7 +89,7 @@ Node.js 22 이상, 내장 Browser가 있는 Codex, 그리고 번들 기본 lane�
 npm registry에서 설치합니다.
 
 ```bash
-npm install -g cueline@0.7.6
+npm install -g cueline@0.7.7
 cueline install
 cueline doctor
 ```
@@ -97,7 +97,7 @@ cueline doctor
 대안으로 버전이 지정된 tarball을 설치하고 게시된 `.sha256` checksum을 검증할 수 있습니다.
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.6/cueline-0.7.6.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.7/cueline-0.7.7.tgz
 cueline install
 cueline doctor
 ```
@@ -107,7 +107,7 @@ cueline doctor
 ### Claude Code
 
 ```bash
-npm install -g cueline@0.7.6
+npm install -g cueline@0.7.7
 cueline install --claude-only
 cueline doctor
 export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
@@ -260,7 +260,7 @@ CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에
 
 ```console
 $ cueline doctor
-CueLine 0.7.6
+CueLine 0.7.7
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -346,7 +346,7 @@ npm pack --dry-run
 
 `npm run smoke:fake`는 가짜 브라우저와 가짜 runner를 상대로 컨트롤러 루프 전체를 오프라인으로 돌립니다. 이것이 증명하는 것은 루프이지 실제 페이지가 아닙니다. 후자는 내장 브라우저를 통해 실제로 완료된 한 라운드만이 증명할 수 있습니다.
 
-## 0.7.6의 알려진 제한 사항
+## 0.7.7의 알려진 제한 사항
 
 텍스트 명령 전용입니다. run 하나당 대화는 하나입니다. `Pro` 선택이 CueLine이 하는 유일한 모델 전환입니다. 긴 텍스트의 자동 첨부 변환은 지원하지만 의도적 파일 업로드, 이미지, Deep Research, Projects, Apps는 지원하지 않습니다. Caller work는 명시적 claim/start와, 긴 작업에는 heartbeat가 필요합니다. process 실행은 이중 승인이 필요합니다. 모호한 전송이나 이미 시작된 작업은 자동 재시도하지 않습니다. macOS가 주 데스크톱 대상이고 Linux가 CI 대상이며 Windows는 검증되지 않았습니다. 어댑터는 현재 ChatGPT 웹 UI에 의존하므로, UI 변경은 지어낸 답이 아니라 명시적 오류로 드러납니다.
 

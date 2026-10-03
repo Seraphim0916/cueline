@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.7.7 - 2026-10-03
+
+### Added
+
+- Every command that accepts `--json` now has a strict JSON Schema for the output it emits today (23 were missing), and the CLI contract check validates real output against them.
 
 ### Fixed
 
@@ -9,8 +13,13 @@
 - M-91: Continuation without a reachable Codex in-app Browser now fails before touching the run; Claude Code hosts leave continuation to the lane daemon without changing the MCP tool contract.
 - M-93: Claude Desktop lane waits now stop on terminal or stale phases, report only changed blocked states, and use an exclusive pid lock to reject duplicate live daemons.
 - H-22: Claude Desktop lane daemons can resume saved runs and conversations, retry only unclaimed timeouts up to three times, publish atomic status and resume hints, and configure the unclaimed request timeout independently.
-
 - Process jobs now settle after timeout or cancellation even when descendants outside the process group keep inherited stdout or stderr pipes open. A bounded post-kill deadline preserves captured output and existing result statuses without delaying normal process completion.
+- `runs prune --older-than-days` and `runs sweep --stale-hours` reject blank values instead of reading them as 0, which with `--apply` made every terminal run eligible; `timeline`, `graph` and `watch` reject blank `--after` and `--timeout-ms` values the same way.
+- A rejection that is not an `Error` is described (including `null`) instead of being recorded as `undefined`, `null` or `[object Object]` in `run_failed` events.
+- Executable lookup resolves relative `PATH` entries against the job workspace and treats configured directories as unavailable, so a coordinator-only or directory path is never selected as a runner.
+- `run export --json --out FILE` keeps stdout machine-readable regardless of option order.
+- Caller work: result recovery requires an authoritative stored intent; expiry and review keep a committed terminal outcome; releasing a settled claim is rejected without touching terminal files; ambiguous results keep their timeout or cancellation cause; and an idempotent restart re-checks the workspace identity before renewing ownership.
+- Hosts are told how to recover claimed caller work after the MCP server restarts, and which entry point owns lease renewal.
 
 ## 0.7.6 - 2026-08-31
 
