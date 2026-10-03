@@ -10,6 +10,7 @@ import type { BrowserTurnInput, ControllerTurn } from "../../src/browser/browser
 import { CUELINE_MCP_PROTOCOL_VERSION, serveCueLineMcp } from "../../src/mcp/server.js";
 import { readAuthoritativeRunEvents } from "../../src/state/store.js";
 import { FakeBrowserAdapter } from "../fakes/fake-browser.js";
+import { settleWithin } from "../support/settle-within.js";
 
 interface JsonRpcResponse {
   id: number;
@@ -77,7 +78,7 @@ async function session(home: string) {
     async close() {
       // EOF exercises serveCueLineMcp's finally/session.close, not a real process kill.
       input.end();
-      await serving;
+      await settleWithin(serving, 5_000, "MCP session close");
       input.destroy();
       output.destroy();
     },

@@ -11,6 +11,8 @@ jobs:
   test:
     name: Node ${{ matrix.node }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # A hung test file otherwise holds the job for GitHub's six-hour default.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
