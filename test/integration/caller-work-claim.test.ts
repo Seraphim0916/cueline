@@ -1424,7 +1424,9 @@ test("new executor progress resets review timing but duplicate evidence does not
   const claim = await claimCueLineCallerJob(runId, job.jobId, {
     home,
     callerId: "codex-executor-progress-reset-owner",
-    ttlMs: 1_000,
+    // The claim TTL is not under test here; a 1s TTL let a short host stall
+    // expire the claim before the progress deadline was ever reached.
+    ttlMs: 30_000,
   });
   const lease = await startCueLineCallerWorkLease(claim, {
     home,
@@ -1463,19 +1465,27 @@ test("new executor progress resets review timing but duplicate evidence does not
 test("executor-owned lease stays active through terminal submission after the initial TTL", async () => {
   const runId = "run_caller_executor_lease_submit";
   const { home, job } = await fixture(runId);
+  // An injected clock moves the claim past its 1s TTL through renewals, so a
+  // host stall cannot expire it the way real sleeps could.
+  let clock = Date.now();
+  const now = () => new Date(clock);
   const claim = await claimCueLineCallerJob(runId, job.jobId, {
     home,
+    now,
     callerId: "codex-executor-lease-submit-owner",
     ttlMs: 1_000,
   });
   const lease = await startCueLineCallerWorkLease(claim, {
     home,
-    heartbeatIntervalMs: 100,
+    now,
+    heartbeatIntervalMs: 900,
     progressTimeoutMs: 5_000,
     maxExecutionMs: 5_000,
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  clock += 600;
+  await lease.heartbeatNow();
+  clock += 600;
   await lease.heartbeatNow();
   lease.assertHealthy();
   let submitted;
@@ -1484,7 +1494,7 @@ test("executor-owned lease stays active through terminal submission after the in
       runId,
       job.jobId,
       { status: "succeeded", stdout: "LEASE_SUBMISSION_OK" },
-      { home, claim: proof(claim) },
+      { home, now, claim: proof(claim) },
     );
   } finally {
     await lease.stop();
