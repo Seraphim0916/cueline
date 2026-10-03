@@ -30,6 +30,7 @@ import {
   terminalResult,
 } from "./api-runtime-lifecycle.js";
 import type { BrowserAdapter } from "./browser/browser-adapter.js";
+import { assertIabBrowserRuntimeAvailable } from "./browser/codex-iab/bootstrap.js";
 import { createCodexIabAdapter } from "./browser/codex-iab/chatgpt-client.js";
 import { assertBrowserAdapterContract } from "./browser/validate-browser-adapter.js";
 import { probeCodexIab } from "./browser/codex-iab/probe.js";
@@ -404,6 +405,9 @@ export async function continueCueLineRun(
   if (isTerminalRun(state) && !recoverControllerArchive) {
     return terminalResult(state);
   }
+  // Fail before the lease, round allocation or any run event: a host without
+  // the in-app Browser must not turn a resumable run into a failed one.
+  if (options.browser === undefined) assertIabBrowserRuntimeAvailable();
   let runtime = await readRuntimeLease(home, options.runId, {
     ...(options.now === undefined ? {} : { now: options.now }),
   });

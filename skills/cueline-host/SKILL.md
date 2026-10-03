@@ -34,6 +34,8 @@ full progression.
 
 ## Caller work
 
+On a Claude Code host, continuation is driven by the Claude Desktop lane daemon; the host must not call `cueline_continue_run` (it fails fast with `IAB_BROWSER_MISSING`).
+
 Read durable run status first. The two waiting states have different contracts:
 
 - `awaiting_caller` is advise. Do not claim it and do not start a lease. Perform the
