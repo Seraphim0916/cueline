@@ -41,14 +41,25 @@ Read durable run status first. The two waiting states have different contracts:
   `claimId`, `callerId`, or `fencingToken`.
 - `awaiting_caller_work` is work. Keep one MCP session open:
   1. Call `cueline_claim_caller_job` with a stable `callerId`.
-  2. Call `cueline_start_caller_work_lease` with the returned claim proof. The
-     resident MCP server owns heartbeat, progress timeout, maximum lifetime, and
-     abort state.
+  2. Call `cueline_start_caller_work_lease` with the returned claim proof. Through
+     these MCP tools the resident MCP server is the executor: it owns heartbeat,
+     progress timeout, maximum lifetime, and abort state.
   3. Work only inside returned `resolvedWorkdir`.
   4. Record real durable checkpoints with `cueline_record_caller_job_progress`;
      inspect executor health with `cueline_caller_work_lease_status`.
   5. Submit the terminal result with the complete claim proof. Successful work
      submission ends the lease automatically.
+
+If the MCP server restarts, lease status/start returns
+`MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION`: before the active claim expires, call
+`cueline_claim_caller_job` again with the same `callerId`, then call
+`cueline_start_caller_work_lease` again; `already_claimed` retains the claim ID
+and fencing token. A changed `callerId` (for example, a round suffix) cannot
+recover it and gets `CALLER_WORK_ALREADY_CLAIMED`. Expired started work becomes
+`ambiguous` (`CALLER_WORK_BECAME_AMBIGUOUS`): do not resume or retry it; continue
+the same run for controller review (the existing recovery procedure in
+`docs/state-and-recovery.md`; the restart test does not cover this step). Long work may claim with a larger `ttlMs`:
+default 300,000 ms, allowed integer range 1,000–86,400,000 ms.
 
 If work stops before submission, call `cueline_end_caller_work_lease`. Occasional
 manual heartbeat is not a substitute for the resident lease.
