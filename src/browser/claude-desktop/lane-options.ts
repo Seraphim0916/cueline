@@ -13,6 +13,7 @@ export const CLAUDE_DESKTOP_IAB_TIMING_OPTIONS: ClaudeDesktopIabTimingOptions =
 
 const COMPOSER_READY_TIMEOUT_ENV = "CUELINE_COMPOSER_READY_TIMEOUT_MS";
 const BROWSER_OPERATION_TIMEOUT_ENV = "CUELINE_BROWSER_OPERATION_TIMEOUT_MS";
+const BRIDGE_REQUEST_TIMEOUT_ENV = "CUELINE_HOST_BRIDGE_REQUEST_TIMEOUT_MS";
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 3_600_000;
 
@@ -64,4 +65,10 @@ export function resolveClaudeDesktopIabTimingOptions(
   }
 
   return Object.freeze({ composerReadyTimeoutMs, browserOperationTimeoutMs });
+}
+
+export function resolveClaudeDesktopBridgeRequestTimeoutMs(
+  environment: NodeJS.ProcessEnv = process.env,
+): number {
+  return resolveTimeoutMs(environment, BRIDGE_REQUEST_TIMEOUT_ENV, 120_000);
 }

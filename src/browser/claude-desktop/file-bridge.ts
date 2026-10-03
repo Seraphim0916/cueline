@@ -16,12 +16,15 @@ export interface FileBridgeFs {
   /** Resolves undefined when the file does not exist yet. */
   read(path: string): Promise<string | undefined>;
   remove(path: string): Promise<void>;
+  /** Atomic withdrawal; optional for legacy in-memory implementations. */
+  rename?(source: string, destination: string): Promise<void>;
 }
 
 export interface FileBridgeOptions {
   /** Directory the host agent watches. requests/inflight/responses live under it. */
   root: string;
   fs: FileBridgeFs;
+  daemonId?: string;
   /** How long an unclaimed request waits — the host is not answering at all. */
   requestTimeoutMs?: number;
   /**
@@ -42,6 +45,8 @@ export interface FileBridgeRequest {
   method: string;
   params: Record<string, unknown>;
   createdAt: string;
+  expiresAt?: string;
+  daemonId?: string;
 }
 
 export type FileBridgeInFlightPhase =
@@ -168,11 +173,14 @@ export function createFileBridgeTools(options: FileBridgeOptions): ClaudeAgentBr
     await fs.mkdir(`${root}/inflight`);
     await fs.mkdir(`${root}/responses`);
 
+    const createdAt = now();
     const request: FileBridgeRequest = {
       id,
       method,
       params,
-      createdAt: new Date(now()).toISOString(),
+      createdAt: new Date(createdAt).toISOString(),
+      expiresAt: new Date(createdAt + timeoutMs).toISOString(),
+      ...(options.daemonId === undefined ? {} : { daemonId: options.daemonId }),
     };
     await fs.writeAtomic(requestPath(id), JSON.stringify(request));
 
@@ -207,8 +215,19 @@ export function createFileBridgeTools(options: FileBridgeOptions): ClaudeAgentBr
       const deadline =
         claimedAt === undefined ? publishedAt + timeoutMs : claimedAt + claimedTimeoutMs;
       if (now() >= deadline) {
-        // The request file stays put: an operator needs to see what the host
-        // never answered, and a resumed host can still pick it up.
+        // Withdraw unclaimed work so a later host turn cannot execute it.
+        // Claimed work stays in place because its outcome may be unknown.
+        if (claimedAt === undefined && fs.rename !== undefined) {
+          await fs.mkdir(`${root}/expired`);
+          try {
+            await fs.rename(requestPath(id), `${root}/expired/${id}.json`);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            // A host won the atomic rename race; apply the claimed budget.
+            claimedAt = now();
+            continue;
+          }
+        }
         const outcomeUnknown =
           claimedAt !== undefined && SIDE_EFFECTING_METHODS.has(method);
         throw new CueLineError(

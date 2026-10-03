@@ -146,11 +146,20 @@ function iabBackendNotRegisteredError(cause: unknown): CueLineError {
   );
 }
 
+export function assertIabBrowserRuntimeAvailable(): void {
+  if (globalThis.browser || globalThis.iab || globalThis.agent?.browsers?.get) return;
+  throw new CueLineError(
+    "IAB_BROWSER_MISSING",
+    "Codex did not expose the in-app Browser runtime. Run CueLine from a Codex task with the built-in Browser available or inject an IabBrowser.",
+  );
+}
+
 export async function resolveIabBrowser(requested?: IabBrowser): Promise<IabBrowser> {
   if (requested) {
     await requested.documentation?.();
     return requested;
   }
+  assertIabBrowserRuntimeAvailable();
   if (globalThis.browser) {
     await globalThis.browser.documentation?.();
     globalThis.iab = globalThis.browser;

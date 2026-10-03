@@ -27,5 +27,8 @@ export function createNodeFileBridgeFs(): FileBridgeFs {
     async remove(path) {
       await rm(path, { force: true });
     },
+    async rename(source, destination) {
+      await rename(source, destination);
+    },
   };
 }

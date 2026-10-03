@@ -1,136 +1,163 @@
 #!/usr/bin/env node
-
-/**
- * Runs a CueLine controller loop whose ChatGPT page is driven by a Claude Code
- * host over the file bridge.
- *
- *   cueline-claude-desktop-lane daemon "<request>"
- *   cueline-claude-desktop-lane status
- *
- * `daemon` is the operating mode. It must run detached from the host agent:
- * the loop blocks on browser requests that only the host can answer, so a host
- * that waits on this process synchronously would be waiting on itself.
- *
- * The host agent must be watching CUELINE_HOST_BRIDGE (default
- * ~/.cueline/host-bridge) per docs/claude-desktop-host.md, and performs caller
- * work through the cueline MCP tools.
- */
+/** Claude Desktop file-bridge lane: status, daemon "<request>", daemon --resume <runId>. */
 import { existsSync } from "node:fs";
-import { appendFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { appendFile, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 
 import { createClaudeDesktopIabBrowser } from "../src/browser/claude-desktop/iab-shim.js";
 import { createFileBridgeTools } from "../src/browser/claude-desktop/file-bridge.js";
-import { resolveClaudeDesktopIabTimingOptions } from "../src/browser/claude-desktop/lane-options.js";
-import { waitForCueLineLaneContinuation } from "../src/browser/claude-desktop/lane-status-guard.js";
+import { acquireClaudeDesktopLaneLock } from "../src/browser/claude-desktop/lane-lock.js";
+import {
+  resolveClaudeDesktopBridgeRequestTimeoutMs,
+  resolveClaudeDesktopIabTimingOptions,
+} from "../src/browser/claude-desktop/lane-options.js";
+import { runClaudeDesktopLane } from "../src/browser/claude-desktop/lane-runner.js";
 import { createNodeFileBridgeFs } from "../src/browser/claude-desktop/node-file-bridge-fs.js";
-import type { CueLineResult } from "../src/core/controller-types.js";
+import { asCueLineError } from "../src/core/errors.js";
+import type { BrowserAdapter } from "../src/browser/browser-adapter.js";
 
 const bridgeRoot = process.env["CUELINE_HOST_BRIDGE"] ?? join(homedir(), ".cueline", "host-bridge");
 const statusPath = join(bridgeRoot, "lane-status.json");
 const logPath = join(bridgeRoot, "lane.log");
+let previousWaiting: string | undefined;
+let writes = Promise.resolve();
 
-// Running from source puts this module one directory shallower than the built
-// layout the packaged default assumes, so the bundled config must be named.
-const sourceBundledConfig = new URL("../config/routing.default.json", import.meta.url).pathname;
-const packagedBundledConfig = new URL("../../config/routing.default.json", import.meta.url).pathname;
-const bundledConfig = existsSync(sourceBundledConfig)
-  ? sourceBundledConfig
-  : packagedBundledConfig;
-if (process.env["CUELINE_CONFIG"] === undefined && existsSync(bundledConfig)) {
-  process.env["CUELINE_CONFIG"] = bundledConfig;
-}
-
-const {
-  continueCueLineRun,
-  createCodexIabAdapter,
-  loadCueLineRunStatus,
-  startCueLineRun,
-} = await import("../src/api.js");
-
-const AWAITING = new Set(["awaiting_controller", "awaiting_caller", "awaiting_caller_work"]);
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function record(entry: Record<string, unknown>): Promise<void> {
-  const line = JSON.stringify({ at: new Date().toISOString(), ...entry });
-  await appendFile(logPath, `${line}\n`, "utf8");
-  await writeFile(statusPath, `${line}\n`, "utf8");
-}
-
-function summary(result: CueLineResult): Record<string, unknown> {
-  return {
-    runId: result.runId,
-    status: result.status,
-    ...(result.conversationUrl === undefined ? {} : { conversationUrl: result.conversationUrl }),
-    ...(result.cancelledReason === undefined ? {} : { cancelledReason: result.cancelledReason }),
-    pendingJobs:
-      result.pendingJobs?.map((job) => ({ id: job.jobId, status: job.status })) ?? [],
-  };
-}
-
-const [command, argument] = process.argv.slice(2);
-
-if (command === "status") {
-  const { readFile } = await import("node:fs/promises");
-  console.log(existsSync(statusPath) ? await readFile(statusPath, "utf8") : "no run recorded yet\n");
-} else if (command === "daemon") {
-  if (argument === undefined || argument.trim() === "") {
-    throw new Error('usage: claude-desktop-lane.ts daemon "<request>"');
+function record(entry: Record<string, unknown>): Promise<void> {
+  if (entry["event"] === "waiting") {
+    const key = JSON.stringify([entry["phase"], entry["safeNextAction"]]);
+    if (key === previousWaiting) return writes;
+    previousWaiting = key;
   }
-  // Same shape the bundled Codex skill uses: build the adapter over the host
-  // browser, create the run before any send so the durable runId survives a
-  // first-send failure, then advance one step at a time.
-  const browser = createCodexIabAdapter({
-    ...resolveClaudeDesktopIabTimingOptions(),
-    browser: createClaudeDesktopIabBrowser({
-      tools: createFileBridgeTools({ root: bridgeRoot, fs: createNodeFileBridgeFs() }),
-    }),
+  writes = writes.then(async () => {
+    const line = JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n";
+    await appendFile(logPath, line, "utf8");
+    const partial = `${statusPath}.${process.pid}.partial`;
+    await writeFile(partial, line, "utf8");
+    await rename(partial, statusPath);
   });
+  return writes;
+}
 
-  await record({ event: "starting", request: argument, bridgeRoot });
+async function mailboxFiles(directory: string): Promise<string[]> {
   try {
-    let result = await startCueLineRun({ request: argument });
-    await record({ event: "created", ...summary(result) });
-
-    do {
-      // Caller work is performed by the host agent through the cueline MCP
-      // tools. Durable status is the sole continuation gate; surface status
-      // alone cannot distinguish claim/start/recovery/reconciliation states.
-      await waitForCueLineLaneContinuation(result.runId, {
-        loadStatus: (runId) => loadCueLineRunStatus(runId),
-        onBlocked: async (status) => {
-          await record({
-            event: "waiting",
-            runId: result.runId,
-            phase: status.phase,
-            safeNextAction: status.safeNextAction,
-          });
-        },
-        sleep,
-      });
-      result = await continueCueLineRun({ runId: result.runId, browser });
-      await record({ event: "progress", ...summary(result) });
-    } while (AWAITING.has(result.status));
-
-    await record({
-      event: "finished",
-      ...summary(result),
-      ...(result.finalDeliveryText === undefined
-        ? {}
-        : { finalDeliveryText: result.finalDeliveryText }),
-    });
+    return (await readdir(directory, { withFileTypes: true }))
+      .filter((entry) => entry.isFile()).map((entry) => entry.name);
   } catch (error) {
-    await record({
-      event: "failed",
-      code: (error as { code?: string }).code ?? null,
-      message: error instanceof Error ? error.message : String(error),
-    });
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-} else {
-  throw new Error('usage: claude-desktop-lane.ts daemon "<request>" | status');
+}
+
+async function expirePendingRequests(): Promise<void> {
+  const requests = join(bridgeRoot, "requests");
+  const expired = join(bridgeRoot, "expired");
+  await mkdir(expired, { recursive: true });
+  let count = 0;
+  for (const file of await mailboxFiles(requests)) {
+    try {
+      await rename(join(requests, file), join(expired, file));
+      count += 1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  await record({ event: "expired", count });
+  await record({
+    event: "mailbox",
+    inflightCount: (await mailboxFiles(join(bridgeRoot, "inflight"))).length,
+    responseCount: (await mailboxFiles(join(bridgeRoot, "responses"))).length,
+  });
+}
+
+async function main(): Promise<number> {
+  const [command, argument, runId, ...extra] = process.argv.slice(2);
+  if (command === "status") {
+    try {
+      console.log(await readFile(statusPath, "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      console.log("no run recorded yet");
+    }
+    return 0;
+  }
+  if (
+    command !== "daemon" || argument === undefined || argument.trim() === "" ||
+    extra.length !== 0 || (argument === "--resume" ? !runId : runId !== undefined)
+  ) {
+    throw new Error('usage: cueline-claude-desktop-lane status | daemon "<request>" | daemon --resume <runId>');
+  }
+  const lock = await acquireClaudeDesktopLaneLock(bridgeRoot);
+  const daemonId = `${hostname()}-${process.pid}-${Date.now()}`;
+  let stopping = false;
+  const stop = (signal: string): void => {
+    if (stopping) return;
+    stopping = true;
+    void (async () => {
+      try {
+        await record({ event: "stopped", signal, daemonId });
+      } finally {
+        await lock.release();
+        process.exit(2);
+      }
+    })().catch((error: unknown) => {
+      console.error(asCueLineError(error).message);
+      process.exit(1);
+    });
+  };
+  const onTerm = (): void => stop("SIGTERM");
+  const onInt = (): void => stop("SIGINT");
+  process.on("SIGTERM", onTerm);
+  process.on("SIGINT", onInt);
+  try {
+    const sourceConfig = new URL("../config/routing.default.json", import.meta.url).pathname;
+    const packagedConfig = new URL("../../config/routing.default.json", import.meta.url).pathname;
+    const bundledConfig = existsSync(sourceConfig) ? sourceConfig : packagedConfig;
+    if (process.env["CUELINE_CONFIG"] === undefined && existsSync(bundledConfig)) {
+      process.env["CUELINE_CONFIG"] = bundledConfig;
+    }
+    const {
+      continueCueLineRun, createCodexIabAdapter, loadCueLineRunState,
+      loadCueLineRunStatus, startCueLineRun,
+    } = await import("../src/api.js");
+    const requestTimeoutMs = resolveClaudeDesktopBridgeRequestTimeoutMs();
+    const timing = resolveClaudeDesktopIabTimingOptions();
+    await expirePendingRequests();
+    await record({ event: "starting", daemonId, bridgeRoot, ...(argument === "--resume" ? { runId } : { request: argument }) });
+    const result = await runClaudeDesktopLane({
+      mode: argument === "--resume" ? { kind: "resume", runId: runId! } : { kind: "start", request: argument },
+      startRun: (request) => startCueLineRun({ request }),
+      continueRun: (id, browser: BrowserAdapter) => continueCueLineRun({ runId: id, browser }),
+      loadStatus: (id) => loadCueLineRunStatus(id),
+      persistedConversationUrl: async (id) => (await loadCueLineRunState(id)).conversationUrl ?? undefined,
+      createBrowser: (conversationUrl) => createCodexIabAdapter({
+        ...timing,
+        ...(conversationUrl === undefined ? {} : { conversationUrl }),
+        browser: createClaudeDesktopIabBrowser({
+          tools: createFileBridgeTools({
+            root: bridgeRoot, fs: createNodeFileBridgeFs(), daemonId, requestTimeoutMs,
+          }),
+        }),
+      }),
+      record,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    });
+    return result.outcome === "finished" ? 0 : 2;
+  } catch (error) {
+    const failure = asCueLineError(error);
+    await record({ event: "failed", code: failure.code, message: failure.message });
+    throw error;
+  } finally {
+    process.off("SIGTERM", onTerm);
+    process.off("SIGINT", onInt);
+    await lock.release();
+  }
+}
+
+try {
+  process.exitCode = await main();
+} catch (error) {
+  const failure = asCueLineError(error);
+  console.error(`${failure.code}: ${failure.message}`);
+  process.exitCode = 1;
 }

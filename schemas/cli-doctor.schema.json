@@ -68,7 +68,7 @@
         "required": ["code", "surface", "message"],
         "properties": {
           "code": { "type": "string", "minLength": 1 },
-          "surface": { "enum": ["node", "config", "caller"] },
+          "surface": { "enum": ["node", "config", "caller", "state"] },
           "message": { "type": "string", "minLength": 1 }
         }
       }
