@@ -1970,6 +1970,30 @@ function resolveCallerJobResultTimestamps(
   return { startedAt, finishedAt };
 }
 
+const SUBMISSION_LEASE_WAIT_MS = 10_000;
+
+// A caller-work lease heartbeat holds the runtime lease for one short mutation.
+// A result submitted at that moment waits for it instead of failing; the wait is
+// measured on the monotonic clock because callers may substitute Date.
+async function claimRuntimeLeaseForSubmission(
+  home: string,
+  runId: string,
+  now: () => Date,
+): Promise<RuntimeLease> {
+  const deadline = performance.now() + SUBMISSION_LEASE_WAIT_MS;
+  for (;;) {
+    try {
+      return await RuntimeLease.claim({ home, runId, now });
+    } catch (error) {
+      const busy =
+        error instanceof CueLineError &&
+        (error.code === "RUN_ALREADY_ACTIVE" || error.code === "RUN_CLAIM_IN_PROGRESS");
+      if (!busy || performance.now() >= deadline) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+  }
+}
+
 export async function submitCueLineCallerJobResult(
   runId: string,
   jobId: string,
@@ -1988,7 +2012,7 @@ export async function submitCueLineCallerJobResult(
     (await retireDeadRuntimeLease(home, runId, runtime.ownerId))
       ? { ownerId: runtime.ownerId, ownership: runtime.ownership }
       : undefined;
-  const lease = await RuntimeLease.claim({ home, runId, now });
+  const lease = await claimRuntimeLeaseForSubmission(home, runId, now);
   try {
     const store = await loadPersistedRunStore(home, runId);
     store.bindRuntimeOwner(lease.ownerId);
