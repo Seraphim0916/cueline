@@ -190,7 +190,17 @@ async function withLeaseMutationLock<T>(
       if (isNotFound(error)) {
         // A concurrent stale-empty-directory reclaimer may remove the
         // directory between mkdir and owner-token creation. No operation has
-        // started yet, so retrying acquisition is safe.
+        // started yet, so retrying acquisition is safe. A removed run directory
+        // never comes back, and every retry must still honour the deadline.
+        if (!(await stat(path.dirname(lockDirectory)).then(() => true, () => false))) {
+          throw new CueLineError("RUN_NOT_FOUND", `No persisted CueLine run '${runId}' was found.`);
+        }
+        if (Date.now() >= deadline) {
+          throw new CueLineError(
+            "RUN_CLAIM_IN_PROGRESS",
+            `CueLine run '${runId}' has another runtime lease mutation in progress.`,
+          );
+        }
         await delay(1);
         continue;
       }
