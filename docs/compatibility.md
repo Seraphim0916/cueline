@@ -59,6 +59,8 @@ The browser adapter relies on accessible textbox/button roles, attachment chips,
 
 ## Live readiness checklist
 
+`cueline doctor` warns with `STATE_HOME_PERMISSIONS_UNSAFE` (surface `state`) when the state home directory grants group or other permissions; it reports the current octal mode and `chmod 700 <home>` fix before `cueline upgrade preflight` blocks, without changing readiness or exit status.
+
 1. `node --version` reports 22 or newer.
 2. `npm run build` succeeds for a checkout, or the installed package contains `dist/`.
 3. Codex exposes its built-in Browser runtime.

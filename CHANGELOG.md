@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Doctor now warns when the state home grants group or other permissions, including the mode and exact chmod fix before upgrade preflight blocks, without changing readiness or exit status. The `cueline doctor --json` schema widens `findings[].surface` to also allow `state`.
 - H-23: Claude Desktop bridge requests now carry expiry and daemon identity, withdraw unclaimed timeouts, claim in numeric order, and quarantine expired or malformed work without disturbing claimed outcomes.
 - M-91: Continuation without a reachable Codex in-app Browser now fails before touching the run; Claude Code hosts leave continuation to the lane daemon without changing the MCP tool contract.
 - M-93: Claude Desktop lane waits now stop on terminal or stale phases, report only changed blocked states, and use an exclusive pid lock to reject duplicate live daemons.

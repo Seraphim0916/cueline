@@ -1,3 +1,4 @@
+import { lstat } from "node:fs/promises";
 import { routingConfigPath } from "../api.js";
 import { CueLineError } from "../core/errors.js";
 import { collectUpgradePreflight } from "../diagnostics/upgrade-preflight.js";
@@ -38,7 +39,7 @@ interface RoutingExplanationReport extends RoutingExplanation {
 
 interface DoctorFinding {
   code: string;
-  surface: "node" | "config" | "caller";
+  surface: "node" | "config" | "caller" | "state";
   message: string;
 }
 
@@ -258,6 +259,18 @@ async function collectDoctorReport(environment: NodeJS.ProcessEnv): Promise<Doct
     });
   }
   const callerReady = nodeOk && config !== undefined && callerLanes > 0;
+  try {
+    const state = await lstat(home);
+    if (state.isDirectory() && (state.mode & 0o077) !== 0) {
+      findings.push({
+        code: "STATE_HOME_PERMISSIONS_UNSAFE",
+        surface: "state",
+        message: `CueLine state home has mode ${(state.mode & 0o777).toString(8)}; cueline upgrade preflight will block on it. Fix: chmod 700 ${home}`,
+      });
+    }
+  } catch {
+    // Leave missing or inaccessible state homes to upgrade preflight.
+  }
   return {
     schema: "cueline-doctor/1",
     version: CUELINE_VERSION,
