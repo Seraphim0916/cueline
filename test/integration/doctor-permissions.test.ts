@@ -58,12 +58,28 @@ test("doctor warns about 0755 state home without changing readiness or exit code
   assert.equal(finding.surface, "state");
   assert.match(finding.message, /755/);
   assert.match(finding.message, /cueline upgrade preflight/);
-  assert.ok(finding.message.includes(`chmod 700 ${context.home}`));
+  assert.ok(finding.message.includes(`chmod 700 '${context.home}'`));
   assert.equal(unsafeResult.report.status, privateResult.report.status);
   assert.equal(unsafeResult.exitCode, privateResult.exitCode);
   assert.equal((await lstat(context.home)).mode & 0o777, 0o755);
   await chmod(context.home, 0o700);
   assert.deepEqual(await doctor(context.environment), privateResult);
+});
+
+test("doctor's chmod fix stays one shell argument when the state home path has spaces or quotes", async () => {
+  const context = await fixture();
+  const home = path.join(path.dirname(context.home), "state home's dir");
+  const environment = { ...context.environment, CUELINE_HOME: home };
+  await mkdir(home, { mode: 0o755 });
+  await chmod(home, 0o755);
+  const { report } = await doctor(environment);
+  const finding = report.findings.find((item) => item.code === "STATE_HOME_PERMISSIONS_UNSAFE");
+  assert.ok(finding);
+  const fix = /Fix: (chmod 700 .+)$/.exec(finding.message)?.[1];
+  assert.ok(fix, finding.message);
+  const applied = spawnSync("/bin/sh", ["-c", fix], { encoding: "utf8" });
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal((await lstat(home)).mode & 0o777, 0o700);
 });
 
 test("doctor permission warning does not change degraded status or exit code", async () => {

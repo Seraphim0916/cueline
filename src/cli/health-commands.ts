@@ -265,7 +265,8 @@ async function collectDoctorReport(environment: NodeJS.ProcessEnv): Promise<Doct
       findings.push({
         code: "STATE_HOME_PERMISSIONS_UNSAFE",
         surface: "state",
-        message: `CueLine state home has mode ${(state.mode & 0o777).toString(8)}; cueline upgrade preflight will block on it. Fix: chmod 700 ${home}`,
+        // Single-quote the path so the printed fix is one shell argument.
+        message: `CueLine state home has mode ${(state.mode & 0o777).toString(8)}; cueline upgrade preflight will block on it. Fix: chmod 700 '${home.replaceAll("'", "'\\''")}'`,
       });
     }
   } catch {
