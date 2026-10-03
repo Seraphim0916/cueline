@@ -249,7 +249,9 @@ if (result.status === "complete") {
 }
 ```
 
-`startCueLineCallerWorkLease` 的續租 timer 位於 executor client，不在 MCP server，也不由 LLM 逐次決定。預設每 60 秒 heartbeat，預設 claim TTL 是五分鐘；heartbeat 只表示「executor 還持有這份工作」。另一個一小時進度期限，只會在 `recordProgress` 持久接受一個新的小寫 SHA-256 證據雜湊，而且種類是 `tool_completed`、`checkpoint_persisted` 或 `verification_completed` 時重算；同一 claim 以前用過的雜湊不能反覆延命。首次持久 start、最新持久進度時間與完整已接受雜湊紀錄都會跨 executor 重啟保留，因此重建 lease 不能把一小時或 24 小時重新歸零。若一小時沒有新進度，lease 會先嘗試寫入 `caller_work_review_required`、把舊 job 標成 `ambiguous`，再中止 `lease.signal`；若連這筆持久寫入也失敗，heartbeat 仍會停止，之後由原本的 claim 逾期機制安全收斂成 `ambiguous`。舊 claim 不會復活：請續跑同一個 CueLine run，讓 Pro 看證據後明確派出新 job。無論有沒有進度，24 小時都是絕對上限，也走同一條重新審查路徑。
+直接呼叫程式庫 API 時，`startCueLineCallerWorkLease` 的續租 timer 位於 executor client（呼叫它的那個行程），不在 MCP server，也不由 LLM 逐次決定；透過 MCP 工具時，這個 executor 就是常駐的 MCP server。預設每 60 秒 heartbeat，預設 claim TTL 是五分鐘；heartbeat 只表示「executor 還持有這份工作」。另一個一小時進度期限，只會在 `recordProgress` 持久接受一個新的小寫 SHA-256 證據雜湊，而且種類是 `tool_completed`、`checkpoint_persisted` 或 `verification_completed` 時重算；同一 claim 以前用過的雜湊不能反覆延命。首次持久 start、最新持久進度時間與完整已接受雜湊紀錄都會跨 executor 重啟保留，因此重建 lease 不能把一小時或 24 小時重新歸零。若一小時沒有新進度，lease 會先嘗試寫入 `caller_work_review_required`、把舊 job 標成 `ambiguous`，再中止 `lease.signal`；若連這筆持久寫入也失敗，heartbeat 仍會停止，之後由原本的 claim 逾期機制安全收斂成 `ambiguous`。舊 claim 不會復活：請續跑同一個 CueLine run，讓 Pro 看證據後明確派出新 job。無論有沒有進度，24 小時都是絕對上限，也走同一條重新審查路徑。
+
+長時間工作可在 `cueline_claim_caller_job` 傳入較大的 `ttlMs`（預設 300,000 毫秒，整數範圍 1,000–86,400,000 毫秒）；MCP 伺服器重啟後若出現 `MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION`，須在認領到期前用相同 `callerId` 重新認領，再呼叫 `cueline_start_caller_work_lease`，換身分會得到 `CALLER_WORK_ALREADY_CLAIMED`，已開始但逾期的工作則變成 `ambiguous`，不能恢復或自動重做。
 
 `archiveControllerConversationOnComplete` 預設為 `false`，並在建立 run 時固定。啟用後，CueLine 會先把 `complete` 寫進持久紀錄，再於 Pro 未回答時封存那一個精確對話。點擊 fence 前能證明尚未點擊的失敗可以重試；fence 後只要逾時、重開、換頁或缺少完成證據，就標成 `ambiguous` 且永不再點。`blocked` 與 `cancelled` 一律保留原對話。
 

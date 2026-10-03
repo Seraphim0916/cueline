@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -306,4 +306,56 @@ test("public API rejects a nested CueLine run before contacting the controller",
       error instanceof CueLineError && error.code === "NESTED_ROUTING_REJECTED",
   );
   assert.equal(browser.calls.length, 0);
+});
+
+test("process dispatch resolves a relative PATH entry in the job workspace before fallback", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("The fixture uses a POSIX executable symlink");
+    return;
+  }
+  const root = await mkdtemp(path.join(tmpdir(), "cueline-relative-path-dispatch-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const coordinator = path.join(root, "coordinator");
+  const workspace = path.join(root, "workspace");
+  await mkdir(coordinator);
+  await mkdir(path.join(workspace, "tools"), { recursive: true });
+  await symlink(process.execPath, path.join(workspace, "tools", "relative-node"));
+  const environment: NodeJS.ProcessEnv = { ...process.env, PATH: "tools" };
+  delete environment.CUELINE_DEPTH;
+  const browser = new FakeBrowserAdapter([
+    reply(() => ({
+      action: "dispatch",
+      jobs: [{ job_key: "relative_path", lane: "smoke", mode: "advise", task: "Read the fixture", workdir: workspace }],
+    })),
+    reply((input) => {
+      assert.match(input.prompt, /JOB_PATH_OK/);
+      assert.doesNotMatch(input.prompt, /WRONG_FALLBACK/);
+      return { action: "complete", final_delivery_text: "RELATIVE_PATH_OK" };
+    }),
+  ]);
+  const result = await runCueLine({
+    executor: "process",
+    allowProcessExecution: true,
+    request: "Resolve the runner in the dispatched job workspace",
+    runId: "run_relative_path_dispatch",
+    home: path.join(root, "home"),
+    cwd: coordinator,
+    browser,
+    environment,
+    routingConfig: {
+      version: 1,
+      lanes: { smoke: { enabled: true, candidates: [
+        { id: "relative-worker", argv: ["relative-node", "-e", "process.stdin.resume(); process.stdout.write('JOB_PATH_OK');"], task_input: "stdin" },
+        { id: "absolute-fallback", argv: [process.execPath, "-e", "process.stdin.resume(); process.stdout.write('WRONG_FALLBACK');"], task_input: "stdin" },
+      ] } },
+    },
+  });
+  assert.equal(result.status, "complete");
+  assert.equal(result.finalDeliveryText, "RELATIVE_PATH_OK");
+  const jobs = Object.values(result.state.jobs);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.spec.workdir, workspace);
+  assert.equal(jobs[0]?.runtime?.runnerId, "relative-worker");
+  assert.equal(jobs[0]?.status, "succeeded");
+  assert.equal(jobs[0]?.output, "JOB_PATH_OK");
 });

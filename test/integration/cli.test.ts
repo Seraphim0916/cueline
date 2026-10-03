@@ -2511,3 +2511,77 @@ test("an incomplete state-changing command exits with the documented usage code"
   assert.match(result.stderr, /CLI_ARGUMENTS_INVALID/);
   assert.match(result.stderr, /--manual-send-confirmed/);
 });
+
+for (const fallback of [false, true]) {
+  test(`routing diagnoses a configured directory with fallback=${fallback}`, async () => {
+    const context = await fixture();
+    const directory = path.join(context.home, "runner-folder");
+    await mkdir(directory, { recursive: true });
+    await writeFile(context.config, JSON.stringify({ version: 1, lanes: { default: {
+      enabled: true, candidates: [
+        { id: "folder", argv: [directory], task_input: "stdin" },
+        ...(fallback ? [{ id: "node", argv: [process.execPath], task_input: "stdin" }] : []),
+      ],
+    } } }));
+    const routing = invoke(["routing", "--json"], context.environment);
+    assert.equal(routing.status, fallback ? 0 : 1, routing.stderr);
+    const report = JSON.parse(routing.stdout);
+    assert.equal(report.config.valid, true);
+    assert.equal(report.availableLanes, fallback ? 1 : 0);
+    assert.equal(report.lanes[0].status, fallback ? "available" : "unavailable");
+    assert.equal(report.lanes[0].selectedRunnerId, fallback ? "node" : null);
+    if (!fallback) assert.equal(report.lanes[0].errorCode, "ROUTE_NO_CANDIDATE");
+    const explanation = invoke(["routing", "explain", "--json"], context.environment);
+    const explained = JSON.parse(explanation.stdout);
+    assert.equal(explained.lanes[0].candidates[0].reasonCode, "RUNNER_UNAVAILABLE");
+    const doctor = invoke(["doctor", "--json"], context.environment);
+    assert.equal(doctor.status, 0, doctor.stderr);
+    const health = JSON.parse(doctor.stdout);
+    assert.equal(health.caller.ready, true);
+    assert.equal(health.process.availableLanes, fallback ? 1 : 0);
+  });
+}
+
+for (const [command, flag] of [
+  ["timeline", "--after"],
+  ["graph", "--after"],
+  ["watch", "--after"],
+  ["watch", "--timeout-ms"],
+] as const) {
+  test(`${command} ${flag} rejects blank numeric values while retaining explicit zero`, async () => {
+    const context = await fixture();
+    const runId = await seedActiveRun(context.home);
+    const eventsPath = runPaths(context.home, runId).events;
+    const before = await readEvents(eventsPath);
+    const latestSequence = before.at(-1)!.sequence;
+    const argsFor = (value: string, id = runId): string[] => {
+      if (flag === "--timeout-ms") {
+        return ["run", command, id, "--after", String(latestSequence), flag, value, "--json"];
+      }
+      return ["run", command, id, flag, value,
+        ...(command === "watch" ? ["--timeout-ms", "0"] : ["--limit", "1"]), "--json"];
+    };
+
+    for (const value of ["", "   ", "\t\n"]) {
+      for (const id of [runId, "run_not_created"]) {
+        const invalid = invoke(argsFor(value, id), context.environment);
+        assert.equal(invalid.status, 2, invalid.stderr);
+        assert.equal(invalid.stdout, "");
+        assert.match(invalid.stderr, /CLI_ARGUMENTS_INVALID/);
+      }
+    }
+    const zero = invoke(argsFor("0"), context.environment);
+    assert.equal(zero.status, 0, zero.stderr);
+    assert.equal(zero.stderr, "");
+    const report = JSON.parse(zero.stdout);
+    if (command === "watch") {
+      assert.equal(report.previousSequence, flag === "--after" ? 0 : latestSequence);
+      assert.equal(report.currentSequence, latestSequence);
+      assert.equal(report.outcome, flag === "--after" ? "changed" : "timed_out");
+    } else {
+      assert.equal(report.afterSequence, 0);
+      assert.equal(report.returnedEvents, 1);
+    }
+    assert.deepEqual(await readEvents(eventsPath), before);
+  });
+}

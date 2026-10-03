@@ -23,7 +23,7 @@ import {
   takeoverCueLineRuntime,
   type PrunableRunState,
 } from "../api.js";
-import { CueLineError } from "../core/errors.js";
+import { CueLineError, formatErrorMessage } from "../core/errors.js";
 import { runOfflineSelfTest } from "../diagnostics/offline-self-test.js";
 import { JobStatusStore, type JobStatus } from "../jobs/status.js";
 import { loadRoutingConfig } from "../router/config-loader.js";
@@ -172,7 +172,7 @@ function help(): string {
 
 function errorMessage(error: unknown): string {
   if (error instanceof CueLineError) return `${error.code}: ${error.message}`;
-  return error instanceof Error ? error.message : String(error);
+  return formatErrorMessage(error);
 }
 
 function parseSkillLinkScope(
@@ -739,7 +739,8 @@ export async function main(
         if (
           argument === "--older-than-days" &&
           olderThanDays === undefined &&
-          typeof args[index + 1] === "string"
+          typeof args[index + 1] === "string" &&
+          args[index + 1]?.trim() !== ""
         ) {
           olderThanDays = Number(args[index + 1]);
           index += 1;
@@ -784,7 +785,8 @@ export async function main(
         if (
           argument === "--stale-hours" &&
           staleHours === undefined &&
-          typeof args[index + 1] === "string"
+          typeof args[index + 1] === "string" &&
+          args[index + 1]?.trim() !== ""
         ) {
           staleHours = Number(args[index + 1]);
           index += 1;

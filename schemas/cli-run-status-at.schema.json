@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-run-status-at.schema.json",
+  "title": "cueline run status-at --json output",
+  "description": "Current serialized TypeScript shape from src/cli/observation-commands.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "cueline-status-at/0.1"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "requestedSequence": {
+          "type": "number"
+        },
+        "latestSequence": {
+          "type": "number"
+        },
+        "latestAuthoritativeSequence": {
+          "type": "number"
+        },
+        "totalEvents": {
+          "type": "number"
+        },
+        "authoritativeEvents": {
+          "type": "number"
+        },
+        "authoritativeEventsApplied": {
+          "type": "number"
+        },
+        "ignoredNonAuthoritativeEventsThroughSequence": {
+          "type": "number"
+        },
+        "asOf": {
+          "$ref": "#/$defs/type2"
+        },
+        "state": {
+          "$ref": "#/$defs/type3"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "runId",
+        "requestedSequence",
+        "latestSequence",
+        "latestAuthoritativeSequence",
+        "totalEvents",
+        "authoritativeEvents",
+        "authoritativeEventsApplied",
+        "ignoredNonAuthoritativeEventsThroughSequence",
+        "asOf",
+        "state",
+        "version"
+      ]
+    },
+    "type2": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "timestamp"
+      ]
+    },
+    "type3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "executor": {
+          "type": "string"
+        },
+        "allowProcessExecution": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "round": {
+          "type": "number"
+        },
+        "maxRounds": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "maxStagnantRounds": {
+          "type": "number"
+        },
+        "stagnantRounds": {
+          "type": "number"
+        },
+        "conversationBound": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "pendingControllerTurns": {
+          "type": "number"
+        },
+        "abandonedControllerTurns": {
+          "type": "number"
+        },
+        "acceptedCommands": {
+          "type": "number"
+        },
+        "pendingCommandExecution": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "jobs": {
+          "$ref": "#/$defs/type4"
+        },
+        "archiveStatus": {
+          "type": "string"
+        },
+        "finalDeliveryAvailable": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "blockedReasonAvailable": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "cancelledReasonAvailable": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "lastFailureCode": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "executor",
+        "allowProcessExecution",
+        "round",
+        "maxRounds",
+        "maxStagnantRounds",
+        "stagnantRounds",
+        "conversationBound",
+        "pendingControllerTurns",
+        "abandonedControllerTurns",
+        "acceptedCommands",
+        "pendingCommandExecution",
+        "jobs",
+        "archiveStatus",
+        "finalDeliveryAvailable",
+        "blockedReasonAvailable",
+        "cancelledReasonAvailable",
+        "lastFailureCode"
+      ]
+    },
+    "type4": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "total": {
+          "type": "number"
+        },
+        "counts": {
+          "$ref": "#/$defs/type5"
+        }
+      },
+      "required": [
+        "total",
+        "counts"
+      ]
+    },
+    "type5": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      },
+      "properties": {},
+      "required": [],
+      "description": "Free-form record; keys are not enumerated by the TypeScript contract."
+    }
+  }
+}

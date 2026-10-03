@@ -1,0 +1,344 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-protocol-lint.schema.json",
+  "title": "cueline protocol lint --json output",
+  "description": "Current serialized TypeScript shape from src/cli/main.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "valid": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "format": {
+          "anyOf": [
+            {
+              "const": "envelope"
+            },
+            {
+              "const": "json"
+            },
+            {
+              "const": "unknown"
+            }
+          ]
+        },
+        "command": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/type2"
+            },
+            {
+              "$ref": "#/$defs/type4"
+            },
+            {
+              "$ref": "#/$defs/type5"
+            },
+            {
+              "$ref": "#/$defs/type6"
+            },
+            {
+              "$ref": "#/$defs/type7"
+            }
+          ]
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type8"
+          }
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "valid",
+        "format",
+        "issues",
+        "version"
+      ]
+    },
+    "type2": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "dispatch"
+        },
+        "jobs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type3"
+          }
+        },
+        "protocol": {
+          "const": "cueline/0.1"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "round": {
+          "type": "number"
+        },
+        "request_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "jobs",
+        "protocol",
+        "run_id",
+        "round",
+        "request_id"
+      ]
+    },
+    "type3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "job_key": {
+          "type": "string"
+        },
+        "lane": {
+          "type": "string"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "const": "advise"
+            },
+            {
+              "const": "work"
+            }
+          ]
+        },
+        "task": {
+          "type": "string"
+        },
+        "required": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "timeout_ms": {
+          "type": "number"
+        },
+        "runner": {
+          "type": "string"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "background": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        }
+      },
+      "required": [
+        "job_key",
+        "lane",
+        "mode",
+        "task"
+      ]
+    },
+    "type4": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "wait"
+        },
+        "job_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "wait_ms": {
+          "type": "number"
+        },
+        "protocol": {
+          "const": "cueline/0.1"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "round": {
+          "type": "number"
+        },
+        "request_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "protocol",
+        "run_id",
+        "round",
+        "request_id"
+      ]
+    },
+    "type5": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "inspect"
+        },
+        "job_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_offset": {
+          "type": "number"
+        },
+        "evidence_hash": {
+          "type": "string"
+        },
+        "protocol": {
+          "const": "cueline/0.1"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "round": {
+          "type": "number"
+        },
+        "request_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "protocol",
+        "run_id",
+        "round",
+        "request_id"
+      ]
+    },
+    "type6": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "complete"
+        },
+        "final_delivery_text": {
+          "type": "string"
+        },
+        "protocol": {
+          "const": "cueline/0.1"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "round": {
+          "type": "number"
+        },
+        "request_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "final_delivery_text",
+        "protocol",
+        "run_id",
+        "round",
+        "request_id"
+      ]
+    },
+    "type7": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "blocked"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "final_delivery_text": {
+          "type": "string"
+        },
+        "protocol": {
+          "const": "cueline/0.1"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "round": {
+          "type": "number"
+        },
+        "request_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "reason",
+        "protocol",
+        "run_id",
+        "round",
+        "request_id"
+      ]
+    },
+    "type8": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "const": "warning"
+            },
+            {
+              "const": "error"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "suggestion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "message"
+      ]
+    }
+  }
+}

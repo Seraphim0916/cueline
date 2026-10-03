@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-runs.schema.json",
+  "title": "cueline runs --json output",
+  "description": "Current serialized TypeScript shape from src/cli/observation-commands.ts; records remain free-form where declared. No CLI output changes.",
+  "type": "array",
+  "items": {
+    "anyOf": [
+      {
+        "$ref": "#/$defs/type1"
+      },
+      {
+        "$ref": "#/$defs/type2"
+      }
+    ]
+  },
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "readable": {
+          "const": true
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "failed"
+            },
+            {
+              "const": "blocked"
+            },
+            {
+              "const": "running"
+            },
+            {
+              "const": "cancelled"
+            },
+            {
+              "const": "complete"
+            }
+          ]
+        },
+        "executor": {
+          "anyOf": [
+            {
+              "const": "caller"
+            },
+            {
+              "const": "process"
+            }
+          ]
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "const": "blocked"
+            },
+            {
+              "const": "cancelled"
+            },
+            {
+              "const": "complete"
+            },
+            {
+              "const": "starting"
+            },
+            {
+              "const": "prompt_not_sent"
+            },
+            {
+              "const": "controller_delivery_failed"
+            },
+            {
+              "const": "controller_response_failed"
+            },
+            {
+              "const": "controller_response_pending"
+            },
+            {
+              "const": "jobs_running"
+            },
+            {
+              "const": "controller_decision_pending"
+            },
+            {
+              "const": "controller_archive_pending"
+            },
+            {
+              "const": "caller_jobs_pending"
+            },
+            {
+              "const": "caller_work_pending"
+            },
+            {
+              "const": "caller_work_claimed"
+            },
+            {
+              "const": "caller_work_running"
+            },
+            {
+              "const": "runtime_active"
+            },
+            {
+              "const": "runtime_stale"
+            },
+            {
+              "const": "runtime_ownership_unknown"
+            },
+            {
+              "const": "cancellation_pending"
+            },
+            {
+              "const": "reconciliation_required"
+            },
+            {
+              "const": "job_recovery_required"
+            },
+            {
+              "const": "round_limit_reached"
+            },
+            {
+              "const": "stagnation_detected"
+            },
+            {
+              "const": "resume_ready"
+            }
+          ]
+        },
+        "round": {
+          "type": "number"
+        },
+        "pendingTurns": {
+          "type": "number"
+        },
+        "activeJobs": {
+          "type": "number"
+        },
+        "runtimeOwnership": {
+          "anyOf": [
+            {
+              "const": "missing"
+            },
+            {
+              "const": "active"
+            },
+            {
+              "const": "stale"
+            },
+            {
+              "const": "released"
+            },
+            {
+              "const": "invalid"
+            }
+          ]
+        },
+        "safeNextAction": {
+          "anyOf": [
+            {
+              "const": "observe"
+            },
+            {
+              "const": "recover_submitted_turn"
+            },
+            {
+              "const": "authorize_delivery_retry"
+            },
+            {
+              "const": "retry_delivery_timeout"
+            },
+            {
+              "const": "authorize_controller_response_retry"
+            },
+            {
+              "const": "retry_controller_response"
+            },
+            {
+              "const": "retry"
+            },
+            {
+              "const": "reconcile"
+            },
+            {
+              "const": "inspect_jobs_then_continue"
+            },
+            {
+              "const": "inspect_runtime"
+            },
+            {
+              "const": "continue"
+            },
+            {
+              "const": "execute_caller_jobs"
+            },
+            {
+              "const": "claim_caller_work"
+            },
+            {
+              "const": "start_caller_work"
+            },
+            {
+              "const": "continue_caller_work"
+            },
+            {
+              "const": "return_result"
+            },
+            {
+              "const": "settle_controller_archive"
+            },
+            {
+              "const": "manual_review"
+            }
+          ]
+        },
+        "lastEventSequence": {
+          "type": "number"
+        },
+        "lastEventAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "readable",
+        "status",
+        "executor",
+        "phase",
+        "round",
+        "pendingTurns",
+        "activeJobs",
+        "runtimeOwnership",
+        "safeNextAction",
+        "lastEventSequence",
+        "lastEventAt"
+      ]
+    },
+    "type2": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "readable": {
+          "const": false
+        },
+        "errorCode": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "readable",
+        "errorCode"
+      ]
+    }
+  }
+}

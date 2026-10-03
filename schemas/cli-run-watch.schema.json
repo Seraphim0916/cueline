@@ -1,0 +1,1050 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-run-watch.schema.json",
+  "title": "cueline run watch --json output",
+  "description": "Current serialized TypeScript shape from src/cli/observation-commands.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "timed_out"
+            },
+            {
+              "const": "changed"
+            },
+            {
+              "const": "terminal"
+            }
+          ]
+        },
+        "previousSequence": {
+          "type": "number"
+        },
+        "currentSequence": {
+          "type": "number"
+        },
+        "elapsedMs": {
+          "type": "number"
+        },
+        "status": {
+          "$ref": "#/$defs/type2"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "previousSequence",
+        "currentSequence",
+        "elapsedMs",
+        "status",
+        "version"
+      ]
+    },
+    "type2": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "failed"
+            },
+            {
+              "const": "blocked"
+            },
+            {
+              "const": "running"
+            },
+            {
+              "const": "cancelled"
+            },
+            {
+              "const": "complete"
+            }
+          ]
+        },
+        "executor": {
+          "anyOf": [
+            {
+              "const": "caller"
+            },
+            {
+              "const": "process"
+            }
+          ]
+        },
+        "allowProcessExecution": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "const": "blocked"
+            },
+            {
+              "const": "cancelled"
+            },
+            {
+              "const": "complete"
+            },
+            {
+              "const": "starting"
+            },
+            {
+              "const": "prompt_not_sent"
+            },
+            {
+              "const": "controller_delivery_failed"
+            },
+            {
+              "const": "controller_response_failed"
+            },
+            {
+              "const": "controller_response_pending"
+            },
+            {
+              "const": "jobs_running"
+            },
+            {
+              "const": "controller_decision_pending"
+            },
+            {
+              "const": "controller_archive_pending"
+            },
+            {
+              "const": "caller_jobs_pending"
+            },
+            {
+              "const": "caller_work_pending"
+            },
+            {
+              "const": "caller_work_claimed"
+            },
+            {
+              "const": "caller_work_running"
+            },
+            {
+              "const": "runtime_active"
+            },
+            {
+              "const": "runtime_stale"
+            },
+            {
+              "const": "runtime_ownership_unknown"
+            },
+            {
+              "const": "cancellation_pending"
+            },
+            {
+              "const": "reconciliation_required"
+            },
+            {
+              "const": "job_recovery_required"
+            },
+            {
+              "const": "round_limit_reached"
+            },
+            {
+              "const": "stagnation_detected"
+            },
+            {
+              "const": "resume_ready"
+            }
+          ]
+        },
+        "round": {
+          "type": "number"
+        },
+        "maxRounds": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "maxStagnantRounds": {
+          "type": "number"
+        },
+        "stagnantRounds": {
+          "type": "number"
+        },
+        "lastProgressFingerprint": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "lastEventSequence": {
+          "type": "number"
+        },
+        "runtime": {
+          "$ref": "#/$defs/type3"
+        },
+        "cancellation": {
+          "$ref": "#/$defs/type4"
+        },
+        "controller": {
+          "$ref": "#/$defs/type5"
+        },
+        "jobs": {
+          "$ref": "#/$defs/type11"
+        },
+        "continueAllowed": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "safeNextAction": {
+          "anyOf": [
+            {
+              "const": "observe"
+            },
+            {
+              "const": "recover_submitted_turn"
+            },
+            {
+              "const": "authorize_delivery_retry"
+            },
+            {
+              "const": "retry_delivery_timeout"
+            },
+            {
+              "const": "authorize_controller_response_retry"
+            },
+            {
+              "const": "retry_controller_response"
+            },
+            {
+              "const": "retry"
+            },
+            {
+              "const": "reconcile"
+            },
+            {
+              "const": "inspect_jobs_then_continue"
+            },
+            {
+              "const": "inspect_runtime"
+            },
+            {
+              "const": "continue"
+            },
+            {
+              "const": "execute_caller_jobs"
+            },
+            {
+              "const": "claim_caller_work"
+            },
+            {
+              "const": "start_caller_work"
+            },
+            {
+              "const": "continue_caller_work"
+            },
+            {
+              "const": "return_result"
+            },
+            {
+              "const": "settle_controller_archive"
+            },
+            {
+              "const": "manual_review"
+            }
+          ]
+        }
+      },
+      "required": [
+        "runId",
+        "status",
+        "executor",
+        "allowProcessExecution",
+        "phase",
+        "round",
+        "maxRounds",
+        "maxStagnantRounds",
+        "stagnantRounds",
+        "lastProgressFingerprint",
+        "lastEventSequence",
+        "runtime",
+        "cancellation",
+        "controller",
+        "jobs",
+        "continueAllowed",
+        "safeNextAction"
+      ]
+    },
+    "type3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ownership": {
+          "anyOf": [
+            {
+              "const": "missing"
+            },
+            {
+              "const": "active"
+            },
+            {
+              "const": "stale"
+            },
+            {
+              "const": "released"
+            },
+            {
+              "const": "invalid"
+            }
+          ]
+        },
+        "heartbeatAt": {
+          "type": "string"
+        },
+        "ageMs": {
+          "type": "number"
+        },
+        "ownerId": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ownership"
+      ]
+    },
+    "type4": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runRequested": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "jobRequests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "runRequested",
+        "jobRequests"
+      ]
+    },
+    "type5": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pendingTurns": {
+          "type": "number"
+        },
+        "acceptedCommands": {
+          "type": "number"
+        },
+        "responseAccepted": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "lastAcceptedAction": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "const": "blocked"
+            },
+            {
+              "const": "dispatch"
+            },
+            {
+              "const": "wait"
+            },
+            {
+              "const": "inspect"
+            },
+            {
+              "const": "complete"
+            }
+          ]
+        },
+        "lastAcceptedRequestId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "lastAcceptedJobKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pendingDiagnostic": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/type6"
+            }
+          ]
+        },
+        "deliveryTimeout": {
+          "$ref": "#/$defs/type7"
+        },
+        "responseFailure": {
+          "$ref": "#/$defs/type8"
+        },
+        "reconciliation": {
+          "$ref": "#/$defs/type9"
+        },
+        "archive": {
+          "$ref": "#/$defs/type10"
+        }
+      },
+      "required": [
+        "pendingTurns",
+        "acceptedCommands",
+        "responseAccepted",
+        "lastAcceptedAction",
+        "lastAcceptedRequestId",
+        "lastAcceptedJobKeys",
+        "archive"
+      ]
+    },
+    "type6": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "const": "CONTROLLER_OBSERVATION_PENDING_STABLE"
+        },
+        "failedCondition": {
+          "type": "string"
+        },
+        "stableForMs": {
+          "type": "number"
+        },
+        "thresholdMs": {
+          "type": "number"
+        },
+        "observedUserMessageCount": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "baselineUserMessageCount": {
+          "type": "number"
+        },
+        "requestMessageFound": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "requestMessageFoundBy": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "assistantTextFoundBy": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "composerPromptState": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "sourcesConsulted": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "code",
+        "failedCondition",
+        "stableForMs",
+        "thresholdMs",
+        "observedUserMessageCount",
+        "baselineUserMessageCount",
+        "requestMessageFound",
+        "requestMessageFoundBy",
+        "assistantTextFoundBy",
+        "composerPromptState",
+        "sourcesConsulted"
+      ]
+    },
+    "type7": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "round": {
+          "type": "number"
+        },
+        "code": {
+          "const": "CHATGPT_MESSAGE_DELIVERY_TIMEOUT"
+        },
+        "evidenceHash": {
+          "type": "string"
+        },
+        "retryActionAvailable": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "observed"
+            },
+            {
+              "const": "authorized"
+            },
+            {
+              "const": "consumed"
+            },
+            {
+              "const": "resolved"
+            }
+          ]
+        }
+      },
+      "required": [
+        "requestId",
+        "round",
+        "code",
+        "evidenceHash",
+        "retryActionAvailable",
+        "status"
+      ]
+    },
+    "type8": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "round": {
+          "type": "number"
+        },
+        "code": {
+          "const": "CHATGPT_THINKING_FAILED"
+        },
+        "evidenceHash": {
+          "type": "string"
+        },
+        "retryActionAvailable": {
+          "const": false
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "observed"
+            },
+            {
+              "const": "authorized"
+            },
+            {
+              "const": "consumed"
+            },
+            {
+              "const": "resent"
+            },
+            {
+              "const": "skipped"
+            },
+            {
+              "const": "resolved"
+            }
+          ]
+        }
+      },
+      "required": [
+        "requestId",
+        "round",
+        "code",
+        "evidenceHash",
+        "retryActionAvailable",
+        "status"
+      ]
+    },
+    "type9": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requiredReason": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "operatorConfirmation": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "const": "not_sent_confirmed"
+            },
+            {
+              "const": "manual_send_confirmed"
+            }
+          ]
+        },
+        "abandonedRequestId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "retryRequestId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "promptHash": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "resendBlockedReason": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "requiredReason",
+        "operatorConfirmation",
+        "abandonedRequestId",
+        "retryRequestId",
+        "promptHash",
+        "resendBlockedReason"
+      ]
+    },
+    "type10": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "failed"
+            },
+            {
+              "const": "pending"
+            },
+            {
+              "const": "ambiguous"
+            },
+            {
+              "const": "disabled"
+            },
+            {
+              "const": "waiting_for_completion"
+            },
+            {
+              "const": "started"
+            },
+            {
+              "const": "archived"
+            }
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "proof": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "const": "conversation_url_changed"
+            }
+          ]
+        },
+        "postActionUrl": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "status",
+        "code",
+        "proof",
+        "postActionUrl"
+      ]
+    },
+    "type11": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "total": {
+          "type": "number"
+        },
+        "counts": {
+          "$ref": "#/$defs/type12"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type13"
+          }
+        }
+      },
+      "required": [
+        "total",
+        "counts",
+        "items"
+      ]
+    },
+    "type12": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "failed": {
+          "description": "Free-form JSON value; the serialized TypeScript type does not constrain its shape."
+        },
+        "pending": {
+          "description": "Free-form JSON value; the serialized TypeScript type does not constrain its shape."
+        },
+        "running": {
+          "description": "Free-form JSON value; the serialized TypeScript type does not constrain its shape."
+        },
+        "succeeded": {
+          "description": "Free-form JSON value; the serialized TypeScript type does not constrain its shape."
+        },
+        "timed_out": {
+          "description": "Free-form JSON value; the serialized TypeScript type does not constrain its shape."
+        },
+        "cancelled": {
+          "description": "Free-form JSON value; the serialized TypeScript type does not constrain its shape."
+        },
+        "ambiguous": {
+          "description": "Free-form JSON value; the serialized TypeScript type does not constrain its shape."
+        },
+        "orphaned": {
+          "description": "Free-form JSON value; the serialized TypeScript type does not constrain its shape."
+        }
+      },
+      "required": [
+        "failed",
+        "pending",
+        "running",
+        "succeeded",
+        "timed_out",
+        "cancelled",
+        "ambiguous",
+        "orphaned"
+      ]
+    },
+    "type13": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jobId": {
+          "type": "string"
+        },
+        "jobKey": {
+          "type": "string"
+        },
+        "required": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "lane": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "failed"
+            },
+            {
+              "const": "pending"
+            },
+            {
+              "const": "running"
+            },
+            {
+              "const": "succeeded"
+            },
+            {
+              "const": "timed_out"
+            },
+            {
+              "const": "cancelled"
+            },
+            {
+              "const": "ambiguous"
+            },
+            {
+              "const": "orphaned"
+            }
+          ]
+        },
+        "persistedStatus": {
+          "anyOf": [
+            {
+              "const": "failed"
+            },
+            {
+              "const": "pending"
+            },
+            {
+              "const": "running"
+            },
+            {
+              "const": "succeeded"
+            },
+            {
+              "const": "timed_out"
+            },
+            {
+              "const": "cancelled"
+            },
+            {
+              "const": "ambiguous"
+            }
+          ]
+        },
+        "workClaim": {
+          "$ref": "#/$defs/type14"
+        },
+        "execution": {
+          "$ref": "#/$defs/type15"
+        }
+      },
+      "required": [
+        "jobId",
+        "jobKey",
+        "required",
+        "lane",
+        "mode",
+        "task",
+        "status",
+        "persistedStatus"
+      ]
+    },
+    "type14": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claimed": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "callerId": {
+          "type": "string"
+        },
+        "taskHash": {
+          "type": "string"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "claimedAt": {
+          "type": "string"
+        },
+        "heartbeatAt": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "string"
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "claimed",
+        "workdir"
+      ]
+    },
+    "type15": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runnerId": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "number"
+        },
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "lastProgressAt": {
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  }
+}

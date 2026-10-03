@@ -69,7 +69,8 @@ function validJobResult(value: unknown, expectedStatus: JobStatusKind): value is
     typeof result.emptyOutput === "boolean" &&
     result.emptyOutput === (result.output.length === 0) &&
     typeof result.timedOut === "boolean" &&
-    result.timedOut === (expectedStatus === "timed_out") &&
+    (expectedStatus === "ambiguous" ||
+      result.timedOut === (expectedStatus === "timed_out")) &&
     typeof result.cancelled === "boolean" &&
     (expectedStatus === "ambiguous" ||
       result.cancelled === (expectedStatus === "cancelled")) &&

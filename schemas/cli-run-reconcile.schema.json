@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-run-reconcile.schema.json",
+  "title": "cueline run reconcile --json output",
+  "description": "Current serialized TypeScript shape from src/cli/main.ts; records remain free-form where declared. No CLI output changes.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/type1"
+    },
+    {
+      "$ref": "#/$defs/type2"
+    },
+    {
+      "$ref": "#/$defs/type3"
+    }
+  ],
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "conversationUrl": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "confirmed"
+            },
+            {
+              "const": "already_confirmed"
+            }
+          ]
+        }
+      },
+      "required": [
+        "runId",
+        "requestId",
+        "conversationUrl",
+        "outcome"
+      ]
+    },
+    "type2": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "conversationUrl": {
+          "type": "string"
+        },
+        "promptHash": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "confirmed"
+            },
+            {
+              "const": "already_confirmed"
+            }
+          ]
+        }
+      },
+      "required": [
+        "runId",
+        "requestId",
+        "conversationUrl",
+        "promptHash",
+        "outcome"
+      ]
+    },
+    "type3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "conversationUrl": {
+          "type": "string"
+        },
+        "misdirectedConversationUrl": {
+          "type": "string"
+        },
+        "promptHash": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "const": "pending"
+            },
+            {
+              "const": "confirmed"
+            },
+            {
+              "const": "already_confirmed"
+            }
+          ]
+        },
+        "observedBaselineUserMessageCount": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/type4"
+        }
+      },
+      "required": [
+        "runId",
+        "requestId",
+        "conversationUrl",
+        "misdirectedConversationUrl",
+        "promptHash",
+        "outcome"
+      ]
+    },
+    "type4": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "misdirectedConversationUrl": {
+          "type": "string"
+        },
+        "boundConversationUrl": {
+          "type": "string"
+        },
+        "selectedModelLabel": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "misdirected": {
+          "$ref": "#/$defs/type5"
+        },
+        "bound": {
+          "$ref": "#/$defs/type6"
+        }
+      },
+      "required": [
+        "misdirectedConversationUrl",
+        "boundConversationUrl",
+        "selectedModelLabel",
+        "misdirected",
+        "bound"
+      ]
+    },
+    "type5": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pageUrl": {
+          "type": "string"
+        },
+        "isAnswering": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "assistantMessageCount": {
+          "type": "number"
+        },
+        "exactEnvelopeFound": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        }
+      },
+      "required": [
+        "pageUrl",
+        "isAnswering",
+        "assistantMessageCount",
+        "exactEnvelopeFound"
+      ]
+    },
+    "type6": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pageUrl": {
+          "type": "string"
+        },
+        "isAnswering": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "userMessageCount": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "assistantMessageCount": {
+          "type": "number"
+        },
+        "requestMessageFound": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "priorEnvelopeFound": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        }
+      },
+      "required": [
+        "pageUrl",
+        "isAnswering",
+        "userMessageCount",
+        "assistantMessageCount",
+        "requestMessageFound",
+        "priorEnvelopeFound"
+      ]
+    }
+  }
+}

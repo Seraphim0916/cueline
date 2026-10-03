@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rename, symlink, unlink } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, realpath, rename, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,6 +9,7 @@ import {
   DEFAULT_CALLER_WORK_HEARTBEAT_INTERVAL_MS,
   DEFAULT_CALLER_WORK_MAX_EXECUTION_MS,
   DEFAULT_CALLER_WORK_PROGRESS_TIMEOUT_MS,
+  cancelCueLineJob,
   claimCueLineCallerJob,
   continueCueLineRun,
   heartbeatCueLineCallerJob,
@@ -22,6 +24,7 @@ import {
 } from "../../src/api.js";
 import type { BrowserTurnInput, ControllerTurn } from "../../src/browser/browser-adapter.js";
 import { CueLineError } from "../../src/core/errors.js";
+import { reconcileExpiredCallerWorkClaims } from "../../src/api-caller-work.js";
 import { jobSpecHash } from "../../src/core/ids.js";
 import { loadPersistedRunStore } from "../../src/core/persisted-run.js";
 import { reduceRunState } from "../../src/core/state-machine.js";
@@ -29,7 +32,8 @@ import { JobStatusStore } from "../../src/jobs/status.js";
 import type { RunEvent } from "../../src/state/event-log.js";
 import { readEvents } from "../../src/state/event-log.js";
 import { runPaths } from "../../src/state/paths.js";
-import { RuntimeLease } from "../../src/state/runtime-lease.js";
+import { readRuntimeLease, RuntimeLease } from "../../src/state/runtime-lease.js";
+import { readAuthoritativeRunEvents } from "../../src/state/store.js";
 import { FakeBrowserAdapter } from "../fakes/fake-browser.js";
 
 function reply(
@@ -217,6 +221,102 @@ test("caller work start rejects a workdir symlink retargeted after claim", async
   const events = await readEvents(runPaths(home, runId).events);
   assert.equal(events.some((entry) => entry.type === "caller_work_started"), false);
 });
+
+test("restarting caller work in its unchanged workspace preserves the durable start", async () => {
+  const runId = "run_caller_restart_workdir_unchanged";
+  const { home, job } = await fixture(runId);
+  let current = new Date("2026-07-22T00:00:00.000Z");
+  const now = () => current;
+  const claim = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: "codex-unchanged-workdir-owner",
+    now,
+  });
+  const firstLease = await startCueLineCallerWorkLease(claim, { home, now });
+  await firstLease.stop();
+
+  current = new Date("2026-07-22T00:00:30.000Z");
+  const recovered = await claimCueLineCallerJob(runId, job.jobId, {
+    home,
+    callerId: claim.callerId,
+    now,
+  });
+  const restarted = await startCueLineCallerWorkLease(recovered, { home, now });
+  try {
+    assert.equal(restarted.active, true);
+    assert.deepEqual(restarted.proof, proof(claim));
+    const state = await loadCueLineRunState(runId, { home });
+    const durableClaim = state.jobs[job.jobId]?.callerWork?.claim;
+    assert.equal(durableClaim?.startedAt, "2026-07-22T00:00:00.000Z");
+    assert.equal(durableClaim?.lastProgressAt, "2026-07-22T00:00:00.000Z");
+    assert.equal(durableClaim?.heartbeatAt, current.toISOString());
+    const events = await readEvents(runPaths(home, runId).events);
+    assert.equal(events.filter((entry) => entry.type === "caller_work_started").length, 1);
+    assert.equal(events.filter((entry) => entry.type === "caller_work_heartbeat").length, 1);
+  } finally {
+    await restarted.stop();
+  }
+});
+
+for (const replacement of ["directory", "symlink"] as const) {
+  test(`restarting caller work rejects a replaced ${replacement} before renewing its lease`, async () => {
+    const runId = `run_caller_restart_workdir_${replacement}`;
+    const { home, workdir, job } = await fixture(runId);
+    const originalTarget = `${workdir}-original`;
+    const replacementTarget = `${workdir}-replacement`;
+    if (replacement === "symlink") {
+      await rename(workdir, originalTarget);
+      await mkdir(replacementTarget);
+      await symlink(originalTarget, workdir, "dir");
+    }
+
+    const now = () => new Date("2026-07-22T00:00:00.000Z");
+    const claim = await claimCueLineCallerJob(runId, job.jobId, {
+      home,
+      callerId: "codex-restarted-workdir-owner",
+      now,
+    });
+    const firstLease = await startCueLineCallerWorkLease(claim, { home, now });
+    await firstLease.stop();
+    const eventsBeforeRestart = await readEvents(runPaths(home, runId).events);
+
+    if (replacement === "symlink") {
+      await unlink(workdir);
+      await symlink(replacementTarget, workdir, "dir");
+    } else {
+      await rename(workdir, originalTarget);
+      await mkdir(workdir);
+    }
+
+    const recovered = await claimCueLineCallerJob(runId, job.jobId, {
+      home,
+      callerId: claim.callerId,
+      now,
+    });
+    assert.equal(recovered.outcome, "already_claimed");
+    assert.equal(recovered.started, true);
+    assert.equal(recovered.claimId, claim.claimId);
+    await assert.rejects(
+      async () => {
+        // Stop an unexpectedly accepted lease before the assertion fails so
+        // its timers cannot renew the claim after this regression test ends.
+        const restarted = await startCueLineCallerWorkLease(recovered, { home, now });
+        await restarted.stop();
+      },
+      (error: unknown) =>
+        error instanceof CueLineError &&
+        error.code === "CALLER_WORKDIR_IDENTITY_MISMATCH",
+    );
+
+    // Rejecting the restart must neither renew ownership nor change the
+    // original execution evidence into a fresh start.
+    const eventsAfterRestart = await readEvents(runPaths(home, runId).events);
+    assert.deepEqual(eventsAfterRestart, eventsBeforeRestart);
+    const state = await loadCueLineRunState(runId, { home });
+    assert.equal(state.jobs[job.jobId]?.status, "running");
+    assert.equal(state.jobs[job.jobId]?.callerWork?.claim?.startedAt, now().toISOString());
+  });
+}
 
 test("an unstarted legacy claim is upgraded to a directory-pinned claim", async () => {
   const runId = "run_caller_legacy_workdir_upgrade";
@@ -632,6 +732,82 @@ test("a durable work-result intent recovers a terminal status after the claim ex
   );
 });
 
+for (const evidenceCase of ["missing_intent", "wrong_intent", "wrong_run", "ambiguous_anchor", "ambiguous_with_success_intent", "stale_status_read"] as const) {
+  test(`expired caller work handles ${evidenceCase} without replacing terminal evidence`, async (t) => {
+    const runId = `run_expired_terminal_${evidenceCase}`;
+    const { home, job } = await fixture(runId);
+    let current = new Date("2026-07-22T00:00:00.000Z");
+    const now = () => current;
+    const claim = await claimCueLineCallerJob(runId, job.jobId, {
+      home, now, callerId: "terminal-evidence-owner", ttlMs: 1_000,
+    });
+    await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+    if (evidenceCase === "wrong_intent" || evidenceCase === "wrong_run" || evidenceCase === "ambiguous_with_success_intent" || evidenceCase === "stale_status_read") {
+      const lease = await RuntimeLease.claim({ home, runId, now });
+      try {
+        const store = await loadPersistedRunStore(home, runId);
+        store.bindRuntimeOwner(lease.ownerId);
+        await store.append("caller_work_result_submission_started", {
+          job_id: job.jobId, claim_id: claim.claimId, caller_id: claim.callerId,
+          fencing_token: claim.fencingToken + (evidenceCase === "wrong_intent" ? 1 : 0),
+          status: "succeeded",
+        });
+      } finally {
+        await lease.release();
+      }
+    }
+    const ambiguous = evidenceCase === "ambiguous_anchor" || evidenceCase === "ambiguous_with_success_intent";
+    const statuses = new JobStatusStore(home);
+    const runningStatus = await statuses.read(job.jobId);
+    await statuses.write({
+      jobId: job.jobId, runId: evidenceCase === "wrong_run" ? "run_different_owner" : runId,
+      jobKey: job.jobKey, lane: job.spec.lane, mode: "work", execution: "foreground",
+      status: ambiguous ? "ambiguous" : "succeeded",
+      startedAt: current.toISOString(), finishedAt: "2026-07-22T00:00:00.500Z",
+      ...(ambiguous ? { error: "Previously committed ambiguity" } : {}),
+    });
+    if (evidenceCase === "stale_status_read") {
+      // Model success winning immediately after the guard's non-terminal
+      // read. The immutable writer must reject ambiguity before any event.
+      let firstRead = true;
+      const readStatus = JobStatusStore.prototype.read;
+      t.mock.method(JobStatusStore.prototype, "read", async function(this: JobStatusStore, id: string) {
+        if (id === job.jobId && firstRead) {
+          firstRead = false;
+          return runningStatus;
+        }
+        return readStatus.call(this, id);
+      });
+    }
+    const before = await readEvents(runPaths(home, runId).events);
+    const originalFiles = await Promise.all([
+      readFile(statuses.pathFor(job.jobId), "utf8"),
+      readFile(statuses.terminalPathFor(job.jobId), "utf8"),
+    ]);
+    current = new Date("2026-07-22T00:00:02.000Z");
+    if (ambiguous) {
+      assert.equal(await reconcileExpiredCallerWorkClaims(runId, { home, now }), 1);
+      assert.equal(await reconcileExpiredCallerWorkClaims(runId, { home, now }), 0);
+      const state = await loadCueLineRunState(runId, { home });
+      assert.equal(state.jobs[job.jobId]?.status, "ambiguous");
+      assert.equal(state.jobs[job.jobId]?.error, "Previously committed ambiguity");
+      const events = await readEvents(runPaths(home, runId).events);
+      assert.equal(events.filter((event) => event.type === "job_status").length, 1);
+      assert.equal(events.some((event) => event.type === "caller_work_became_ambiguous"), false);
+    } else {
+      await assert.rejects(reconcileExpiredCallerWorkClaims(runId, { home, now }),
+        (error: unknown) => error instanceof CueLineError && error.code ===
+          (evidenceCase === "stale_status_read" ? "JOB_STATUS_TERMINAL_CONFLICT" : "CALLER_JOB_RESULT_CONFLICT"));
+      assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
+      assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.status, "running");
+    }
+    assert.deepEqual(await Promise.all([
+      readFile(statuses.pathFor(job.jobId), "utf8"),
+      readFile(statuses.terminalPathFor(job.jobId), "utf8"),
+    ]), originalFiles);
+  });
+}
+
 test("caller work mutations reject a regressed clock before reporting success", async () => {
   const runId = "run_caller_claim_clock_regression";
   const { home, job } = await fixture(runId);
@@ -812,36 +988,40 @@ test("failed caller output and error stay complete in job status but bounded in 
   assert.ok((payload.error as string).length < 20_000);
 });
 
-test("a non-success result after caller work starts is terminally ambiguous", async () => {
-  const runId = "run_caller_failed_work_is_ambiguous";
-  const { home, job } = await fixture(runId);
-  const claim = await claimCueLineCallerJob(runId, job.jobId, {
-    home,
-    callerId: "codex-failed-work-owner",
+for (const status of ["failed", "cancelled", "timed_out", "ambiguous"] as const) {
+  test(`the ${status} result after caller work starts is terminally ambiguous`, async () => {
+    const runId = `run_caller_${status}_work_is_ambiguous`;
+    const { home, job } = await fixture(runId);
+    const claim = await claimCueLineCallerJob(runId, job.jobId, {
+      home,
+      callerId: "codex-failed-work-owner",
+    });
+    await startCueLineCallerJob(runId, job.jobId, proof(claim), { home });
+
+    const submitted = await submitCueLineCallerJobResult(
+      runId,
+      job.jobId,
+      {
+        status,
+        stdout: "partial local mutation may exist",
+        stderr: "worker exited before verification",
+        exitCode: 1,
+      },
+      { home, claim: proof(claim) },
+    );
+
+    assert.equal(submitted.outcome, "submitted");
+    const state = await loadCueLineRunState(runId, { home });
+    assert.equal(state.jobs[job.jobId]?.status, "ambiguous");
+    const persisted = await new JobStatusStore(home).read(job.jobId);
+    assert.equal(persisted?.status, "ambiguous");
+    assert.equal(persisted?.result?.status, "ambiguous");
+    assert.equal(persisted?.result?.ambiguousSideEffects, true);
+    assert.equal(persisted?.result?.timedOut, status === "timed_out");
+    assert.equal(persisted?.result?.cancelled, status === "cancelled");
+    assert.match(persisted?.result?.output ?? "", /partial local mutation may exist/);
   });
-  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home });
-
-  const submitted = await submitCueLineCallerJobResult(
-    runId,
-    job.jobId,
-    {
-      status: "failed",
-      stdout: "partial local mutation may exist",
-      stderr: "worker exited before verification",
-      exitCode: 1,
-    },
-    { home, claim: proof(claim) },
-  );
-
-  assert.equal(submitted.outcome, "submitted");
-  const state = await loadCueLineRunState(runId, { home });
-  assert.equal(state.jobs[job.jobId]?.status, "ambiguous");
-  const persisted = await new JobStatusStore(home).read(job.jobId);
-  assert.equal(persisted?.status, "ambiguous");
-  assert.equal(persisted?.result?.status, "ambiguous");
-  assert.equal(persisted?.result?.ambiguousSideEffects, true);
-  assert.match(persisted?.result?.output ?? "", /partial local mutation may exist/);
-});
+}
 
 test("caller work proof is fenced across start heartbeat release and terminal result", async () => {
   const runId = "run_caller_claim_proof";
@@ -1334,4 +1514,190 @@ test("executor-owned caller work lease rejects an unsafe heartbeat cadence befor
   const status = await loadCueLineRunStatus(runId, { home });
   assert.equal(status.phase, "caller_work_claimed");
   assert.equal(status.safeNextAction, "start_caller_work");
+});
+
+for (const storage of ["anchor", "unanchored"] as const) {
+  for (const timing of ["before_takeover", "after_takeover"] as const) {
+    test(`terminal recovery requires authoritative ${storage} result intent ${timing}`, { timeout: 15_000 }, async (t) => {
+      const runId = `run_result_intent_${storage}_${timing}`;
+      const { home, job } = await fixture(runId);
+      let current = new Date("2026-07-22T00:00:00.000Z");
+      const now = () => current;
+      const claim = await claimCueLineCallerJob(runId, job.jobId, { home, now, callerId: "authority-fixture", ttlMs: 300_000 });
+      await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+      const input = { home, runId, jobId: job.jobId, jobKey: job.jobKey, lane: job.spec.lane, proof: proof(claim), timing };
+      const source = `
+        const input = JSON.parse(process.argv[1]);
+        const { RuntimeLease } = await import(${JSON.stringify(new URL("../../src/state/runtime-lease.js", import.meta.url).href)});
+        const { loadPersistedRunStore } = await import(${JSON.stringify(new URL("../../src/core/persisted-run.js", import.meta.url).href)});
+        const { appendEvent, readEvents } = await import(${JSON.stringify(new URL("../../src/state/event-log.js", import.meta.url).href)});
+        const { runPaths } = await import(${JSON.stringify(new URL("../../src/state/paths.js", import.meta.url).href)});
+        const { JobStatusStore } = await import(${JSON.stringify(new URL("../../src/jobs/status.js", import.meta.url).href)});
+        const now = () => new Date("2026-07-22T00:00:00.000Z");
+        const lease = await RuntimeLease.claim({ home: input.home, runId: input.runId, now, heartbeatIntervalMs: 60_000 });
+        const payload = { job_id: input.jobId, claim_id: input.proof.claimId, caller_id: input.proof.callerId,
+          fencing_token: input.proof.fencingToken, status: "succeeded" };
+        if (input.timing === "before_takeover") {
+          const store = await loadPersistedRunStore(input.home, input.runId);
+          store.bindRuntimeOwner(lease.ownerId);
+          await store.append("caller_work_result_submission_started", payload);
+        }
+        const resume = new Promise(resolve => process.once("message", resolve));
+        process.send("ready");
+        await resume;
+        if (input.timing === "after_takeover") {
+          // Inject a delayed old-format writer's physical event after its cutoff.
+          // The supported reader must retain it for audit but deny it authority.
+          const eventsPath = runPaths(input.home, input.runId).events;
+          const events = await readEvents(eventsPath);
+          await appendEvent(eventsPath, { sequence: events.at(-1).sequence + 1,
+            timestamp: "2026-07-22T00:01:00.000Z", type: "caller_work_result_submission_started",
+            runtime_owner_id: lease.ownerId, payload });
+        }
+        await new JobStatusStore(input.home).write({ jobId: input.jobId, runId: input.runId,
+          jobKey: input.jobKey, lane: input.lane, mode: "work", execution: "foreground",
+          status: "succeeded", startedAt: "2026-07-22T00:00:00.000Z", finishedAt: "2026-07-22T00:00:01.000Z" });
+        await lease.release();
+        process.disconnect();
+      `;
+      const child = spawn(process.execPath, ["--input-type=module", "-e", source, JSON.stringify(input)], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+      t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+      let stderr = "";
+      child.stderr!.on("data", (data) => { stderr += String(data); });
+      let readyResolve!: () => void;
+      let announced = false;
+      const ready = new Promise<void>((resolve) => { readyResolve = resolve; });
+      child.once("message", (message) => { announced = message === "ready"; readyResolve(); });
+      const done = new Promise<void>((resolve, reject) => {
+        child.once("error", (error) => { readyResolve(); reject(error); });
+        child.once("close", (code) => {
+          readyResolve();
+          try { assert.equal(code, 0, stderr); resolve(); } catch (error) { reject(error); }
+        });
+      });
+      let oldOwner: string | undefined;
+      await Promise.all([done, (async () => {
+        await ready;
+        assert.equal(announced, true);
+        current = new Date("2026-07-22T00:01:00.000Z");
+        const stale = await readRuntimeLease(home, runId, { now });
+        oldOwner = stale.ownerId;
+        assert.equal(stale.pid, String(child.pid));
+        assert.equal(stale.ownership, "stale");
+        const winner = await RuntimeLease.takeoverStale({ home, runId, now,
+          expectedOwnerId: stale.ownerId!, expectedHeartbeatAt: stale.heartbeatAt! });
+        await winner.release();
+        child.send("finish-delayed-write");
+      })()]);
+      assert.ok(current.getTime() < Date.parse(claim.expiresAt), "claim remains live independently of runtime retirement");
+      const physical = await readEvents(runPaths(home, runId).events);
+      assert.equal(physical.filter((event) => event.type === "caller_work_result_submission_started" && event.runtime_owner_id === oldOwner).length, 1);
+      const statuses = new JobStatusStore(home);
+      const authoritative = await readAuthoritativeRunEvents(home, runId);
+      assert.equal(authoritative.filter((event) => event.type === "caller_work_result_submission_started").length,
+        timing === "before_takeover" ? 1 : 0);
+      if (storage === "unanchored") await unlink(statuses.terminalPathFor(job.jobId));
+      const evidencePath = storage === "anchor" ? statuses.terminalPathFor(job.jobId) : statuses.pathFor(job.jobId);
+      const anchorBefore = await readFile(evidencePath, "utf8");
+      const submit = () => submitCueLineCallerJobResult(runId, job.jobId, { status: "succeeded" }, { home, now, claim: proof(claim) });
+      if (timing === "before_takeover") {
+        assert.equal((await submit()).outcome, "submitted");
+        assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.status, "succeeded");
+      } else {
+        await assert.rejects(submit(), { code: "CALLER_JOB_RESULT_CONFLICT" });
+        assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.status, "running");
+        assert.deepEqual(await readEvents(runPaths(home, runId).events), physical);
+      }
+      assert.equal(await readFile(evidencePath, "utf8"), anchorBefore);
+    });
+  }
+}
+
+test("authoritative legacy terminal success remains idempotent without a result intent", async () => {
+  const runId = "run_legacy_terminal_without_intent";
+  const { home, job } = await fixture(runId);
+  const now = () => new Date("2026-07-22T00:00:00.000Z");
+  const claim = await claimCueLineCallerJob(runId, job.jobId, { home, now, callerId: "legacy-terminal-owner" });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+  const statuses = new JobStatusStore(home);
+  await statuses.write({
+    jobId: job.jobId, runId, jobKey: job.jobKey, lane: job.spec.lane, mode: "work",
+    execution: "foreground", status: "succeeded", startedAt: now().toISOString(),
+    finishedAt: now().toISOString(),
+  });
+  const lease = await RuntimeLease.claim({ home, runId, now });
+  try {
+    const store = await loadPersistedRunStore(home, runId);
+    store.bindRuntimeOwner(lease.ownerId);
+    await store.append("job_status", { job_id: job.jobId, status: "succeeded", output: "LEGACY_AUTHORITATIVE_SUCCESS" });
+  } finally {
+    await lease.release();
+  }
+  const before = await readEvents(runPaths(home, runId).events);
+  assert.equal(before.some((event) => event.type === "caller_work_result_submission_started"), false);
+  const terminal = await readFile(statuses.terminalPathFor(job.jobId), "utf8");
+  const result = await submitCueLineCallerJobResult(runId, job.jobId, { status: "succeeded", stdout: "DO_NOT_REPLACE" },
+    { home, now, claim: proof(claim) });
+  assert.equal(result.outcome, "already_terminal");
+  assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
+  assert.equal(await readFile(statuses.terminalPathFor(job.jobId), "utf8"), terminal);
+  assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.output, "LEGACY_AUTHORITATIVE_SUCCESS");
+});
+
+test("releasing settled expired work is read-only even on repeated rejection", async () => {
+  // Reduced from bounded lifecycle seed=3: claim -> start -> expire/reconcile -> release.
+  const runId = "run_release_settled_expired_work";
+  const { home, job } = await fixture(runId);
+  let clock = Date.parse("2026-07-22T00:00:00.000Z");
+  const now = () => new Date(clock);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, { home, now, callerId: "expired-owner", ttlMs: 1_000 });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+  clock += 1_001;
+  assert.equal(await reconcileExpiredCallerWorkClaims(runId, { home, now }), 1);
+  const before = await readEvents(runPaths(home, runId).events);
+  const state = await loadCueLineRunState(runId, { home });
+  assert.equal(state.jobs[job.jobId]?.status, "ambiguous");
+  const statuses = new JobStatusStore(home);
+  const files = await Promise.all([readFile(statuses.pathFor(job.jobId), "utf8"), readFile(statuses.terminalPathFor(job.jobId), "utf8")]);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(releaseCueLineCallerJob(runId, job.jobId, proof(claim), { home, now }), { code: "CALLER_WORK_NOT_ACTIVE" });
+    assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
+    assert.deepEqual(await loadCueLineRunState(runId, { home }), state);
+    assert.deepEqual(await Promise.all([readFile(statuses.pathFor(job.jobId), "utf8"), readFile(statuses.terminalPathFor(job.jobId), "utf8")]), files);
+  }
+});
+
+for (const ending of ["succeeded", "ambiguous", "cancelled"] as const) {
+  test(`release rejects ${ending} caller work without modifying terminal state`, async () => {
+    const runId = `run_terminal_release_${ending}`;
+    const { home, job } = await fixture(runId);
+    // Pending status predates the claim: align virtual time with the fixture's
+    // durable creation time instead of injecting a backwards cancellation.
+    const createdAt = (await new JobStatusStore(home).read(job.jobId))!.startedAt;
+    const now = () => new Date(createdAt);
+    const claim = await claimCueLineCallerJob(runId, job.jobId, { home, now, callerId: "terminal-release-owner" });
+    if (ending === "cancelled") await cancelCueLineJob(runId, job.jobId, { home, now });
+    else {
+      await startCueLineCallerJob(runId, job.jobId, proof(claim), { home, now });
+      await submitCueLineCallerJobResult(runId, job.jobId, { status: ending === "succeeded" ? "succeeded" : "failed" }, { home, now, claim: proof(claim) });
+    }
+    const state = await loadCueLineRunState(runId, { home });
+    assert.equal(state.jobs[job.jobId]?.status, ending);
+    const before = await readEvents(runPaths(home, runId).events);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await assert.rejects(releaseCueLineCallerJob(runId, job.jobId, proof(claim), { home, now }), { code: "CALLER_WORK_NOT_ACTIVE" });
+      assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
+      assert.deepEqual(await loadCueLineRunState(runId, { home }), state);
+    }
+  });
+}
+
+test("released unstarted claim keeps the existing exact-proof rejection on a repeated release", async () => {
+  const runId = "run_repeat_unstarted_release";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, { home, callerId: "release-owner" });
+  assert.equal((await releaseCueLineCallerJob(runId, job.jobId, proof(claim), { home })).outcome, "released");
+  const before = await readEvents(runPaths(home, runId).events);
+  await assert.rejects(releaseCueLineCallerJob(runId, job.jobId, proof(claim), { home }), { code: "CALLER_WORK_CLAIM_MISMATCH" });
+  assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
 });

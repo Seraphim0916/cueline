@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cueline.dev/schemas/cli-run-graph.schema.json",
+  "title": "cueline run graph --json output",
+  "description": "Current serialized TypeScript shape from src/cli/observation-commands.ts; records remain free-form where declared. No CLI output changes.",
+  "$ref": "#/$defs/type1",
+  "$defs": {
+    "type1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "cueline-run-graph/0.1"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "afterSequence": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "totalEvents": {
+          "type": "number"
+        },
+        "latestSequence": {
+          "type": "number"
+        },
+        "returnedEvents": {
+          "type": "number"
+        },
+        "hasMore": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "nextAfterSequence": {
+          "type": "number"
+        },
+        "mermaid": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "runId",
+        "afterSequence",
+        "limit",
+        "totalEvents",
+        "latestSequence",
+        "returnedEvents",
+        "hasMore",
+        "nextAfterSequence",
+        "mermaid",
+        "version"
+      ]
+    }
+  }
+}

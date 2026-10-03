@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   isLegacyJobStatusSource,
+  parseJobStatus,
   jobStatusRecordIsLegacy,
 } from "../../src/jobs/status.js";
 
@@ -59,4 +60,38 @@ test("isLegacyJobStatusSource returns false for current evidence and unparseable
   );
   assert.equal(isLegacyJobStatusSource("{not json"), false);
   assert.equal(isLegacyJobStatusSource(""), false);
+});
+
+for (const status of ["succeeded", "failed", "cancelled", "timed_out", "ambiguous"] as const) {
+  test(`persisted ${status} evidence enforces the timeout flag contract`, () => {
+    const source = (timedOut: boolean) => JSON.stringify({
+      jobId: "job_timeout_contract", execution: "foreground", status,
+      startedAt: currentResult.startedAt, finishedAt: currentResult.finishedAt,
+      result: { ...currentResult, status, timedOut, cancelled: status === "cancelled",
+        ambiguousSideEffects: status === "ambiguous" },
+    });
+    if (status === "ambiguous") {
+      assert.equal(parseJobStatus(source(true)).result?.timedOut, true);
+      assert.equal(parseJobStatus(source(false)).result?.timedOut, false);
+    } else {
+      const expected = status === "timed_out";
+      assert.equal(parseJobStatus(source(expected)).result?.timedOut, expected);
+      assert.throws(() => parseJobStatus(source(!expected)), { code: "JOB_STATUS_INVALID" });
+    }
+  });
+}
+
+test("ambiguous timeout evidence retains cancellation cause but requires boolean flags", () => {
+  const record = {
+    jobId: "job_ambiguous_timeout", execution: "foreground", status: "ambiguous",
+    startedAt: currentResult.startedAt,
+    result: { ...currentResult, status: "ambiguous", timedOut: true, cancelled: true,
+      ambiguousSideEffects: true },
+  };
+  assert.equal(parseJobStatus(JSON.stringify(record)).result?.cancelled, true);
+  for (const timedOut of ["true", 1, null]) {
+    assert.throws(() => parseJobStatus(JSON.stringify({
+      ...record, result: { ...record.result, timedOut },
+    })), { code: "JOB_STATUS_INVALID" });
+  }
 });

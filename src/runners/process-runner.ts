@@ -17,6 +17,7 @@ export interface ProcessRunnerOptions {
 
 const MAX_CAPTURED_STREAM_CHARS = 512_000;
 const PROCESS_METADATA_CHARS = 16_384;
+const FORCED_PIPE_CLOSE_TIMEOUT_MS = 1_000;
 
 class BoundedTextCapture {
   readonly #headLimit: number;
@@ -222,6 +223,8 @@ export class ProcessRunner implements RunnerAdapter {
       let settled = false;
       let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
       let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+      let pipeCloseTimer: ReturnType<typeof setTimeout> | undefined;
+      let observedExitCode: number | null = null;
       let child: ChildProcess | undefined;
 
       const finish = (status: JobResult["status"], exitCode: number | null): void => {
@@ -231,6 +234,10 @@ export class ProcessRunner implements RunnerAdapter {
         settled = true;
         if (timeoutTimer !== undefined) {
           clearTimeout(timeoutTimer);
+        }
+        if (pipeCloseTimer !== undefined) {
+          clearTimeout(pipeCloseTimer);
+          pipeCloseTimer = undefined;
         }
         if (forceKillTimer !== undefined) {
           clearTimeout(forceKillTimer);
@@ -274,6 +281,22 @@ export class ProcessRunner implements RunnerAdapter {
         forceKillTimer ??= setTimeout(() => {
           forceKillTimer = undefined;
           if (child !== undefined) terminateProcessTree(child, "SIGKILL");
+          if (settled) return;
+          // An escaped descendant can keep inherited pipes open after group kill.
+          pipeCloseTimer ??= setTimeout(() => {
+            pipeCloseTimer = undefined;
+            if (settled) return;
+            for (const stream of [child?.stdout, child?.stderr]) {
+              stream?.destroy();
+              stream?.removeAllListeners("data");
+              stream?.removeAllListeners("error");
+            }
+            stderrCapture.append("\nA descendant outside the process group kept the output pipes open; settled without waiting for them.\n");
+            finish(
+              cancelled ? (spec.mode === "work" ? "ambiguous" : "cancelled") : "timed_out",
+              observedExitCode,
+            );
+          }, FORCED_PIPE_CLOSE_TIMEOUT_MS);
         }, 250);
       };
       const cancel = (): void => {
@@ -354,6 +377,9 @@ export class ProcessRunner implements RunnerAdapter {
           cancelled ? (spec.mode === "work" ? "ambiguous" : "cancelled") : "failed",
           null,
         );
+      });
+      child.once("exit", (exitCode) => {
+        observedExitCode = exitCode;
       });
       child.once("close", (exitCode) => {
         finish(

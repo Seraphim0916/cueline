@@ -2,7 +2,6 @@ import type {
   CueLineCallerJobSubmissionOptions,
   CueLineCallerJobResultInput,
   CueLineCallerJobSubmissionResult,
-  CueLineCallerWorkClaimProof,
   ControllerMisdirectedConfirmation,
   ControllerDeliveryTimeoutAttestationResult,
   ControllerDeliveryTimeoutRetryAuthorization,
@@ -20,7 +19,7 @@ import {
   CHATGPT_DELIVERY_TIMEOUT_CODE,
   CHATGPT_DELIVERY_TIMEOUT_MESSAGE,
 } from "./browser/delivery-timeout.js";
-import { validateCallerWorkResultClaim } from "./api-caller-work.js";
+import { callerWorkResultIntentStatus, validateCallerWorkResultClaim } from "./api-caller-work.js";
 import { boundedControllerEventEvidence } from "./core/controller-turn.js";
 import {
   isExactChatGptConversationUrl,
@@ -1971,32 +1970,6 @@ function resolveCallerJobResultTimestamps(
   return { startedAt, finishedAt };
 }
 
-function workResultIntentStatus(
-  events: Awaited<ReturnType<typeof readAuthoritativeRunEvents>>,
-  jobId: string,
-  proof: CueLineCallerWorkClaimProof,
-): string | undefined {
-  for (const event of events) {
-    if (event.type !== "caller_work_result_submission_started") continue;
-    const payload =
-      typeof event.payload === "object" &&
-      event.payload !== null &&
-      !Array.isArray(event.payload)
-        ? (event.payload as Record<string, unknown>)
-        : {};
-    if (
-      payload.job_id === jobId &&
-      payload.claim_id === proof.claimId &&
-      payload.caller_id === proof.callerId &&
-      payload.fencing_token === proof.fencingToken &&
-      typeof payload.status === "string"
-    ) {
-      return payload.status;
-    }
-  }
-  return undefined;
-}
-
 export async function submitCueLineCallerJobResult(
   runId: string,
   jobId: string,
@@ -2045,7 +2018,13 @@ export async function submitCueLineCallerJobResult(
       terminal = undefined;
     }
     if (terminal !== undefined) {
-      if (terminal.runId !== runId || terminal.jobKey !== job.jobKey) {
+      if (
+        terminal.runId !== runId || terminal.jobKey !== job.jobKey ||
+        (job.spec.mode === "work" && (
+          terminal.lane !== job.spec.lane || terminal.mode !== "work" ||
+          terminal.execution !== "foreground"
+        ))
+      ) {
         throw new CueLineError(
           "CALLER_JOB_RESULT_CONFLICT",
           `Persisted terminal evidence for '${jobId}' does not belong to this caller job.`,
@@ -2061,9 +2040,19 @@ export async function submitCueLineCallerJobResult(
           `Caller work result for '${jobId}' requires the exact active claim proof.`,
         );
       }
-      const intentStatus = workResultIntentStatus(events, jobId, options.claim);
+      const intentStatus = callerWorkResultIntentStatus(events, jobId, options.claim);
       const durableTerminalIntent =
         terminal !== undefined && intentStatus !== undefined && intentStatus === terminal.status;
+      if (
+        terminal?.status === "succeeded" &&
+        (job.status === "pending" || job.status === "running") &&
+        intentStatus !== "succeeded"
+      ) {
+        throw new CueLineError(
+          "CALLER_JOB_RESULT_CONFLICT",
+          `Persisted success for '${jobId}' lacks an authoritative result intent for this caller claim.`,
+        );
+      }
       if (
         intentStatus !== undefined &&
         intentStatus !== (terminal?.status ?? effectiveStatus)
@@ -2098,7 +2087,7 @@ export async function submitCueLineCallerJobResult(
         ? resolveCallerJobResultTimestamps(input, resultObservedAt ?? now())
         : undefined;
     if (job.spec.mode === "work" && options.claim !== undefined) {
-      const intentStatus = workResultIntentStatus(events, jobId, options.claim);
+      const intentStatus = callerWorkResultIntentStatus(events, jobId, options.claim);
       if (intentStatus === undefined) {
         await store.append("caller_work_result_submission_started", {
           job_id: jobId,

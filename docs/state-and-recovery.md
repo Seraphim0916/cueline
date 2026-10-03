@@ -21,6 +21,14 @@ ${CUELINE_HOME:-$HOME/.cueline}/
     └── <job-id>.json
 ```
 
+This tree describes what the current version writes; it is not a frozen format.
+File names, the split between `events.jsonl` and its segments, the runtime
+ownership files, and the fields inside each JSON file can change in any release,
+including a patch release. Read persisted state through
+`loadCueLineRunState(runId, ...)`, which is the only promised way to load a run
+from disk, or through the read-only CLI and MCP status commands. Tools that
+parse the files directly must expect to break on upgrade.
+
 `CUELINE_HOME` accepts an absolute or relative path. `~` and `~/...` are expanded against `HOME`. Run and job IDs are validated before they are used in filesystem paths.
 
 On POSIX hosts, CueLine-owned run, event-segment, runtime, cancellation, and
@@ -144,7 +152,8 @@ Always run `cueline run status <run-id> --json` before continuation. `continueCu
 - deterministic job IDs suppress a repeated dispatch already present in state
 - caller jobs are returned as `awaiting_caller`; after local execution, `submitCueLineCallerJobResult` persists the full result and continuation sends bounded evidence to the same controller
 - caller `work` is returned as `awaiting_caller_work`; claim/start/heartbeat/result events are append-only, duplicate claims are fenced, an expired unstarted claim is releasable, and continuation settles an expired started claim as `ambiguous` before another controller turn
-- `caller_work_result_submission_started` is persisted before the terminal status; an exact matching intent lets a post-crash retry import that durable terminal result even if the claim TTL elapsed between the two writes. A started caller work result other than `succeeded` is normalized to `ambiguous`
+- `caller_work_result_submission_started` is persisted before the terminal status; an exact matching intent lets a post-crash retry import that durable terminal result even if the claim TTL elapsed between the two writes. A started caller work result other than `succeeded` is normalized to `ambiguous`, while `timedOut` and `cancelled` preserve the observed termination cause. Recovery rejects terminal evidence whose lane, work mode, or foreground execution does not match the claimed job. Importing a pending/running work job’s preexisting success also requires its exact authoritative result intent, even while the caller claim is live; post-retirement intents cannot be replaced by a newly fabricated intent
+- Expiry reconciliation and controller review first preserve any committed terminal evidence. Success requires the exact current started claim and matching authoritative result intent; a committed ambiguity needs no result intent. Recovery validates stored job/claim identity without requiring the completed workspace to still exist. Unverifiable terminal evidence fails closed without an ambiguity event. When no terminal outcome exists, the immutable ambiguity status is committed before its event so interruption or a competing terminal write cannot poison replay
 - `complete` and `blocked` are rejected while any required or optional job is pending/running, so a terminal command cannot orphan background work
 - any non-normal process-loop exit cancels and settles its owned active jobs before releasing the runtime lease, including round-limit and controller-validation failures
 - process jobs can be observed or waited through their persisted status
@@ -199,6 +208,8 @@ The command accepts the first exact ChatGPT conversation URL created by that man
 Continuation cannot reconstruct an expired ChatGPT login, a deleted conversation, an unavailable registered executable, or an in-memory child process that disappeared with the host process. In those cases CueLine reports the concrete failure; it does not fabricate completion.
 
 ## Recovery procedure
+
+After an MCP server restart, `MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION` on lease status/start requires calling `cueline_claim_caller_job` again with the same `callerId` before the active claim expires, then `cueline_start_caller_work_lease` again with the unchanged proof. A changed ID gets `CALLER_WORK_ALREADY_CLAIMED`; expired started work becomes `ambiguous` (`CALLER_WORK_BECAME_AMBIGUOUS`) and must not be retried; long work may claim with a larger `ttlMs` (default 300,000 ms, integer range 1,000–86,400,000 ms).
 
 1. Preserve `CUELINE_HOME`; do not delete the run directory.
 2. Record the `runId` from the earlier result or directory name.
