@@ -36,6 +36,38 @@ Source checkouts may still import the in-tree modules directly for development.
 
 ## The host agent's job
 
+### Start, resume, and recovery
+
+```bash
+cueline-claude-desktop-lane daemon "<request>"
+cueline-claude-desktop-lane daemon --resume <runId>
+cueline-claude-desktop-lane status
+```
+
+Resume reuses the saved run and conversation URL; it never creates a new run.
+The daemon retries only `HOST_BRIDGE_TIMEOUT` with `details.claimed === false`,
+at most three consecutive retries. A successful continuation resets that budget.
+Claimed timeouts and unknown action outcomes are never retried. On failure,
+`lane.log` and the atomically replaced `lane-status.json` include the exact resume
+command. Exit codes are 0 for completion, 2 for a stopped run (including SIGTERM
+or SIGINT), and 1 for an unexpected startup/wrapper error.
+
+Each daemon exclusively creates `<bridge>/lane.lock` with its pid and start time.
+A live owner rejects another daemon with `CLAUDE_DESKTOP_LANE_LOCKED`; a dead or
+unreadable owner is replaced. Shutdown releases only the daemon's own lock.
+The read-only `status` command remains available while a daemon is running.
+Startup moves leftover `requests/` files to `expired/` and records the count,
+then reports but does not alter `inflight/` or `responses/`. New requests carry
+an expiry and daemon identity; timed-out unclaimed requests and expired mailbox
+candidates move to `expired/`. Malformed claimed requests move to `rejected/`
+before the original parse error is raised. Older requests without an expiry
+remain claimable, and claimed evidence is otherwise retained.
+
+`CUELINE_HOST_BRIDGE_REQUEST_TIMEOUT_MS` sets the unclaimed bridge-request budget
+(default `120000` milliseconds). Like the two browser timing overrides below,
+it accepts only decimal integers from `1000` to `3600000`, inclusive; invalid
+values fail closed. This does not change the separate claimed-request budget.
+
 The normal host loop uses the bounded mailbox helper rather than hand-editing
 four phase files:
 

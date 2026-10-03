@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- H-23: Claude Desktop bridge requests now carry expiry and daemon identity, withdraw unclaimed timeouts, claim in numeric order, and quarantine expired or malformed work without disturbing claimed outcomes.
+- M-91: Continuation without a reachable Codex in-app Browser now fails before touching the run; Claude Code hosts leave continuation to the lane daemon without changing the MCP tool contract.
+- M-93: Claude Desktop lane waits now stop on terminal or stale phases, report only changed blocked states, and use an exclusive pid lock to reject duplicate live daemons.
+- H-22: Claude Desktop lane daemons can resume saved runs and conversations, retry only unclaimed timeouts up to three times, publish atomic status and resume hints, and configure the unclaimed request timeout independently.
+
 - Process jobs now settle after timeout or cancellation even when descendants outside the process group keep inherited stdout or stderr pipes open. A bounded post-kill deadline preserves captured output and existing result statuses without delaying normal process completion.
 
 ## 0.7.6 - 2026-08-31
