@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rm,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -22,6 +23,7 @@ import {
   RuntimeLease,
 } from "../../src/state/runtime-lease.js";
 import { runtimeFenceAuthorityIdentity } from "../../src/state/runtime-retirement.js";
+import { settleWithin } from "../support/settle-within.js";
 
 test("runtime fence authority changes when a generation commits from legacy to epoch", () => {
   const generation = "same-generation";
@@ -971,4 +973,16 @@ test("runtime lease aborts owned work when heartbeat ownership becomes unreadabl
     true,
   );
   await lease.release();
+});
+
+test("releasing a lease after its run directory was removed fails instead of spinning", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-lease-removed-run-"));
+  const runId = "run_lease_removed";
+  await mkdir(runPaths(home, runId).runDir, { recursive: true });
+  const lease = await RuntimeLease.claim({ home, runId, heartbeatIntervalMs: 60_000 });
+  await rm(home, { recursive: true, force: true });
+  await assert.rejects(
+    settleWithin(lease.release(), 5_000, "lease release after run removal"),
+    (error: unknown) => error instanceof CueLineError && error.code === "RUN_NOT_FOUND",
+  );
 });

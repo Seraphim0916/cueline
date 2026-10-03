@@ -1701,3 +1701,17 @@ test("released unstarted claim keeps the existing exact-proof rejection on a rep
   await assert.rejects(releaseCueLineCallerJob(runId, job.jobId, proof(claim), { home }), { code: "CALLER_WORK_CLAIM_MISMATCH" });
   assert.deepEqual(await readEvents(runPaths(home, runId).events), before);
 });
+
+test("a result submitted while a heartbeat holds the runtime lease waits for it", async () => {
+  const runId = "run_submit_during_heartbeat";
+  const { home, job } = await fixture(runId);
+  const claim = await claimCueLineCallerJob(runId, job.jobId, { home, callerId: "submit-race-caller" });
+  await startCueLineCallerJob(runId, job.jobId, proof(claim), { home });
+  // Stand in for a caller-work heartbeat that owns the runtime lease for one mutation.
+  const heartbeat = await RuntimeLease.claim({ home, runId, heartbeatIntervalMs: 60_000 });
+  const submitting = submitCueLineCallerJobResult(runId, job.jobId, { status: "succeeded" }, { home, claim: proof(claim) });
+  await new Promise<void>((resolve) => setTimeout(resolve, 150));
+  await heartbeat.release();
+  assert.equal((await submitting).outcome, "submitted");
+  assert.equal((await loadCueLineRunState(runId, { home })).jobs[job.jobId]?.status, "succeeded");
+});
