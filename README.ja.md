@@ -226,6 +226,8 @@ if (result.status === "complete") {
 
 `awaiting_controller` は再送なしの読み取り専用観測、`awaiting_caller` は advise の引き渡し、`awaiting_caller_work` は claim、start、実行、heartbeat、claim proof 付き提出の順です。Pro はローカルツールを直接使いません。
 
+更新（renewal）の担当は入口で決まります。MCP ツール（`cueline_start_caller_work_lease`）経由では常駐の MCP server が executor となり、heartbeat、進捗期限、最大実行時間、中断状態を管理します。ライブラリ API の `startCueLineCallerWorkLease` を直接呼び出す場合、更新タイマーは呼び出したプロセス（executor client）にあり、MCP server にも LLM の逐次判断にもありません。既定では 60 秒ごとに heartbeat し、既定の claim TTL は 5 分です。heartbeat は「executor がまだこの作業を保持している」ことだけを意味します。
+
 長時間の作業では `cueline_claim_caller_job` に大きい `ttlMs`（既定 300,000 ミリ秒、整数範囲 1,000–86,400,000 ミリ秒）を指定でき、MCP サーバー再起動後の `MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION` には期限内に同じ `callerId` で再度 claim してから `cueline_start_caller_work_lease` を再開し、ID の変更は `CALLER_WORK_ALREADY_CLAIMED`、開始済み作業の期限切れは再開不能の `ambiguous` となり、自動再実行は禁止です。
 
 `listCueLineRuns()` は永続化された run ID を見つけるための、読み取り専用でサニタイズ済みの一覧です。コントローラー本文、会話 URL、job のタスク、worker 出力は含まれません。
