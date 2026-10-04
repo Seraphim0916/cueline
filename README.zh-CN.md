@@ -228,6 +228,8 @@ if (result.status === "complete") {
 
 `awaiting_controller` 只读观测且不重发；`awaiting_caller` 交接 `advise`；`awaiting_caller_work` 必须依次 claim、start、执行、heartbeat 并带 claim proof 提交。Pro 网页从不直接使用本地工具。
 
+续租由谁负责取决于入口：通过 MCP 工具（`cueline_start_caller_work_lease`）时，常驻的 MCP server 就是 executor，由它负责 heartbeat、进度期限、最长执行时间和中止状态；直接调用程序库 API 的 `startCueLineCallerWorkLease` 时，续租 timer 位于调用它的那个进程（executor client），不在 MCP server，也不由 LLM 逐次决定。默认每 60 秒 heartbeat，默认 claim TTL 为五分钟；heartbeat 只表示“executor 仍持有这份工作”。
+
 长时间工作可在 `cueline_claim_caller_job` 中传入更大的 `ttlMs`（默认 300,000 毫秒，整数范围 1,000–86,400,000 毫秒）；MCP 服务器重启后若出现 `MCP_CALLER_WORK_CLAIM_NOT_IN_SESSION`，须在认领到期前用相同 `callerId` 重新认领，再调用 `cueline_start_caller_work_lease`，更换身份会得到 `CALLER_WORK_ALREADY_CLAIMED`，已开始但过期的工作则变为 `ambiguous`，不能恢复或自动重做。
 
 `listCueLineRuns()` 是只读且已脱敏的 run 清单，可用来找回持久化的 run ID；它不包含控制器文本、会话 URL、作业内容或 worker 输出。
