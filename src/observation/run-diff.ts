@@ -106,8 +106,9 @@ export async function compareCueLineRuns(
   const rightFields = flatten(rightComparable as Record<string, unknown>);
   const fields = [...new Set([...leftFields.keys(), ...rightFields.keys()])].sort();
   const changes = fields.flatMap((field): CueLineRunDiffChange[] => {
-    const leftValue = leftFields.get(field) ?? 0;
-    const rightValue = rightFields.get(field) ?? 0;
+    const missingValue = field.startsWith("jobs.counts.") ? 0 : null;
+    const leftValue = leftFields.has(field) ? leftFields.get(field)! : missingValue;
+    const rightValue = rightFields.has(field) ? rightFields.get(field)! : missingValue;
     return Object.is(leftValue, rightValue)
       ? []
       : [{ field, left: leftValue, right: rightValue }];

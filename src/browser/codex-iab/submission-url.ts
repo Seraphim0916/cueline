@@ -11,6 +11,41 @@ import type { IabTab } from "./bootstrap.js";
 // real transition.
 const CAPTURE_TIMEOUT_MS = 15_000;
 
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason ?? new CueLineError("RUN_CANCELLED", "Run cancelled.");
+  }
+}
+
+async function readUrlBeforeDeadline(
+  tab: IabTab,
+  deadline: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  assertNotAborted(signal);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort = (): void => {};
+  const interrupted = new Promise<string>((resolve, reject) => {
+    timer = setTimeout(() => resolve(""), Math.max(0, deadline - Date.now()));
+    onAbort = (): void => {
+      reject(signal?.reason ?? new CueLineError("RUN_CANCELLED", "Run cancelled."));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    // Keep a rejection handler attached even if the read settles after timeout.
+    const url = await Promise.race([
+      interrupted,
+      Promise.resolve().then(() => tab.url()).catch(() => ""),
+    ]);
+    assertNotAborted(signal);
+    return url ?? "";
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
 function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted === true) {
@@ -19,6 +54,7 @@ function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
     }
     const onAbort = (): void => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       reject(signal?.reason ?? new CueLineError("RUN_CANCELLED", "Run cancelled."));
     };
     const timer = setTimeout(() => {
@@ -42,7 +78,8 @@ export async function captureConversationUrlAfterSubmit(
       : undefined;
   const deadline = Date.now() + Math.min(timeoutMs, CAPTURE_TIMEOUT_MS);
   do {
-    const currentUrl = (await tab.url().catch(() => "")) ?? "";
+    const currentUrl = await readUrlBeforeDeadline(tab, deadline, signal);
+    if (Date.now() >= deadline) break;
     if (isExactChatGptConversationUrl(currentUrl)) {
       if (
         expectedUrl !== undefined &&
@@ -61,7 +98,7 @@ export async function captureConversationUrlAfterSubmit(
       }
       return expectedUrl ?? currentUrl;
     }
-    await wait(Math.min(pollIntervalMs, 100), signal);
+    await wait(Math.max(0, Math.min(pollIntervalMs, 100, deadline - Date.now())), signal);
   } while (Date.now() < deadline);
   throw new CueLineError(
     "CONTROLLER_CONVERSATION_URL_UNAVAILABLE",

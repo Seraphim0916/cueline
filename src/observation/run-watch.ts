@@ -84,6 +84,16 @@ function result(
   };
 }
 
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new CueLineError(
+      "RUN_WATCH_ABORTED",
+      "Run observation was aborted without changing durable state.",
+      { cause: signal.reason },
+    );
+  }
+}
+
 async function waitInterval(milliseconds: number, signal?: AbortSignal): Promise<void> {
   try {
     await delay(milliseconds, undefined, signal === undefined ? undefined : { signal });
@@ -103,6 +113,7 @@ export async function waitForCueLineRunChange(
   runId: string,
   options: CueLineRunWatchOptions,
 ): Promise<CueLineRunWatchResult> {
+  assertNotAborted(options.signal);
   const afterSequence = boundedInteger(
     options.afterSequence,
     "afterSequence",
@@ -130,6 +141,7 @@ export async function waitForCueLineRunChange(
   };
 
   let status = await loadCueLineRunStatus(runId, loadOptions);
+  assertNotAborted(options.signal);
   assertCursorNotAhead(runId, afterSequence, status);
   if (terminal(status)) return result("terminal", afterSequence, status, startedAt);
   if (status.lastEventSequence > afterSequence) {
@@ -139,7 +151,9 @@ export async function waitForCueLineRunChange(
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
     await waitInterval(Math.min(pollIntervalMs, remaining), options.signal);
+    assertNotAborted(options.signal);
     status = await loadCueLineRunStatus(runId, loadOptions);
+    assertNotAborted(options.signal);
     assertCursorNotAhead(runId, afterSequence, status);
     if (terminal(status)) return result("terminal", afterSequence, status, startedAt);
     if (status.lastEventSequence > afterSequence) {
