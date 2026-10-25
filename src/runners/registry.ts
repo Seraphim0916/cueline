@@ -45,7 +45,8 @@ export class RunnerRegistry {
   }
 
   get(id: string): RegisteredExecutable | undefined {
-    return this.#byId.get(id);
+    const registered = this.#byId.get(id);
+    return registered === undefined ? undefined : { ...registered };
   }
 
   hasExecutable(executable: string): boolean {
@@ -61,7 +62,7 @@ export class RunnerRegistry {
         { details: { executable } },
       );
     }
-    return registered;
+    return { ...registered };
   }
 
   requireArgv(argv: readonly string[]): RegisteredExecutable {
