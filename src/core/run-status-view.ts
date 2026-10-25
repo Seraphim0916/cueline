@@ -43,7 +43,21 @@ export function safeCueLineRunStatus(status: CueLineRunStatusSummary) {
       lastAcceptedJobKeys: [...status.controller.lastAcceptedJobKeys],
     ...(status.controller.pendingDiagnostic == null
       ? {}
-      : { pendingDiagnostic: { ...status.controller.pendingDiagnostic } }),
+      : {
+          pendingDiagnostic: {
+            code: status.controller.pendingDiagnostic.code,
+            failedCondition: status.controller.pendingDiagnostic.failedCondition,
+            stableForMs: status.controller.pendingDiagnostic.stableForMs,
+            thresholdMs: status.controller.pendingDiagnostic.thresholdMs,
+            observedUserMessageCount: status.controller.pendingDiagnostic.observedUserMessageCount,
+            baselineUserMessageCount: status.controller.pendingDiagnostic.baselineUserMessageCount,
+            requestMessageFound: status.controller.pendingDiagnostic.requestMessageFound,
+            requestMessageFoundBy: status.controller.pendingDiagnostic.requestMessageFoundBy,
+            assistantTextFoundBy: status.controller.pendingDiagnostic.assistantTextFoundBy,
+            composerPromptState: status.controller.pendingDiagnostic.composerPromptState,
+            sourcesConsulted: [...status.controller.pendingDiagnostic.sourcesConsulted],
+          },
+        }),
     ...(status.controller.responseFailure === undefined
       ? {}
       : {
@@ -65,7 +79,16 @@ export function safeCueLineRunStatus(status: CueLineRunStatusSummary) {
         status.controller.reconciliation.promptHash === null &&
         status.controller.reconciliation.resendBlockedReason === null)
         ? {}
-        : { reconciliation: { ...status.controller.reconciliation } }),
+        : {
+            reconciliation: {
+              requiredReason: status.controller.reconciliation.requiredReason,
+              operatorConfirmation: status.controller.reconciliation.operatorConfirmation,
+              abandonedRequestId: status.controller.reconciliation.abandonedRequestId,
+              retryRequestId: status.controller.reconciliation.retryRequestId,
+              promptHash: status.controller.reconciliation.promptHash,
+              resendBlockedReason: status.controller.reconciliation.resendBlockedReason,
+            },
+          }),
       ...(status.controller.archive.enabled
         ? {
             archive: {

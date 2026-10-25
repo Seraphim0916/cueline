@@ -216,6 +216,9 @@ function attributesFor(payloadValue: unknown): Record<string, string | number | 
       ? rawSubmissionState
       : undefined;
   const pid = safeInteger(payload.pid);
+  const stagnantRounds = safeInteger(payload.stagnant_rounds);
+  if (typeof payload.progressed === "boolean") attributes.progressed = payload.progressed;
+  if (stagnantRounds !== undefined) attributes.stagnant_rounds = stagnantRounds;
   if (requestId !== undefined) attributes.requestId = requestId;
   if (round !== undefined) attributes.round = round;
   if (jobId !== undefined) attributes.jobId = jobId;

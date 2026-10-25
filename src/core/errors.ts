@@ -26,7 +26,16 @@ export function formatErrorMessage(error: unknown): string {
   }
   const limit = 240;
   const marker = "… [truncated]";
-  if (rendering.length > limit) rendering = rendering.slice(0, limit - marker.length) + marker;
+  if (rendering.length > limit) {
+    let end = limit - marker.length;
+    const before = rendering.charCodeAt(end - 1);
+    const after = rendering.charCodeAt(end);
+    // Keep the UTF-16 length cap without splitting a surrogate pair.
+    if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) {
+      end -= 1;
+    }
+    rendering = rendering.slice(0, end) + marker;
+  }
   return `Non-Error rejection (${error === null ? "null" : typeof error}): ${rendering}`;
 }
 
