@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   capControllerEvidence,
+  capReplayedControllerEvidence,
   controllerEvidenceCapacityNotice,
 } from "../../src/core/controller-evidence.js";
 import { validateControllerRuntimeOptions } from "../../src/core/controller-loop.js";
@@ -11,6 +12,76 @@ import { commandHash } from "../../src/core/ids.js";
 import { observationFor } from "../../src/core/controller-turn.js";
 import { initialRunState } from "../../src/core/state-machine.js";
 import type { JobObservation } from "../../src/protocol/types.js";
+
+test("replayed evidence preserves an exactly matching trailing cap marker", () => {
+  const value = "HEAD\n...[job evidence capped: 4 chars omitted; total_chars=8; cap=4]";
+
+  assert.deepEqual(capControllerEvidence("HEADTAIL", 4), {
+    value,
+    totalChars: 8,
+    truncatedChars: 4,
+  });
+  assert.deepEqual(capReplayedControllerEvidence(value, 8, 4), {
+    value,
+    totalChars: 8,
+    truncatedChars: 4,
+  });
+});
+
+const replayMarker = "\n...[job evidence capped: 4 chars omitted; total_chars=8; cap=4]";
+const invalidReplays: Array<{
+  reason: string;
+  value: string;
+  declaredTotalChars: number | undefined;
+}> = [
+  { reason: "marker starts before the cap", value: `ABC${replayMarker}`, declaredTotalChars: 8 },
+  { reason: "marker starts after the cap", value: `ABCDE${replayMarker}`, declaredTotalChars: 8 },
+  {
+    reason: "marker cap differs from the run cap",
+    value: "HEAD\n...[job evidence capped: 4 chars omitted; total_chars=8; cap=5]",
+    declaredTotalChars: 8,
+  },
+  { reason: "declared total is undefined", value: `HEAD${replayMarker}`, declaredTotalChars: undefined },
+  { reason: "declared total is fractional", value: `HEAD${replayMarker}`, declaredTotalChars: 8.5 },
+  {
+    reason: "declared total is not a safe integer",
+    value: "HEAD\n...[job evidence capped: 9007199254740988 chars omitted; total_chars=9007199254740992; cap=4]",
+    declaredTotalChars: Number.MAX_SAFE_INTEGER + 1,
+  },
+  { reason: "declared total differs from marker total", value: `HEAD${replayMarker}`, declaredTotalChars: 9 },
+  {
+    reason: "omitted count is not a safe integer",
+    value: "HEAD\n...[job evidence capped: 9007199254740992 chars omitted; total_chars=8; cap=4]",
+    declaredTotalChars: 8,
+  },
+  {
+    reason: "omitted count differs from total minus cap",
+    value: "HEAD\n...[job evidence capped: 3 chars omitted; total_chars=8; cap=4]",
+    declaredTotalChars: 8,
+  },
+  {
+    reason: "omitted count is zero",
+    value: "HEAD\n...[job evidence capped: 0 chars omitted; total_chars=4; cap=4]",
+    declaredTotalChars: 4,
+  },
+  {
+    reason: "omitted count is negative",
+    value: "HEAD\n...[job evidence capped: -1 chars omitted; total_chars=3; cap=4]",
+    declaredTotalChars: 3,
+  },
+  { reason: "text follows the marker", value: `HEAD${replayMarker}TAIL`, declaredTotalChars: 8 },
+  { reason: "no marker exists", value: "HEADTAIL", declaredTotalChars: 80 },
+  { reason: "short evidence has no marker", value: "HEAD", declaredTotalChars: undefined },
+];
+
+for (const { reason, value, declaredTotalChars } of invalidReplays) {
+  test(`replayed evidence is capped again when ${reason}`, () => {
+    assert.deepEqual(
+      capReplayedControllerEvidence(value, declaredTotalChars, 4),
+      capControllerEvidence(value, 4),
+    );
+  });
+}
 
 test("per-job controller evidence cap is deterministic and preserves the true total", () => {
   const source = `HEAD\n${"A".repeat(75_730)}\nTAIL`;
