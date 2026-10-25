@@ -51,7 +51,7 @@ export async function acquireChatGptTab(
     try {
       const selected = await browser.tabs.selected?.();
       if (selected && matchesTarget((await selected.url()) ?? "")) {
-        await waitUntilLoaded(selected);
+        await verifyAcquiredTab(selected);
         return selected;
       }
     } catch (error) {

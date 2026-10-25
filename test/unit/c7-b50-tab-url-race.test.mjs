@@ -21,10 +21,17 @@ function fixture(route, actual, afterLoad) {
   } } };
   const listing = [{ id: 'fake-tab', url: expected }];
   const browser = { tabs: { new: async () => { throw new Error('must not create a tab'); } } };
-  if (route === 'session') Object.assign(browser.tabs, { list: async () => listing, get: async () => tab });
+  if (route === 'selected') browser.tabs.selected = async () => tab;
+  else if (route === 'session') Object.assign(browser.tabs, { list: async () => listing, get: async () => tab });
   else browser.user = { openTabs: async () => listing, claimTab: async () => tab };
   return { browser, tab, loaded: () => loaded };
 }
+
+test('selected: rejects navigation during loading', async () => {
+  const { browser, loaded } = fixture('selected', expected, 'https://chatgpt.com/c/other');
+  await assert.rejects(acquireChatGptTab(browser, expected), { code: 'IAB_CHATGPT_TAB_URL_MISMATCH' });
+  assert.equal(loaded(), true);
+});
 
 for (const route of ['session', 'user']) {
   for (const [name, actual, afterLoad] of [
