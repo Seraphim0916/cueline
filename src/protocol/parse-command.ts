@@ -16,10 +16,12 @@ function lastEnvelopeBody(text: string): string | undefined {
     const start = open + CONTROL_OPEN.length;
     let inString = false;
     let escaped = false;
+    let fallbackClose = -1;
     cursor = text.length;
     for (let i = start; i < text.length; i += 1) {
       const char = text[i];
       if (inString) {
+        if (text.startsWith(CONTROL_CLOSE, i)) fallbackClose = i;
         if (escaped) escaped = false;
         else if (char === "\\") escaped = true;
         else if (char === '"') inString = false;
@@ -28,9 +30,13 @@ function lastEnvelopeBody(text: string): string | undefined {
       } else if (text.startsWith(CONTROL_CLOSE, i)) {
         body = text.slice(start, i);
         cursor = i + CONTROL_CLOSE.length;
+        fallbackClose = -1;
         break;
       }
     }
+    // A tag hidden by an unterminated quote still closes a malformed envelope.
+    // Let JSON.parse reject it instead of replaying the previous command.
+    if (fallbackClose !== -1) body = text.slice(start, fallbackClose);
   }
   return body;
 }

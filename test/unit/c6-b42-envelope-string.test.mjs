@@ -49,9 +49,17 @@ test('malformed complete envelopes and missing closing tags remain rejected', ()
   assert.throws(() => parse(envelope(command('valid')) + wrap('{oops}')),
     { code: 'CONTROL_JSON_INVALID' });
   assert.throws(() => parse('<CueLineControl>{"task":"unterminated</CueLineControl>'),
-    { code: 'CONTROL_ENVELOPE_MISSING' });
+    { code: 'CONTROL_JSON_INVALID' });
   assert.throws(() => parse(wrap('{"task":"bad\\q"}')), { code: 'CONTROL_JSON_INVALID' });
   assert.throws(() => parse('<CueLineControl>{}'), { code: 'CONTROL_ENVELOPE_MISSING' });
+});
+
+test('a closed envelope with an unterminated quote must not replay the previous command', () => {
+  const valid = envelope(command('valid'));
+  assert.throws(() => parse(valid + '<CueLineControl>{"task":"unterminated</CueLineControl>'),
+    { code: 'CONTROL_JSON_INVALID' });
+  assert.equal(parse(valid + '<CueLineControl>{"task":"unterminated').jobs[0].task,
+    'valid');
 });
 
 test('identity, command and envelope length validation remain enforced', () => {
