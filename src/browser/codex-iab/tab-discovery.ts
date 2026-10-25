@@ -30,6 +30,15 @@ export async function acquireChatGptTab(
     conversationUrl === undefined
       ? url.startsWith(CHATGPT_URL)
       : sameChatGptConversationUrl(url, conversationUrl);
+  const verifyAcquiredTab = async (tab: IabTab): Promise<void> => {
+    await waitUntilLoaded(tab);
+    if (!matchesTarget((await tab.url()) ?? "")) {
+      throw new CueLineError(
+        "IAB_CHATGPT_TAB_URL_MISMATCH",
+        "The acquired tab no longer matches the requested ChatGPT conversation. Retry discovery before sending.",
+      );
+    }
+  };
   const canDiscover =
     browser.tabs.selected !== undefined ||
     browser.tabs.list !== undefined ||
@@ -61,7 +70,7 @@ export async function acquireChatGptTab(
     );
     if (sessionCandidates.length === 1) {
       const tab = await getSessionTab!(sessionCandidates[0]!.id!);
-      await waitUntilLoaded(tab);
+      await verifyAcquiredTab(tab);
       return tab;
     }
     if (sessionCandidates.length > 1) {
@@ -79,7 +88,7 @@ export async function acquireChatGptTab(
       );
       if (userCandidates.length === 1) {
         const tab = await claimUserTab!(userCandidates[0]!);
-        await waitUntilLoaded(tab);
+        await verifyAcquiredTab(tab);
         return tab;
       }
       if (userCandidates.length > 1) {

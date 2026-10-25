@@ -40,7 +40,7 @@ const DETECTORS: readonly SecretDetector[] = [
     kind: "jwt",
     pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g,
   },
-  { kind: "bearer_token", pattern: /\bBearer +[A-Za-z0-9._~+/=-]{20,}\b/g },
+  { kind: "bearer_token", pattern: /\bBearer +[A-Za-z0-9._~+/=-]{20,}\b/gi },
   {
     kind: "credential_assignment",
     pattern:

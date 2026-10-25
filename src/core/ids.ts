@@ -20,6 +20,11 @@ function canonicalize(value: unknown, ancestors: Set<object>): string {
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.prototype.hasOwnProperty.call(value, index)) {
+          throw new TypeError("CANONICAL_JSON_SPARSE_ARRAY");
+        }
+      }
       return `[${value.map((item) => canonicalize(item, ancestors)).join(",")}]`;
     }
     // Only plain objects (or null-prototype records) canonicalize by their
