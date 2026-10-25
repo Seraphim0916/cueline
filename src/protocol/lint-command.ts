@@ -12,6 +12,8 @@ const BASE_FIELDS = new Set(["protocol", "run_id", "round", "request_id", "actio
 const ACTION_FIELDS = new Set([
   "jobs",
   "job_ids",
+  "evidence_offset",
+  "evidence_hash",
   "wait_ms",
   "final_delivery_text",
   "reason",
@@ -19,7 +21,7 @@ const ACTION_FIELDS = new Set([
 const ACTION_ALLOWED_FIELDS: Readonly<Record<string, ReadonlySet<string>>> = {
   dispatch: new Set(["jobs"]),
   wait: new Set(["job_ids", "wait_ms"]),
-  inspect: new Set(["job_ids"]),
+  inspect: new Set(["job_ids", "evidence_offset", "evidence_hash"]),
   complete: new Set(["final_delivery_text"]),
   blocked: new Set(["reason", "final_delivery_text"]),
 };

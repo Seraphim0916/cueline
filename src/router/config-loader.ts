@@ -44,6 +44,9 @@ function parseCandidate(value: unknown, lane: string, index: number): RouteCandi
   if (!Array.isArray(argv) || argv.length === 0 || argv.some((part) => typeof part !== "string" || part.length === 0)) {
     throw invalid("route candidate argv must contain non-empty strings", { lane, index });
   }
+  if (argv.some((part: string) => part.includes("\0"))) {
+    throw invalid("route candidate argv must not contain NUL characters", { lane, index });
+  }
   if (enabled !== undefined && typeof enabled !== "boolean") {
     throw invalid("route candidate enabled must be a boolean", { lane, index });
   }
