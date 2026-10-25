@@ -3,16 +3,43 @@ import { MAX_CONTROLLER_ENVELOPE_CHARS } from "./limits.js";
 import type { ControllerCommand, ExpectedControllerIdentity } from "./types.js";
 import { validateControllerCommand } from "./validate-command.js";
 
-const CONTROL_ENVELOPE = /<CueLineControl>([\s\S]*?)<\/CueLineControl>/g;
+const CONTROL_OPEN = "<CueLineControl>";
+const CONTROL_CLOSE = "</CueLineControl>";
+
+/** Tags inside JSON strings are content, including after escaped quotes. */
+function lastEnvelopeBody(text: string): string | undefined {
+  let body: string | undefined;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const open = text.indexOf(CONTROL_OPEN, cursor);
+    if (open === -1) break;
+    const start = open + CONTROL_OPEN.length;
+    let inString = false;
+    let escaped = false;
+    cursor = text.length;
+    for (let i = start; i < text.length; i += 1) {
+      const char = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+      } else if (char === '"') {
+        inString = true;
+      } else if (text.startsWith(CONTROL_CLOSE, i)) {
+        body = text.slice(start, i);
+        cursor = i + CONTROL_CLOSE.length;
+        break;
+      }
+    }
+  }
+  return body;
+}
 
 export function parseControllerCommand(
   text: string,
   expected: ExpectedControllerIdentity,
 ): ControllerCommand {
-  let body: string | undefined;
-  for (const match of text.matchAll(CONTROL_ENVELOPE)) {
-    body = match[1];
-  }
+  const body = lastEnvelopeBody(text);
   if (body === undefined) {
     throw new CueLineError(
       "CONTROL_ENVELOPE_MISSING",

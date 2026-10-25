@@ -33,7 +33,10 @@ function normalizeName(value: string): string {
 }
 
 function unescapeName(value: string): string {
-  return value.replace(/\\(.)/g, "$1");
+  const escapes: Record<string, string> = {
+    n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", '"': '"', "\\": "\\", "/": "/",
+  };
+  return value.replace(/\\(.)/g, (match, escaped: string) => escapes[escaped] ?? match);
 }
 
 export function parseAccessibilityTree(raw: string): A11yNode[] {
@@ -51,7 +54,9 @@ export function parseAccessibilityTree(raw: string): A11yNode[] {
       ...(name === undefined ? {} : { name: unescapeName(name) }),
       ...(ref === undefined ? {} : { ref }),
       depth: (groups["indent"] ?? "").length,
-      disabled: /\bdisabled\b/.test(rest),
+      // Keep quoted attribute values together so their text cannot become state markers.
+      disabled: (rest.match(/(?:[^\s"']|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')+/g) ?? [])
+        .some((attribute) => /^(?:disabled(?:=true)?|\[disabled(?:=true)?\])$/.test(attribute)),
     });
   }
   return nodes;
