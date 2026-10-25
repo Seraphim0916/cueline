@@ -25,7 +25,7 @@ export async function waitForCueLineLaneContinuation<
     "complete", "blocked", "cancelled", "round_limit_reached", "stagnation_detected",
     "cancellation_pending", "runtime_stale",
   ]);
-  let previousBlocked: Status | undefined;
+  let previousBlocked: { phase: string | undefined; safeNextAction: unknown } | undefined;
   for (;;) {
     const status = await options.loadStatus(runId);
     if (status.continueAllowed) return status;
@@ -36,7 +36,7 @@ export async function waitForCueLineLaneContinuation<
       status.safeNextAction !== previousBlocked.safeNextAction
     ) {
       await options.onBlocked(status);
-      previousBlocked = status;
+      previousBlocked = { phase: status.phase, safeNextAction: status.safeNextAction };
     }
     await options.sleep(pollIntervalMs);
   }
