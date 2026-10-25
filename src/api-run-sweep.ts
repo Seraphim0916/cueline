@@ -6,7 +6,10 @@ import {
 } from "./api-runtime-lifecycle.js";
 import { classifyRunPruneRecency } from "./api-run-prune.js";
 import { CueLineError } from "./core/errors.js";
+import { loadPersistedRunState } from "./core/persisted-run.js";
+import { processOrGroupIsAlive } from "./core/process-liveness.js";
 import { runtimeEnvironment } from "./core/runtime.js";
+import { JobStatusStore } from "./jobs/status.js";
 import { defaultCueLineHome } from "./state/paths.js";
 
 export type CueLineRunSweepKeptReason =
@@ -141,6 +144,24 @@ export async function sweepCueLineRuns(
         } else {
           kept(base, "owner_alive");
         }
+        continue;
+      }
+      // Reconciliation writes audit events even when it finds live workers.
+      // Keep that case read-only during sweep; reconciliation still rechecks
+      // liveness before settling anything that passes this conservative filter.
+      const state = await loadPersistedRunState(home, run.runId);
+      const statusStore = new JobStatusStore(home);
+      let workersAlive = false;
+      for (const job of Object.values(state.jobs)) {
+        if (job.status !== "pending" && job.status !== "running") continue;
+        const persisted = await statusStore.read(job.jobId);
+        if (persisted?.pid !== undefined && processOrGroupIsAlive(persisted.pid)) {
+          workersAlive = true;
+          break;
+        }
+      }
+      if (workersAlive) {
+        kept(base, "workers_alive");
         continue;
       }
       const reconciled = await reconcileCueLineRuntime(run.runId, passthrough);
