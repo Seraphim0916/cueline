@@ -115,7 +115,7 @@ cueline-claude-desktop-lane status
 cueline-claude-desktop-lane daemon "<task>"
 ```
 
-请配置下一节所示的 MCP server，然后从 Claude Code Desktop 的 shell 工具中以 **Run in background** 模式运行 daemon。不要添加 `&`、`nohup` 或 `disown`。保留返回的 `runId`，以便查询状态、恢复及继续执行。
+请配置下一节所示的 MCP server，然后从 Claude Code Desktop 的 shell 工具中以 **Run in background** 模式运行 daemon。不要添加 `&`、`nohup` 或 `disown`。保留返回的 `runId`，以便查询状态、恢复及继续执行；要继续已保存的运行，请使用 `cueline-claude-desktop-lane daemon --resume <runId>`。
 
 默认安装命令是 `cueline install`，会连接两个平台。由模型驱动浏览器的宿主可能需要更长的时窗；请按“配置”一节使用 `CUELINE_COMPOSER_READY_TIMEOUT_MS` 或 `CUELINE_BROWSER_OPERATION_TIMEOUT_MS`。
 
@@ -134,7 +134,7 @@ cueline-claude-desktop-lane daemon "<task>"
 }
 ```
 
-这个无运行时依赖的 server 实现 MCP `2025-11-25`，并提供 start、continue、已脱敏的 status/doctor/list，以及带栅栏的 caller claim/start/heartbeat/progress 工具。它绝不会返回原始对话记录。除非精确的工具调用同时设置 `executor: "process"` 和 `allowProcessExecution: true`，否则进程执行仍处于关闭状态；第一次成功的 caller 工具调用会把 stdio 会话绑定到一个稳定且明确的 `callerId`，后续再使用精确的 claim ID 和 fencing token。推进浏览器的调用要求 server 宿主暴露 CueLine 的内置 Browser 绑定；没有该绑定的普通子进程会返回 `IAB_BROWSER_MISSING`，而持久化的 start/status/doctor/list 与 caller 栅栏仍可使用。只有 JSON 安全的 API 选项会跨越协议；Browser、环境、时钟和 abort 绑定仍由宿主注入。
+这个无运行时依赖的 server 实现 MCP `2025-11-25`，并提供 start、continue、已脱敏的 status/doctor/list，以及带栅栏的 caller claim/start/heartbeat/progress/result 工具，另有由 executor 持有的 work-lease 工具 `cueline_start_caller_work_lease`、`cueline_caller_work_lease_status` 和 `cueline_end_caller_work_lease`。它绝不会返回原始对话记录。除非精确的工具调用同时设置 `executor: "process"` 和 `allowProcessExecution: true`，否则进程执行仍处于关闭状态；第一次成功的 caller 工具调用会把 stdio 会话绑定到一个稳定且明确的 `callerId`，后续再使用精确的 claim ID 和 fencing token。推进浏览器的调用要求 server 宿主暴露 CueLine 的内置 Browser 绑定；没有该绑定的普通子进程会返回 `IAB_BROWSER_MISSING`，而持久化的 start/status/doctor/list 与 caller 栅栏仍可使用。只有 JSON 安全的 API 选项会跨越协议；Browser、环境、时钟和 abort 绑定仍由宿主注入。
 
 ### 从源码安装
 
@@ -259,8 +259,8 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 | 分组 | 命令 | 效果 |
 | --- | --- | --- |
 | 查看 | `doctor` · `routing` · `routing explain` · `jobs` · `runs` · `run status` · `run status-at` · `run diff` · `run doctor` · `run watch` · `run timeline` · `run graph` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | 只读 |
-| 安装 | `install` · `uninstall` | 只创建或移除包所拥有的 skill 链接 |
-| 恢复 | `run reconcile` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | 追加审计证据或修改持久 run/job 状态 |
+| 安装 | `install` · `uninstall` | 只创建或移除包所拥有的 skill 链接（默认 Codex 与 Claude Code 各一条；`--codex-only` 或 `--claude-only` 只处理一条） |
+| 恢复 | `run reconcile` · `run authorize-delivery-retry` · `run authorize-response-retry` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | 追加审计证据或修改持久 run/job 状态 |
 
 ```console
 $ cueline doctor

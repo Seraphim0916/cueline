@@ -10,7 +10,10 @@ and you perform the local work Pro asks for. What you never do is decide what
 the next step should be.
 
 Ask for the bridge directory if the user has not named one. Everything below is
-relative to it.
+relative to it. Export it as `CUELINE_HOST_BRIDGE` (an absolute path) before
+launching the daemon: the daemon falls back to `~/.cueline/host-bridge` when the
+variable is unset, while the mailbox helper takes the directory only as an explicit
+argument, so both must see the same value.
 
 ## Starting a run
 
@@ -25,8 +28,12 @@ Never restart merely because the launch tool call returned; a shell-detached
 child can still be alive, and a restart would put two daemons on one bridge.
 
 ```
+export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
 cueline-claude-desktop-lane daemon "<request>"
 ```
+
+To continue a saved run instead of starting a new one, launch
+`cueline-claude-desktop-lane daemon --resume <runId>` the same way.
 
 Then enter the request loop below. `cueline-claude-desktop-lane status`
 prints the latest run summary, and `lane.log` in the bridge directory holds the
