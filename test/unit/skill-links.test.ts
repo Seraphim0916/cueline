@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import {
+import fs, {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
@@ -10,6 +11,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -181,6 +183,53 @@ test(
     assert.equal(await readlink(context.claudeTarget), claudeSource);
   },
 );
+
+for (const code of ["EACCES", "EPERM"] as const) {
+  for (const operation of ["install", "uninstall"] as const) {
+    for (const ownership of ["managed", "foreign"] as const) {
+      test(`${operation} propagates ${code} from readlink after successful lstat and preserves ${ownership} symlink`, async (t) => {
+        const context = await fixture();
+        t.after(() => rm(context.home, { recursive: true, force: true }));
+        const source = ownership === "managed" ? codexSource : path.join(context.home, "foreign-skill");
+        if (ownership === "foreign") {
+          await mkdir(source);
+          await writeFile(path.join(source, "SKILL.md"), "foreign skill\n");
+        }
+        await mkdir(path.dirname(context.codexTarget), { recursive: true });
+        await symlink(source, context.codexTarget, "dir");
+        const before = await lstat(context.codexTarget);
+        assert.ok(before.isSymbolicLink());
+
+        const failure = Object.assign(new Error(`${code}: readlink denied`), { code });
+        const readlinkMock = t.mock.method(fs, "readlink", async (candidate: string) => {
+          assert.equal(candidate, context.codexTarget);
+          // The actual filesystem permits lstat; only reading the link is denied.
+          assert.ok((await lstat(candidate)).isSymbolicLink());
+          throw failure;
+        });
+        syncBuiltinESMExports();
+        try {
+          const action = operation === "install" ? installSkill : uninstallSkill;
+          await assert.rejects(action(context.environment, "codex-only"), (error) => error === failure);
+          assert.equal(readlinkMock.mock.callCount(), 1);
+        } finally {
+          readlinkMock.mock.restore();
+          syncBuiltinESMExports();
+        }
+
+        const after = await lstat(context.codexTarget);
+        assert.ok(after.isSymbolicLink());
+        assert.equal(after.dev, before.dev);
+        assert.equal(after.ino, before.ino);
+        assert.equal(await readlink(context.codexTarget), source);
+        if (ownership === "foreign") {
+          assert.equal(await readFile(path.join(source, "SKILL.md"), "utf8"), "foreign skill\n");
+        }
+        await assertMissing(context.claudeTarget);
+      });
+    }
+  }
+}
 
 test("a foreign or dangling symlink at a target is neither replaced nor removed", async (t) => {
   const context = await fixture();
