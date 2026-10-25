@@ -50,9 +50,9 @@ const failures: ReadonlyArray<{
 
 for (const failure of failures) {
   for (const recoverBeforeTimeout of [false, true]) {
-    test(`${failure.name}: ${recoverBeforeTimeout ? "republish without rerunning action" : "consumer times out and preserves evidence"}`, async () => {
-      // Keep fault evidence under TMPDIR for inspection after the run.
+    test(`${failure.name}: ${recoverBeforeTimeout ? "republish without rerunning action" : "consumer times out and preserves evidence"}`, async (t) => {
       const root = await mkdtemp(join(tmpdir(), "cueline-publication-failure-"));
+      t.after(() => rm(root, { recursive: true, force: true }));
       const id = "req-100-1";
       const inflightPath = join(root, "inflight", `${id}.json`);
       const responsePath = join(root, "responses", `${id}.json`);
