@@ -115,7 +115,7 @@ cueline-claude-desktop-lane status
 cueline-claude-desktop-lane daemon "<task>"
 ```
 
-依下節設定 MCP server，再從 Claude Code Desktop 的 shell 工具以 **Run in background** 模式執行 daemon。不要加上 `&`、`nohup` 或 `disown`。保存回傳的 `runId`，供狀態查詢、復原與接續執行使用。
+依下節設定 MCP server，再從 Claude Code Desktop 的 shell 工具以 **Run in background** 模式執行 daemon。不要加上 `&`、`nohup` 或 `disown`。保存回傳的 `runId`，供狀態查詢、復原與接續執行使用；要接續已儲存的執行，請用 `cueline-claude-desktop-lane daemon --resume <runId>`。
 
 預設安裝指令是 `cueline install`，會同時接好兩個平台。由模型逐回合驅動瀏覽器的宿主可能需要放寬時窗；請依「設定」一節使用 `CUELINE_COMPOSER_READY_TIMEOUT_MS` 或 `CUELINE_BROWSER_OPERATION_TIMEOUT_MS`。
 
@@ -134,7 +134,7 @@ cueline-claude-desktop-lane daemon "<task>"
 }
 ```
 
-這個零執行期相依的 server 實作 MCP `2025-11-25`，提供 start、continue、去敏感化的 status/doctor/list，以及有圍欄的 caller claim/start/heartbeat/progress 工具。它絕不回傳原始逐字稿。除非該次工具呼叫同時設定 `executor: "process"` 與 `allowProcessExecution: true`，否則行程執行保持關閉；第一次成功的 caller 工具呼叫會把這條 stdio session 綁定到一個穩定且明確的 `callerId`，之後每次都要帶精確的 claim ID 與圍欄 token。會推進瀏覽器的呼叫需要 server 宿主注入 CueLine 內建的 Browser binding；沒有它的單純子行程會回傳 `IAB_BROWSER_MISSING`，但持久化的 start/status/doctor/list 與 caller 圍欄仍然可用。只有 JSON-safe 的 API 選項會跨越協定；Browser、環境、時鐘與中止 binding 一律由宿主注入。
+這個零執行期相依的 server 實作 MCP `2025-11-25`，提供 start、continue、去敏感化的 status/doctor/list，以及有圍欄的 caller claim/start/heartbeat/progress/result 工具，另有由 executor 持有的 work-lease 工具 `cueline_start_caller_work_lease`、`cueline_caller_work_lease_status` 與 `cueline_end_caller_work_lease`。它絕不回傳原始逐字稿。除非該次工具呼叫同時設定 `executor: "process"` 與 `allowProcessExecution: true`，否則行程執行保持關閉；第一次成功的 caller 工具呼叫會把這條 stdio session 綁定到一個穩定且明確的 `callerId`，之後每次都要帶精確的 claim ID 與圍欄 token。會推進瀏覽器的呼叫需要 server 宿主注入 CueLine 內建的 Browser binding；沒有它的單純子行程會回傳 `IAB_BROWSER_MISSING`，但持久化的 start/status/doctor/list 與 caller 圍欄仍然可用。只有 JSON-safe 的 API 選項會跨越協定；Browser、環境、時鐘與中止 binding 一律由宿主注入。
 
 ### 從原始碼安裝
 
@@ -286,8 +286,8 @@ CLI 不驅動瀏覽器。執行寫入狀態的命令前，先用 `cueline help` 
 | 分組 | 命令 | 效果 |
 | --- | --- | --- |
 | 檢視 | `doctor` · `routing` · `routing explain` · `jobs` · `runs` · `run status` · `run status-at` · `run diff` · `run doctor` · `run watch` · `run timeline` · `run graph` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | 唯讀 |
-| 安裝 | `install` · `uninstall` | 只建立或移除套件擁有的 skill 連結 |
-| 恢復 | `run reconcile` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | 追加稽核證據或修改持久 run/job 狀態 |
+| 安裝 | `install` · `uninstall` | 只建立或移除套件擁有的 skill 連結（預設 Codex 與 Claude Code 各一條；`--codex-only` 或 `--claude-only` 只處理一條） |
+| 恢復 | `run reconcile` · `run authorize-delivery-retry` · `run authorize-response-retry` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | 追加稽核證據或修改持久 run/job 狀態 |
 
 ```console
 $ cueline doctor

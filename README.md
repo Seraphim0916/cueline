@@ -117,7 +117,7 @@ cueline-claude-desktop-lane status
 cueline-claude-desktop-lane daemon "<task>"
 ```
 
-Configure the MCP server shown below, then run the daemon from Claude Code Desktop's shell tool in **Run in background** mode. Do not add `&`, `nohup`, or `disown`. Keep the returned `runId` for status, recovery, and continuation.
+Configure the MCP server shown below, then run the daemon from Claude Code Desktop's shell tool in **Run in background** mode. Do not add `&`, `nohup`, or `disown`. Keep the returned `runId` for status, recovery, and continuation; resume a saved run with `cueline-claude-desktop-lane daemon --resume <runId>`.
 
 The default install is `cueline install`, which connects both platforms. Model-driven browser hosts may need wider windows; use `CUELINE_COMPOSER_READY_TIMEOUT_MS` or `CUELINE_BROWSER_OPERATION_TIMEOUT_MS` as described under Configuration.
 
@@ -136,7 +136,7 @@ Configure an MCP client to launch CueLine over newline-delimited stdio:
 }
 ```
 
-The zero-runtime-dependency server implements MCP `2025-11-25` and exposes start, continue, sanitized status/doctor/list, and fenced caller claim/start/heartbeat/progress tools. It never returns raw transcripts. Process execution remains off unless that exact tool call sets both `executor: "process"` and `allowProcessExecution: true`; the first successful caller tool call binds that stdio session to one stable explicit `callerId`, followed by the exact claim ID and fencing token. Browser-advancing calls require the server host to expose CueLine's built-in Browser binding; a plain subprocess without it returns `IAB_BROWSER_MISSING`, while durable start/status/doctor/list and caller fencing remain available. Only JSON-safe API options cross the protocol; Browser, environment, clock, and abort bindings remain host-injected.
+The zero-runtime-dependency server implements MCP `2025-11-25` and exposes start, continue, sanitized status/doctor/list, and fenced caller claim/start/heartbeat/progress/result tools, plus the executor-owned work-lease tools `cueline_start_caller_work_lease`, `cueline_caller_work_lease_status`, and `cueline_end_caller_work_lease`. It never returns raw transcripts. Process execution remains off unless that exact tool call sets both `executor: "process"` and `allowProcessExecution: true`; the first successful caller tool call binds that stdio session to one stable explicit `callerId`, followed by the exact claim ID and fencing token. Browser-advancing calls require the server host to expose CueLine's built-in Browser binding; a plain subprocess without it returns `IAB_BROWSER_MISSING`, while durable start/status/doctor/list and caller fencing remain available. Only JSON-safe API options cross the protocol; Browser, environment, clock, and abort bindings remain host-injected.
 
 ### Install from source
 
@@ -289,8 +289,8 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 | Group | Commands | Effect |
 | --- | --- | --- |
 | Inspect | `doctor` · `routing` · `routing explain` · `jobs` · `runs` · `run status` · `run status-at` · `run diff` · `run doctor` · `run watch` · `run timeline` · `run graph` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | Read-only |
-| Install | `install` · `uninstall` | Create or remove only the package-owned skill link |
-| Recover | `run reconcile` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | Append evidence or change durable local run/job state |
+| Install | `install` · `uninstall` | Create or remove only the package-owned skill links (Codex and Claude Code by default; one with `--codex-only` or `--claude-only`) |
+| Recover | `run reconcile` · `run authorize-delivery-retry` · `run authorize-response-retry` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | Append evidence or change durable local run/job state |
 
 ```console
 $ cueline doctor

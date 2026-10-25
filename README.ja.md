@@ -115,7 +115,7 @@ cueline-claude-desktop-lane status
 cueline-claude-desktop-lane daemon "<task>"
 ```
 
-次節の MCP server を設定してから、Claude Code Desktop のシェルツールで daemon を **Run in background** モードで起動してください。`&`、`nohup`、`disown` は追加しないでください。状態確認、復旧、継続に使うため、返された `runId` を保持してください。
+次節の MCP server を設定してから、Claude Code Desktop のシェルツールで daemon を **Run in background** モードで起動してください。`&`、`nohup`、`disown` は追加しないでください。状態確認、復旧、継続に使うため、返された `runId` を保持してください。保存済みの run は `cueline-claude-desktop-lane daemon --resume <runId>` で再開します。
 
 標準インストールは両プラットフォームを接続する `cueline install` です。モデル駆動のブラウザー host では、より長い時間枠が必要になる場合があります。「設定」で説明する `CUELINE_COMPOSER_READY_TIMEOUT_MS` または `CUELINE_BROWSER_OPERATION_TIMEOUT_MS` を使用してください。
 
@@ -134,7 +134,7 @@ cueline-claude-desktop-lane daemon "<task>"
 }
 ```
 
-実行時依存関係を持たないこの server は MCP `2025-11-25` を実装し、start、continue、サニタイズ済み status/doctor/list、フェンシング付き caller claim/start/heartbeat/progress ツールを公開します。生の transcript を返すことはありません。正確なツール呼び出しが `executor: "process"` と `allowProcessExecution: true` の両方を設定しない限り、process 実行は無効のままです。最初に成功した caller ツール呼び出しは stdio session を安定した明示的な `callerId` に結び付け、その後に正確な claim ID と fencing token が続きます。ブラウザーを進める呼び出しでは、server host が CueLine の内蔵 Browser binding を公開している必要があります。これを持たない通常の subprocess は `IAB_BROWSER_MISSING` を返しますが、永続的な start/status/doctor/list と caller fencing は利用できます。プロトコルを越えるのは JSON 安全な API オプションだけで、Browser、環境、時計、abort binding は host から注入されたままです。
+実行時依存関係を持たないこの server は MCP `2025-11-25` を実装し、start、continue、サニタイズ済み status/doctor/list、フェンシング付き caller claim/start/heartbeat/progress/result ツール、および executor が保持する work-lease ツール `cueline_start_caller_work_lease`、`cueline_caller_work_lease_status`、`cueline_end_caller_work_lease` を公開します。生の transcript を返すことはありません。正確なツール呼び出しが `executor: "process"` と `allowProcessExecution: true` の両方を設定しない限り、process 実行は無効のままです。最初に成功した caller ツール呼び出しは stdio session を安定した明示的な `callerId` に結び付け、その後に正確な claim ID と fencing token が続きます。ブラウザーを進める呼び出しでは、server host が CueLine の内蔵 Browser binding を公開している必要があります。これを持たない通常の subprocess は `IAB_BROWSER_MISSING` を返しますが、永続的な start/status/doctor/list と caller fencing は利用できます。プロトコルを越えるのは JSON 安全な API オプションだけで、Browser、環境、時計、abort binding は host から注入されたままです。
 
 ### ソースからインストール
 
@@ -257,8 +257,8 @@ CLI はブラウザーを駆動しません。状態を書き込むコマンド�
 | グループ | コマンド | 効果 |
 | --- | --- | --- |
 | 参照 | `doctor` · `routing` · `routing explain` · `jobs` · `runs` · `run status` · `run status-at` · `run diff` · `run doctor` · `run watch` · `run timeline` · `run graph` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | 読み取り専用 |
-| インストール | `install` · `uninstall` | パッケージ所有のスキルリンクだけを作成・削除 |
-| 復旧 | `run reconcile` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | 監査証拠の追記、または永続 run/job 状態の変更 |
+| インストール | `install` · `uninstall` | パッケージ所有のスキルリンクだけを作成・削除（既定では Codex と Claude Code の 2 本、`--codex-only` または `--claude-only` では 1 本） |
+| 復旧 | `run reconcile` · `run authorize-delivery-retry` · `run authorize-response-retry` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | 監査証拠の追記、または永続 run/job 状態の変更 |
 
 ```console
 $ cueline doctor

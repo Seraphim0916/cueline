@@ -115,7 +115,7 @@ cueline-claude-desktop-lane status
 cueline-claude-desktop-lane daemon "<task>"
 ```
 
-다음 절에 나온 MCP server를 구성한 뒤 Claude Code Desktop의 셸 도구에서 daemon을 **Run in background** 모드로 실행하세요. `&`, `nohup`, `disown`을 추가하지 마세요. 상태 확인, 복구 및 계속 실행에 사용할 반환된 `runId`를 보관하세요.
+다음 절에 나온 MCP server를 구성한 뒤 Claude Code Desktop의 셸 도구에서 daemon을 **Run in background** 모드로 실행하세요. `&`, `nohup`, `disown`을 추가하지 마세요. 상태 확인, 복구 및 계속 실행에 사용할 반환된 `runId`를 보관하세요. 저장된 run은 `cueline-claude-desktop-lane daemon --resume <runId>`로 재개합니다.
 
 기본 설치는 두 플랫폼을 연결하는 `cueline install`입니다. 모델이 브라우저를 구동하는 host에는 더 긴 시간 창이 필요할 수 있습니다. “설정”에서 설명한 `CUELINE_COMPOSER_READY_TIMEOUT_MS` 또는 `CUELINE_BROWSER_OPERATION_TIMEOUT_MS`를 사용하세요.
 
@@ -134,7 +134,7 @@ cueline-claude-desktop-lane daemon "<task>"
 }
 ```
 
-런타임 의존성이 없는 이 server는 MCP `2025-11-25`를 구현하고 start, continue, 정제된 status/doctor/list, fencing이 적용된 caller claim/start/heartbeat/progress 도구를 노출합니다. 원본 transcript는 반환하지 않습니다. 정확한 도구 호출에서 `executor: "process"`와 `allowProcessExecution: true`를 모두 설정하지 않는 한 process 실행은 꺼진 상태로 유지됩니다. 처음 성공한 caller 도구 호출은 stdio session을 안정적이고 명시적인 `callerId`에 연결하고, 이후 정확한 claim ID와 fencing token이 이어집니다. 브라우저를 진행시키는 호출에는 server host가 CueLine의 내장 Browser binding을 노출해야 합니다. 이 binding이 없는 일반 subprocess는 `IAB_BROWSER_MISSING`을 반환하지만, 영속적인 start/status/doctor/list와 caller fencing은 계속 사용할 수 있습니다. JSON에 안전한 API 옵션만 프로토콜을 건너며 Browser, 환경, 시계, abort binding은 host가 주입한 상태로 남습니다.
+런타임 의존성이 없는 이 server는 MCP `2025-11-25`를 구현하고 start, continue, 정제된 status/doctor/list, fencing이 적용된 caller claim/start/heartbeat/progress/result 도구와 executor가 보유하는 work-lease 도구 `cueline_start_caller_work_lease`, `cueline_caller_work_lease_status`, `cueline_end_caller_work_lease`를 노출합니다. 원본 transcript는 반환하지 않습니다. 정확한 도구 호출에서 `executor: "process"`와 `allowProcessExecution: true`를 모두 설정하지 않는 한 process 실행은 꺼진 상태로 유지됩니다. 처음 성공한 caller 도구 호출은 stdio session을 안정적이고 명시적인 `callerId`에 연결하고, 이후 정확한 claim ID와 fencing token이 이어집니다. 브라우저를 진행시키는 호출에는 server host가 CueLine의 내장 Browser binding을 노출해야 합니다. 이 binding이 없는 일반 subprocess는 `IAB_BROWSER_MISSING`을 반환하지만, 영속적인 start/status/doctor/list와 caller fencing은 계속 사용할 수 있습니다. JSON에 안전한 API 옵션만 프로토콜을 건너며 Browser, 환경, 시계, abort binding은 host가 주입한 상태로 남습니다.
 
 ### 소스에서 설치하기
 
@@ -257,8 +257,8 @@ CLI는 브라우저를 구동하지 않습니다. 상태를 쓰는 명령 전에
 | 그룹 | 명령 | 효과 |
 | --- | --- | --- |
 | 조회 | `doctor` · `routing` · `routing explain` · `jobs` · `runs` · `run status` · `run status-at` · `run diff` · `run doctor` · `run watch` · `run timeline` · `run graph` · `run verify` · `run handoff` · `protocol lint` · `api path` · `config path` | 읽기 전용 |
-| 설치 | `install` · `uninstall` | 패키지가 소유한 스킬 링크만 생성·제거 |
-| 복구 | `run reconcile` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | 감사 증거 추가 또는 지속 run/job 상태 변경 |
+| 설치 | `install` · `uninstall` | 패키지가 소유한 스킬 링크만 생성·제거(기본값은 Codex와 Claude Code 두 개, `--codex-only` 또는 `--claude-only`는 한 개) |
+| 복구 | `run reconcile` · `run authorize-delivery-retry` · `run authorize-response-retry` · `run takeover` · `run reconcile-runtime` · `run cancel` / `run stop` · `job cancel` | 감사 증거 추가 또는 지속 run/job 상태 변경 |
 
 ```console
 $ cueline doctor
