@@ -126,7 +126,14 @@ function bounded(value: string, maximum: number): string {
   if (value.length <= maximum) return value;
   const marker = "[truncated]";
   if (maximum <= marker.length) return marker.slice(0, maximum);
-  return `${value.slice(0, Math.max(0, maximum - marker.length))}${marker}`;
+  let end = maximum - marker.length;
+  // Keep the UTF-16 budget without splitting a Unicode surrogate pair.
+  const previous = value.charCodeAt(end - 1);
+  const next = value.charCodeAt(end);
+  if (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+    end -= 1;
+  }
+  return `${value.slice(0, end)}${marker}`;
 }
 
 function nextStep(
