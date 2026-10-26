@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -160,11 +161,19 @@ test("large streams keep head and tail and report the exact truncated count", as
 test("model and provider headers on stderr are reported once, and unsafe values are dropped", async (t) => {
   mockKill(t);
   const progress: Array<{ phase: string; model?: string; provider?: string }> = [];
+  // stdout and stderr are separate pipes, so a delay in the child does not order their events in the parent.
+  // The child writes stdout only after the parent has reported the headers and created the flag file.
+  const flag = path.join(await mkdtemp(path.join(tmpdir(), "cueline-unit-runner-headers-")), "headers-seen");
   const script =
+    "const fs=require('fs');" +
     "process.stderr.write('Model:  gpt-unit/1.0  \\nprovider: bad value!\\nprovider: unit-provider\\n');" +
-    "setTimeout(()=>{process.stderr.write('model: other\\n');process.stdout.write('done')},20)";
+    `const poll=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(flag)}))return;clearInterval(poll);` +
+    "process.stderr.write('model: other\\n');process.stdout.write('done')},5);" +
+    // Exits with 3 only if the flag never appears; unref lets a finished child exit at once.
+    "setTimeout(()=>process.exit(3),10000).unref()";
   const result = await runner().run(spec(script), {
     onProgress: (event) => {
+      if (event.phase === "waiting_for_model") writeFileSync(flag, "");
       progress.push({
         phase: event.phase,
         ...(event.model === undefined ? {} : { model: event.model }),
