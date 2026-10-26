@@ -53,6 +53,15 @@ function fail(message: string, details?: unknown): never {
   throw new CueLineError("CONTROL_COMMAND_INVALID", message, { details });
 }
 
+// Array methods such as map/some skip holes, so a sparse array would pass element checks and then surface
+// as undefined (serialized as null) or a native TypeError further on.
+function hasHoles(value: readonly unknown[]): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (!(index in value)) return true;
+  }
+  return false;
+}
+
 function isControllerAction(value: string): value is ControllerAction {
   return ACTION_COMMAND_FIELDS.has(value as ControllerAction);
 }
@@ -150,6 +159,7 @@ function optionalStringArray(record: Record<string, unknown>, key: string): stri
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
+    hasHoles(value) ||
     value.some((item) => typeof item !== "string" || !JOB_ID_PATTERN.test(item)) ||
     new Set(value).size !== value.length
   ) {
@@ -272,6 +282,9 @@ export function validateControllerCommand(
         `A dispatch command may contain at most ${MAX_CONTROLLER_DISPATCH_JOBS} jobs.`,
         { details: { maximum_items: MAX_CONTROLLER_DISPATCH_JOBS } },
       );
+    }
+    if (hasHoles(value.jobs)) {
+      return fail("Each dispatch job must be an object.");
     }
     const jobs = value.jobs.map(validateJob);
     const seen = new Set<string>();
