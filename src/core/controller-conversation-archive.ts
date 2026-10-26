@@ -11,9 +11,14 @@ function archiveStatus(store: RunStore<CueLineRunState>) {
 }
 
 function boundedMessage(message: string): string {
-  return message.length <= MAX_ARCHIVE_FAILURE_CHARS
-    ? message
-    : `${message.slice(0, MAX_ARCHIVE_FAILURE_CHARS)}…`;
+  if (message.length <= MAX_ARCHIVE_FAILURE_CHARS) return message;
+  let end = MAX_ARCHIVE_FAILURE_CHARS;
+  const previous = message.charCodeAt(end - 1);
+  const next = message.charCodeAt(end);
+  if (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+    end -= 1;
+  }
+  return `${message.slice(0, end)}…`;
 }
 
 export function controllerConversationArchiveNeedsRecovery(
