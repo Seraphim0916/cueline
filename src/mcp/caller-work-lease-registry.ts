@@ -85,6 +85,7 @@ export class McpCallerWorkLeaseRegistry {
     claim: CueLineCallerWorkClaimResult;
     promise: Promise<CueLineCallerWorkLease>;
   }>();
+  #closing = false;
 
   rememberClaim(claim: CueLineCallerWorkClaimResult): void {
     this.#claims.set(key(claim.runId, claim.jobId), claim);
@@ -108,6 +109,12 @@ export class McpCallerWorkLeaseRegistry {
   ): Promise<McpCallerWorkLeaseView> {
     const leaseKey = key(proof.runId, proof.jobId);
     const claim = this.#retainedClaim(proof);
+    if (this.#closing) {
+      throw new CueLineError(
+        "MCP_CALLER_WORK_LEASE_REGISTRY_CLOSED",
+        "This MCP session is closing; no caller-work lease can start.",
+      );
+    }
 
     const pending = this.#starting.get(leaseKey);
     if (pending !== undefined) {
@@ -159,9 +166,16 @@ export class McpCallerWorkLeaseRegistry {
     return view(lease, lease.active ? "active" : "inactive");
   }
 
+  /** A start of the same job still in flight finishes first, so ending it cannot leave its lease running. */
+  async #settledStart(leaseKey: string): Promise<void> {
+    const pending = this.#starting.get(leaseKey);
+    if (pending !== undefined) await pending.promise.catch(() => undefined);
+  }
+
   async end(proof: McpCallerWorkLeaseProof): Promise<McpCallerWorkLeaseView> {
     const leaseKey = key(proof.runId, proof.jobId);
     this.#retainedClaim(proof);
+    await this.#settledStart(leaseKey);
     const lease = this.#leases.get(leaseKey);
     if (lease === undefined) {
       return {
@@ -200,14 +214,18 @@ export class McpCallerWorkLeaseRegistry {
   }
 
   async endAfterSubmission(proof: McpCallerWorkLeaseProof): Promise<void> {
-    const lease = this.#leases.get(key(proof.runId, proof.jobId));
+    const leaseKey = key(proof.runId, proof.jobId);
+    await this.#settledStart(leaseKey);
+    const lease = this.#leases.get(leaseKey);
     if (lease === undefined) return;
     assertSameProof(lease.proof, proof);
     await lease.stop();
-    this.#leases.delete(key(proof.runId, proof.jobId));
+    this.#leases.delete(leaseKey);
   }
 
   async close(): Promise<void> {
+    // Refuse new starts first: one beginning after the pending list is read would otherwise outlive close().
+    this.#closing = true;
     await Promise.allSettled([...this.#starting.values()].map(({ promise }) => promise));
     await Promise.all([...this.#leases.values()].map((lease) => lease.stop()));
     this.#leases.clear();
