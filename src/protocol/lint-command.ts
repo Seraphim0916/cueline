@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { CueLineError } from "../core/errors.js";
+import { MAX_CONTROLLER_ENVELOPE_CHARS } from "./limits.js";
 import { validateControllerCommand } from "./validate-command.js";
 import type {
   ControllerCommand,
@@ -76,6 +77,16 @@ function parsePayload(text: string): {
   let body: string | undefined;
   for (const match of text.matchAll(CONTROL_ENVELOPE)) body = match[1];
   const format = body === undefined ? "json" : "envelope";
+  if (body !== undefined && body.length > MAX_CONTROLLER_ENVELOPE_CHARS) {
+    return {
+      format,
+      issue: {
+        code: "CONTROL_ENVELOPE_TOO_LARGE",
+        severity: "error",
+        message: `Control envelope exceeds the ${MAX_CONTROLLER_ENVELOPE_CHARS}-character protocol limit.`,
+      },
+    };
+  }
   const source = body ?? text;
   try {
     return { format, value: JSON.parse(source.trim()) as unknown };
@@ -109,7 +120,9 @@ function staticIssues(
 ): CueLineProtocolLintIssue[] {
   const issues: CueLineProtocolLintIssue[] = [];
   const allowedForAction =
-    typeof value.action === "string" ? ACTION_ALLOWED_FIELDS[value.action] : undefined;
+    typeof value.action === "string" && Object.hasOwn(ACTION_ALLOWED_FIELDS, value.action)
+      ? ACTION_ALLOWED_FIELDS[value.action]
+      : undefined;
   for (const field of Object.keys(value)) {
     if (BASE_FIELDS.has(field)) continue;
     if (ACTION_FIELDS.has(field)) {
