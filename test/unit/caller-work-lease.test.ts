@@ -93,6 +93,12 @@ async function claimedWork(runId: string, ttlMs = 60_000, now?: () => Date) {
   return { home, job, claim };
 }
 
+// Validation must fail before any I/O; an isolated home keeps a regression off ~/.cueline.
+async function isolated(): Promise<{ home: string; environment: NodeJS.ProcessEnv }> {
+  const home = await mkdtemp(path.join(tmpdir(), "cueline-unit-lease-isolated-"));
+  return { home, environment: { CUELINE_HOME: home } };
+}
+
 async function waitForAbort(signal: AbortSignal, timeoutMs = 2_000): Promise<void> {
   if (signal.aborted) return;
   await new Promise<void>((resolve, reject) => {
@@ -113,7 +119,7 @@ test("an already aborted executor scope is rejected before any durable mutation"
   const reason = new Error("executor shutting down");
   controller.abort(reason);
   await assert.rejects(
-    startCueLineCallerWorkLease(syntheticClaim(), { signal: controller.signal }),
+    startCueLineCallerWorkLease(syntheticClaim(), { ...(await isolated()), signal: controller.signal }),
     (error: unknown) =>
       hasCode("CALLER_WORK_EXECUTION_ABORTED")(error) && (error as Error).cause === reason,
   );
@@ -129,7 +135,7 @@ test("each timer option is validated with its own error code", async () => {
   ];
   for (const [label, timerOptions, code] of cases) {
     await assert.rejects(
-      startCueLineCallerWorkLease(syntheticClaim(), timerOptions),
+      startCueLineCallerWorkLease(syntheticClaim(), { ...(await isolated()), ...timerOptions }),
       hasCode(code),
       label,
     );
@@ -147,7 +153,7 @@ test("the heartbeat cadence must fit strictly inside a well-formed claim window"
   ];
   for (const [label, claim, heartbeatIntervalMs] of cases) {
     await assert.rejects(
-      startCueLineCallerWorkLease(syntheticClaim(claim), { heartbeatIntervalMs }),
+      startCueLineCallerWorkLease(syntheticClaim(claim), { ...(await isolated()), heartbeatIntervalMs }),
       (error: unknown) =>
         hasCode("CALLER_WORK_HEARTBEAT_INTERVAL_INVALID")(error) &&
         (error as CueLineError & { details: { heartbeat_interval_ms: number } }).details
