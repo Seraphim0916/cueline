@@ -52,6 +52,14 @@ function assertSameProof(
   }
 }
 
+function sameProof(actual: CueLineCallerWorkClaimProof, expected: McpCallerWorkLeaseProof): boolean {
+  return (
+    actual.claimId === expected.claimId &&
+    actual.callerId === expected.callerId &&
+    actual.fencingToken === expected.fencingToken
+  );
+}
+
 function failureCode(failure: unknown): string | undefined {
   if (typeof failure !== "object" || failure === null) return undefined;
   const code = (failure as { code?: unknown }).code;
@@ -85,6 +93,7 @@ export class McpCallerWorkLeaseRegistry {
     claim: CueLineCallerWorkClaimResult;
     promise: Promise<CueLineCallerWorkLease>;
   }>();
+  readonly #stopping = new Set<Promise<void>>();
   #closing = false;
 
   rememberClaim(claim: CueLineCallerWorkClaimResult): void {
@@ -107,14 +116,14 @@ export class McpCallerWorkLeaseRegistry {
     proof: McpCallerWorkLeaseProof,
     options: CueLineCallerWorkLeaseOptions,
   ): Promise<McpCallerWorkLeaseView> {
-    const leaseKey = key(proof.runId, proof.jobId);
-    const claim = this.#retainedClaim(proof);
     if (this.#closing) {
       throw new CueLineError(
         "MCP_CALLER_WORK_LEASE_REGISTRY_CLOSED",
         "This MCP session is closing; no caller-work lease can start.",
       );
     }
+    const leaseKey = key(proof.runId, proof.jobId);
+    const claim = this.#retainedClaim(proof);
 
     const pending = this.#starting.get(leaseKey);
     if (pending !== undefined) {
@@ -166,16 +175,43 @@ export class McpCallerWorkLeaseRegistry {
     return view(lease, lease.active ? "active" : "inactive");
   }
 
-  /** A start of the same job still in flight finishes first, so ending it cannot leave its lease running. */
-  async #settledStart(leaseKey: string): Promise<void> {
-    const pending = this.#starting.get(leaseKey);
-    if (pending !== undefined) await pending.promise.catch(() => undefined);
+  /**
+   * Starts of this claim still in flight finish first, including one retried right after a failed one, so ending it
+   * cannot leave a lease running. A start of another claim of the same job is not waited for.
+   */
+  async #settledStart(leaseKey: string, proof: McpCallerWorkLeaseProof): Promise<void> {
+    let waited;
+    for (
+      let pending = this.#starting.get(leaseKey);
+      pending !== undefined && pending !== waited && sameProof(pending.claim, proof);
+      pending = this.#starting.get(leaseKey)
+    ) {
+      waited = pending;
+      await pending.promise.catch(() => undefined);
+    }
+  }
+
+  /**
+   * Unregisters the lease before stopping it: a lease started meanwhile under the same key is not dropped, and a
+   * concurrent end() or close() does not stop it a second time. close() waits for stops already under way.
+   */
+  async #stop(leaseKey: string, lease: CueLineCallerWorkLease): Promise<void> {
+    if (this.#leases.get(leaseKey) === lease) this.#leases.delete(leaseKey);
+    const stopping = lease.stop();
+    this.#stopping.add(stopping);
+    try {
+      await stopping;
+    } finally {
+      this.#stopping.delete(stopping);
+    }
   }
 
   async end(proof: McpCallerWorkLeaseProof): Promise<McpCallerWorkLeaseView> {
     const leaseKey = key(proof.runId, proof.jobId);
     this.#retainedClaim(proof);
-    await this.#settledStart(leaseKey);
+    await this.#settledStart(leaseKey, proof);
+    // The claim may have been replaced while waiting.
+    this.#retainedClaim(proof);
     const lease = this.#leases.get(leaseKey);
     if (lease === undefined) {
       return {
@@ -189,8 +225,7 @@ export class McpCallerWorkLeaseRegistry {
       };
     }
     assertSameProof(lease.proof, proof);
-    await lease.stop();
-    this.#leases.delete(leaseKey);
+    await this.#stop(leaseKey, lease);
     return { ...view(lease, "ended"), active: false };
   }
 
@@ -215,19 +250,18 @@ export class McpCallerWorkLeaseRegistry {
 
   async endAfterSubmission(proof: McpCallerWorkLeaseProof): Promise<void> {
     const leaseKey = key(proof.runId, proof.jobId);
-    await this.#settledStart(leaseKey);
+    await this.#settledStart(leaseKey, proof);
     const lease = this.#leases.get(leaseKey);
     if (lease === undefined) return;
     assertSameProof(lease.proof, proof);
-    await lease.stop();
-    this.#leases.delete(leaseKey);
+    await this.#stop(leaseKey, lease);
   }
 
   async close(): Promise<void> {
     // Refuse new starts first: one beginning after the pending list is read would otherwise outlive close().
     this.#closing = true;
     await Promise.allSettled([...this.#starting.values()].map(({ promise }) => promise));
-    await Promise.all([...this.#leases.values()].map((lease) => lease.stop()));
-    this.#leases.clear();
+    const stops = [...this.#leases].map(([leaseKey, lease]) => this.#stop(leaseKey, lease));
+    await Promise.all([...stops, ...this.#stopping]);
   }
 }
