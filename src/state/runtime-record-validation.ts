@@ -49,7 +49,7 @@ export function parseRetiredRuntimeOwners(
 ): RuntimeOwnerRetirementEvidence[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("RUNTIME_LEASE_INVALID");
-  return value.map((candidate) => {
+  return Array.from(value, (candidate) => {
     if (!isRuntimeOwnerRetirementEvidence(candidate)) {
       throw new Error("RUNTIME_LEASE_INVALID");
     }

@@ -81,6 +81,10 @@ function view(
 export class McpCallerWorkLeaseRegistry {
   readonly #claims = new Map<string, CueLineCallerWorkClaimResult>();
   readonly #leases = new Map<string, CueLineCallerWorkLease>();
+  readonly #starting = new Map<string, {
+    claim: CueLineCallerWorkClaimResult;
+    promise: Promise<CueLineCallerWorkLease>;
+  }>();
 
   rememberClaim(claim: CueLineCallerWorkClaimResult): void {
     this.#claims.set(key(claim.runId, claim.jobId), claim);
@@ -105,16 +109,36 @@ export class McpCallerWorkLeaseRegistry {
     const leaseKey = key(proof.runId, proof.jobId);
     const claim = this.#retainedClaim(proof);
 
+    const pending = this.#starting.get(leaseKey);
+    if (pending !== undefined) {
+      assertSameProof(pending.claim, proof);
+      return view(await pending.promise, "already_active");
+    }
+
     const existing = this.#leases.get(leaseKey);
     if (existing?.active === true) {
       assertSameProof(existing.proof, proof);
       return view(existing, "already_active");
     }
-    if (existing !== undefined) await existing.stop();
+    const promise = this.#startLease(leaseKey, claim, options, existing);
+    this.#starting.set(leaseKey, { claim, promise });
+    try {
+      return view(await promise, "started");
+    } finally {
+      this.#starting.delete(leaseKey);
+    }
+  }
 
+  async #startLease(
+    leaseKey: string,
+    claim: CueLineCallerWorkClaimResult,
+    options: CueLineCallerWorkLeaseOptions,
+    existing: CueLineCallerWorkLease | undefined,
+  ): Promise<CueLineCallerWorkLease> {
+    if (existing !== undefined) await existing.stop();
     const lease = await startCueLineCallerWorkLease(claim, options);
     this.#leases.set(leaseKey, lease);
-    return view(lease, "started");
+    return lease;
   }
 
   status(proof: McpCallerWorkLeaseProof): McpCallerWorkLeaseView {
@@ -184,6 +208,7 @@ export class McpCallerWorkLeaseRegistry {
   }
 
   async close(): Promise<void> {
+    await Promise.allSettled([...this.#starting.values()].map(({ promise }) => promise));
     await Promise.all([...this.#leases.values()].map((lease) => lease.stop()));
     this.#leases.clear();
   }
