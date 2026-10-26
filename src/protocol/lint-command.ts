@@ -8,7 +8,8 @@ import type {
   ExpectedControllerIdentity,
 } from "./types.js";
 
-const CONTROL_ENVELOPE = /<CueLineControl>([\s\S]*?)<\/CueLineControl>/g;
+const CONTROL_OPEN = "<CueLineControl>";
+const CONTROL_CLOSE = "</CueLineControl>";
 const BASE_FIELDS = new Set(["protocol", "run_id", "round", "request_id", "action"]);
 const ACTION_FIELDS = new Set([
   "jobs",
@@ -69,13 +70,47 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Keep envelope selection aligned with parse-command.ts, including malformed
+// final envelopes: tags inside JSON strings must not truncate their contents.
+function lastEnvelopeBody(text: string): string | undefined {
+  let body: string | undefined;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const open = text.indexOf(CONTROL_OPEN, cursor);
+    if (open === -1) break;
+    const start = open + CONTROL_OPEN.length;
+    let inString = false;
+    let escaped = false;
+    let fallbackClose = -1;
+    cursor = text.length;
+    for (let i = start; i < text.length; i += 1) {
+      const char = text[i];
+      if (inString) {
+        if (text.startsWith(CONTROL_CLOSE, i)) fallbackClose = i;
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+      } else if (char === '"') {
+        inString = true;
+      } else if (text.startsWith(CONTROL_CLOSE, i)) {
+        body = text.slice(start, i);
+        cursor = i + CONTROL_CLOSE.length;
+        fallbackClose = -1;
+        break;
+      }
+    }
+    // Reject an unterminated string rather than replaying an earlier command.
+    if (fallbackClose !== -1) body = text.slice(start, fallbackClose);
+  }
+  return body;
+}
+
 function parsePayload(text: string): {
   format: CueLineProtocolLintResult["format"];
   value?: unknown;
   issue?: CueLineProtocolLintIssue;
 } {
-  let body: string | undefined;
-  for (const match of text.matchAll(CONTROL_ENVELOPE)) body = match[1];
+  const body = lastEnvelopeBody(text);
   const format = body === undefined ? "json" : "envelope";
   if (body !== undefined && body.length > MAX_CONTROLLER_ENVELOPE_CHARS) {
     return {
