@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -69,7 +70,7 @@ function spec(jobId: string, script: string, overrides: Partial<RunnerSpec> = {}
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
+    return !processIsZombie(pid);
   } catch (error) {
     return (
       typeof error === "object" &&
@@ -77,6 +78,18 @@ function processIsAlive(pid: number): boolean {
       "code" in error &&
       error.code !== "ESRCH"
     );
+  }
+}
+
+// An orphan that has exited stays a zombie until init reaps it, and kill(pid, 0)
+// still succeeds on it. Some Linux sandboxes reap orphans only after seconds.
+function processIsZombie(pid: number): boolean {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // comm may contain ") ", so the state field follows the last ")".
+    return stat[stat.lastIndexOf(")") + 2] === "Z";
+  } catch {
+    return false;
   }
 }
 
