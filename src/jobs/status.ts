@@ -133,8 +133,10 @@ export function jobStatusRecordIsLegacy(parsed: unknown): boolean {
   return (
     typeof parsed === "object" &&
     parsed !== null &&
+    !Array.isArray(parsed) &&
     typeof (parsed as { result?: unknown }).result === "object" &&
     (parsed as { result?: unknown }).result !== null &&
+    !Array.isArray((parsed as { result?: unknown }).result) &&
     (parsed as { result: Record<string, unknown> }).result.cancelled === undefined
   );
 }
