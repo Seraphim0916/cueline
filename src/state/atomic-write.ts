@@ -27,19 +27,22 @@ export async function atomicWriteJson(target: string, value: unknown): Promise<v
     `.${path.basename(target)}.${runtimePidTag()}.${randomUUID()}.tmp`,
   );
   let handle;
+  let ownsTemporary = false;
   try {
     handle = await open(temporary, "wx", 0o600);
+    ownsTemporary = true;
     await handle.writeFile(`${canonicalJson(value)}\n`, "utf8");
     await handle.sync();
     await handle.close();
     handle = undefined;
     await rename(temporary, target);
+    ownsTemporary = false;
     await syncDirectory(directory);
   } catch (error) {
     if (handle !== undefined) {
       await handle.close().catch(() => undefined);
     }
-    await unlink(temporary).catch(() => undefined);
+    if (ownsTemporary) await unlink(temporary).catch(() => undefined);
     throw error;
   }
 }
@@ -60,8 +63,10 @@ export async function atomicCreateJson(target: string, value: unknown): Promise<
     `.${path.basename(target)}.${runtimePidTag()}.${randomUUID()}.tmp`,
   );
   let handle;
+  let ownsTemporary = false;
   try {
     handle = await open(temporary, "wx", 0o600);
+    ownsTemporary = true;
     await handle.writeFile(`${canonicalJson(value)}\n`, "utf8");
     await handle.sync();
     await handle.close();
@@ -78,7 +83,7 @@ export async function atomicCreateJson(target: string, value: unknown): Promise<
     if (handle !== undefined) {
       await handle.close().catch(() => undefined);
     }
-    await unlink(temporary).catch(() => undefined);
+    if (ownsTemporary) await unlink(temporary).catch(() => undefined);
   }
 }
 
