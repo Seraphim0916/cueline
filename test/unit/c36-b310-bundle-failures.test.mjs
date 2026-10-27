@@ -35,12 +35,19 @@ for (const failure of ['status', 'verification', 'timeline']) {
       assert.strictEqual(actual, error);
       return true;
     });
+    let timer;
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Bundle failure did not reject within 2000 ms')), 2000);
+    });
     try {
-      if (failure !== 'status') {
-        // Both reads start while the non-failing sibling is still unresolved.
-        await started.promise;
-      }
-      await rejected;
+      await Promise.race([
+        Promise.all([
+          // Both reads start while the non-failing sibling is still unresolved.
+          failure === 'status' ? Promise.resolve() : started.promise,
+          rejected,
+        ]),
+        deadline,
+      ]);
       assert.deepEqual(calls, failure === 'status'
         ? ['status'] : ['status', 'verification', 'timeline']);
       pending.resolve({});
@@ -48,6 +55,8 @@ for (const failure of ['status', 'verification', 'timeline']) {
       assert.ok(!calls.includes('projection') && !calls.includes('diagnosis'));
       t.diagnostic(`sameError true calls ${calls.join(',')} projection/diagnosis 0`);
     } finally {
+      clearTimeout(timer);
+      started.resolve();
       pending.resolve({});
     }
   });
