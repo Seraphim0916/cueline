@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseAccessibilityTree } from '../../src/browser/claude-desktop/a11y-tree.ts';
+import { parseAccessibilityTree } from '../../dist/src/browser/claude-desktop/a11y-tree.js';
 
 const attributes = [
   'href="/docs/[ref_fake]"',

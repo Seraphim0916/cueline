@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as checkpoint } from 'node:timers/promises';
-import { waitForCueLineLaneContinuation } from '../../src/browser/claude-desktop/lane-status-guard.ts';
+import { waitForCueLineLaneContinuation } from '../../dist/src/browser/claude-desktop/lane-status-guard.js';
 
 test('notification and sleep must each finish before polling can advance', async () => {
   const notification = Promise.withResolvers();
