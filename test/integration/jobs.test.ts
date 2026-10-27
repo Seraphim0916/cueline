@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -19,6 +18,7 @@ import type {
 } from "../../src/runners/runner-adapter.js";
 import { ProcessRunner } from "../../src/runners/process-runner.js";
 import { RunnerRegistry } from "../../src/runners/registry.js";
+import { processIsAlive } from "../unit/jobs-process-liveness.test.js";
 
 // Filesystem/process readiness is real even when a runner deadline is mocked.
 const realSetTimeout = setTimeout;
@@ -65,32 +65,6 @@ function spec(jobId: string, script: string, overrides: Partial<RunnerSpec> = {}
     timeoutMs: 1_000,
     ...overrides,
   };
-}
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return !processIsZombie(pid);
-  } catch (error) {
-    return (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code !== "ESRCH"
-    );
-  }
-}
-
-// An orphan that has exited stays a zombie until init reaps it, and kill(pid, 0)
-// still succeeds on it. Some Linux sandboxes reap orphans only after seconds.
-function processIsZombie(pid: number): boolean {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    // comm may contain ") ", so the state field follows the last ")".
-    return stat[stat.lastIndexOf(")") + 2] === "Z";
-  } catch {
-    return false;
-  }
 }
 
 test("job status store rejects structurally invalid JSON evidence", async () => {
@@ -321,9 +295,11 @@ async function waitForDescendantPid(descendantPidPath: string): Promise<number> 
 }
 
 async function waitForProcessExit(pid: number): Promise<void> {
-  for (let attempt = 0; attempt < 100 && processIsAlive(pid); attempt += 1) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!processIsAlive(pid)) return;
     await new Promise<void>((resolve) => realSetTimeout(resolve, 10));
   }
+  assert.equal(processIsAlive(pid), false, `PID ${pid} did not exit`);
 }
 
 test("descendant readiness never accepts an invalid PID file", async () => {
