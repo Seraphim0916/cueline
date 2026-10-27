@@ -24,7 +24,7 @@ export interface A11yNode {
 
 const NODE_LINE =
   /^(?<indent>[ \t]*)(?<role>[A-Za-z][A-Za-z0-9_-]*)(?:[ \t]+"(?<name>(?:[^"\\]|\\.)*)")?(?<rest>[ \t].*)?$/;
-const REF = /\[(ref_[A-Za-z0-9_]+)\]/;
+const REF = /^\[(ref_[A-Za-z0-9_]+)\]$/;
 const VIEWPORT_LINE = /^[ \t]*Viewport:/;
 
 /** Playwright-style name comparison: trimmed, whitespace-collapsed, case-insensitive. */
@@ -47,7 +47,10 @@ export function parseAccessibilityTree(raw: string): A11yNode[] {
     if (groups === undefined) continue;
 
     const rest = groups["rest"] ?? "";
-    const ref = REF.exec(rest)?.[1];
+    // A reference must be a whole token outside quoted attribute text.
+    const refToken = (rest.match(/(?:[^\s"']|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')+/g) ?? [])
+      .find((token) => REF.test(token));
+    const ref = refToken === undefined ? undefined : REF.exec(refToken)?.[1];
     const name = groups["name"];
     nodes.push({
       role: groups["role"]!,
