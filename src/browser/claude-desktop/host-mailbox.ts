@@ -2,6 +2,7 @@ import { access, mkdir, readdir, readFile, rename, writeFile } from "node:fs/pro
 import { join } from "node:path";
 
 import { CueLineError } from "../../core/errors.js";
+import { validatedTimerDelay } from "../../core/timing.js";
 import type {
   FileBridgeInFlightRequest,
   FileBridgeRequest,
@@ -49,6 +50,7 @@ function parseRequest(raw: string, expectedId: string): FileBridgeRequest {
     typeof request.method !== "string" ||
     typeof request.params !== "object" ||
     request.params === null ||
+    Array.isArray(request.params) ||
     typeof request.createdAt !== "string"
   ) {
     throw new CueLineError(
@@ -166,8 +168,15 @@ export async function waitForHostMailboxRequest(
 ): Promise<FileBridgeInFlightRequest> {
   const now = options.now ?? (() => Date.now());
   const sleep = options.sleep ?? defaultSleep;
-  const timeoutMs = options.waitTimeoutMs ?? 30 * 60 * 1_000;
-  const pollIntervalMs = options.pollIntervalMs ?? 100;
+  const timeoutMs = validatedTimerDelay(options.waitTimeoutMs ?? 30 * 60 * 1_000, {
+    code: "HOST_MAILBOX_WAIT_TIMEOUT_INVALID",
+    name: "host mailbox wait timeout",
+    minimum: 0,
+  });
+  const pollIntervalMs = validatedTimerDelay(options.pollIntervalMs ?? 100, {
+    code: "HOST_MAILBOX_POLL_INTERVAL_INVALID",
+    name: "host mailbox poll interval",
+  });
   const deadline = now() + timeoutMs;
   for (;;) {
     try {
@@ -179,12 +188,13 @@ export async function waitForHostMailboxRequest(
 
     const request = await claimNextHostMailboxRequest(root, now);
     if (request !== undefined) return request;
-    if (now() >= deadline) {
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) {
       throw new CueLineError("HOST_MAILBOX_WAIT_TIMEOUT", "Timed out waiting for bridge request.", {
         details: { timeoutMs },
       });
     }
-    await sleep(pollIntervalMs);
+    await sleep(Math.min(pollIntervalMs, remainingMs));
   }
 }
 
