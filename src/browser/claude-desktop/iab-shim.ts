@@ -155,7 +155,12 @@ function makeLocator(
       // inside the evaluate call: Claude's tool boundary may return focus to
       // <main> between those two host operations.
       await tools.clickRef(tabId, await requireRef());
-      await tools.evaluate(tabId, pasteIntoFocusedSource(value));
+      const result = decodeEvaluateResult(await tools.evaluate(tabId, pasteIntoFocusedSource(value)));
+      if (typeof result === "object" && result !== null && (result as { ok?: unknown }).ok === false) {
+        throw new CueLineError("IAB_PASTE_FAILED", "Host reported that pasting into the editor failed.", {
+          details: { target: describe, tabId },
+        });
+      }
     },
     async click() {
       await tools.clickRef(tabId, await requireRef());
