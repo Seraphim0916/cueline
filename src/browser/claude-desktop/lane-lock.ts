@@ -30,8 +30,9 @@ export async function acquireClaudeDesktopLaneLock(
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     let existingPid: unknown;
+    const existingContents = await readFile(lockPath, "utf8");
     try {
-      existingPid = (JSON.parse(await readFile(lockPath, "utf8")) as { pid?: unknown }).pid;
+      existingPid = (JSON.parse(existingContents) as { pid?: unknown }).pid;
     } catch {}
     if (typeof existingPid === "number" && Number.isSafeInteger(existingPid) && existingPid > 0 && isAlive(existingPid)) {
       throw new CueLineError("CLAUDE_DESKTOP_LANE_LOCKED", "A Claude Desktop lane daemon is already running.", {
