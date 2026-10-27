@@ -423,6 +423,12 @@ export function renderCueLineRunHandoffMarkdown(packet: CueLineRunHandoffPacket)
     for (const [jobId, task] of Object.entries(packet.content.tasks)) {
       lines.push(`- Task ${json(jobId)}: ${json(task)}`);
     }
+    if (packet.content.finalDeliveryText !== undefined) {
+      lines.push(`- Final delivery: ${json(packet.content.finalDeliveryText)}`);
+    }
+    if (packet.content.blockedReason !== undefined) {
+      lines.push(`- Blocked reason: ${json(packet.content.blockedReason)}`);
+    }
   }
   return lines.join("\n");
 }
