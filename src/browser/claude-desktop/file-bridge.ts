@@ -162,6 +162,9 @@ export function createFileBridgeTools(options: FileBridgeOptions): ClaudeAgentBr
   const responsePath = (id: string): string => `${root}/responses/${id}.json`;
 
   async function call<Result>(method: string, params: Record<string, unknown>): Promise<Result> {
+    if (!Number.isFinite(timeoutMs) || !Number.isFinite(claimedTimeoutMs)) {
+      throw new CueLineError("HOST_BRIDGE_TIMEOUT_INVALID", "Bridge timeouts must be finite numbers.");
+    }
     const id = newRequestId();
     if (!ID_PATTERN.test(id)) {
       throw new CueLineError("HOST_BRIDGE_REQUEST_ID_INVALID", "Generated request id is unusable.", {
@@ -246,7 +249,7 @@ export function createFileBridgeTools(options: FileBridgeOptions): ClaudeAgentBr
           },
         );
       }
-      await sleep(pollIntervalMs);
+      await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - now())));
     }
   }
 
