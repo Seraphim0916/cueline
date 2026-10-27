@@ -10,6 +10,12 @@ test('retry record failure stops an eligible unclaimed timeout retry', async (t)
   let calls = 0;
   let loads = 0;
   let sleeps = 0;
+  let recordCalls = 0;
+  const cap = (name, count, expected) => {
+    if (count > expected + 2) {
+      throw new CueLineError('TEST_LOOP_OVERFLOW', `${name}: expected ${expected} calls; reached ${count}`);
+    }
+  };
   const failure = new CueLineError('RECORD_RETRY_FAIL', 'Retry record could not be saved');
   const result = await runClaudeDesktopLane({
     mode: { kind: 'resume', runId },
@@ -17,29 +23,31 @@ test('retry record failure stops an eligible unclaimed timeout retry', async (t)
     persistedConversationUrl: async () => undefined,
     createBrowser: () => browser,
     loadStatus: async (id) => {
+      cap('loadStatus', ++loads, 1);
       assert.equal(id, runId);
-      loads++;
       return { continueAllowed: true, phase: 'resume_ready', safeNextAction: 'continue' };
     },
     continueRun: async (id, actualBrowser) => {
+      cap('continueRun', ++calls, 1);
       assert.equal(id, runId);
       assert.equal(actualBrowser, browser);
-      calls++;
       if (calls > 1) return { runId, status: 'complete' };
       throw new CueLineError('HOST_BRIDGE_TIMEOUT', 'Unclaimed request timed out', {
         details: { claimed: false },
       });
     },
     record: async (entry) => {
+      cap('record', ++recordCalls, 3);
       records.push(entry);
       if (entry.event === 'retrying') throw failure;
     },
-    sleep: async () => { sleeps++; throw new Error('unexpected sleep'); },
+    sleep: async () => { cap('sleep', ++sleeps, 0); throw new Error('unexpected sleep'); },
   });
   assert.deepEqual(result, { outcome: 'stopped', runId, code: failure.code });
   assert.equal(calls, 1);
   assert.equal(loads, 1);
   assert.equal(sleeps, 0);
+  assert.equal(recordCalls, 3);
   assert.deepEqual(records, [
     { event: 'resuming', runId },
     { event: 'retrying', runId, code: 'HOST_BRIDGE_TIMEOUT', retry: 1 },
