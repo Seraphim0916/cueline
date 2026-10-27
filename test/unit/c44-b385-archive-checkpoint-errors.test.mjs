@@ -1,17 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
-
-const asModule = source => `data:text/javascript,${encodeURIComponent(stripTypeScriptTypes(source))}`;
-let source = await readFile(new URL('../../src/core/controller-conversation-archive.ts', import.meta.url), 'utf8');
-for (const dependency of ['errors', 'conversation-url']) {
-  source = source.replace(`./${dependency}.js`, asModule(await readFile(
-    new URL(`../../src/core/${dependency}.ts`, import.meta.url), 'utf8')));
-}
-const { settleControllerConversationArchive } = await import(process.env.CUELINE_ARCHIVE_COMPILED === '1'
-  ? new URL('../../dist/src/core/controller-conversation-archive.js', import.meta.url).href
-  : asModule(source));
+import { settleControllerConversationArchive } from '../../dist/src/core/controller-conversation-archive.js';
 
 for (const failingOperation of ['append', 'snapshot']) {
   test(`${failingOperation} checkpoint failure prevents click and preserves recovery branch`, async () => {
