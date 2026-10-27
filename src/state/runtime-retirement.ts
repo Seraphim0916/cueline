@@ -195,6 +195,11 @@ export async function persistRuntimeOwnerRetirements(
   runId: string,
   retirements: readonly RuntimeOwnerRetirementEvidence[],
 ): Promise<void> {
+  for (let index = 0; index < retirements.length; index += 1) {
+    if (!Object.hasOwn(retirements, index)) {
+      throw invalidRetirement("Runtime owner retirement batch must not contain holes.");
+    }
+  }
   const validated = retirements.map((retirement) => {
     validateRetirement(retirement);
     return { ...retirement };
