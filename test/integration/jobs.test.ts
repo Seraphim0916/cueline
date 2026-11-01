@@ -18,7 +18,7 @@ import type {
 } from "../../src/runners/runner-adapter.js";
 import { ProcessRunner } from "../../src/runners/process-runner.js";
 import { RunnerRegistry } from "../../src/runners/registry.js";
-import { processIsAlive } from "../unit/jobs-process-liveness.test.js";
+import { processIsAlive } from "../support/process-liveness.js";
 
 // Filesystem/process readiness is real even when a runner deadline is mocked.
 const realSetTimeout = setTimeout;
