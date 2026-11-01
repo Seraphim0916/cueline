@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { assertProcfsReadable, processIsAlive } from "../support/process-liveness.js";
 
@@ -78,4 +79,47 @@ test("procfs preflight accepts a readable Linux stat and skips other platforms",
   });
   assert.equal(reads, 1);
   assertProcfsReadable("darwin", () => assert.fail("Non-Linux must not read procfs"));
+});
+
+// A real child because the check under test runs once, at module load. The stat
+// read is injected rather than left to the host, so this holds on Linux CI where
+// /proc is readable as well as on macOS where it does not exist.
+function importLivenessAsLinux(stat: string | undefined) {
+  const moduleUrl = new URL("../support/process-liveness.js", import.meta.url).href;
+  const script = `
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    Object.defineProperty(process, "platform", { value: "linux" });
+    const stat = ${JSON.stringify(stat ?? null)};
+    const realRead = fs.readFileSync;
+    fs.readFileSync = (path, ...rest) => {
+      if (path !== "/proc/self/stat") return realRead(path, ...rest);
+      if (stat === null) throw Object.assign(new Error("injected ENOENT"), { code: "ENOENT" });
+      return stat;
+    };
+    syncBuiltinESMExports();
+    await import(${JSON.stringify(moduleUrl)});
+    console.log("loaded");
+  `;
+  return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+}
+
+test("importing the liveness helper fails when Linux cannot read /proc/self/stat", () => {
+  const child = importLivenessAsLinux(undefined);
+  assert.equal(child.error, undefined);
+  assert.equal(child.signal, null);
+  assert.equal(child.status, 1, child.stderr);
+  assert.match(child.stderr, /\/proc\/self\/stat is not readable.*injected ENOENT/);
+  assert.equal(child.stdout, "");
+});
+
+test("importing the liveness helper succeeds when Linux can read /proc/self/stat", () => {
+  const child = importLivenessAsLinux("1 (node) R 0");
+  assert.equal(child.error, undefined);
+  assert.equal(child.signal, null);
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, "loaded\n");
 });
