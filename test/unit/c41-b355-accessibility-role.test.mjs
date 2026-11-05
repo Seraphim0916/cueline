@@ -18,7 +18,6 @@ test('assistant scope [false,true,false]: user, assistant, adjacent user', () =>
   ];
   const results = snapshots.map(read);
   assert.deepEqual(results, [null, envelope, null]);
-  console.log('assistant scope', results.map(value => value !== null));
 });
 
 test('assistant heading is scoped to its own article', () => {

@@ -5,7 +5,6 @@ import { isProLabel } from '../../dist/src/browser/codex-iab/recovery-evidence.j
 test('labels [true,true,true,false,false,false]', () => {
   const results = ['Pro', 'Pro Standard', 'Pro Extended', 'Pro Plus', 'GPT-5 Pro', null].map(isProLabel);
   assert.deepEqual(results, [true, true, true, false, false, false]);
-  console.log('labels', results);
 });
 
 for (const label of ['pro', 'PRO', 'pRo sTaNdArD', 'PRO EXTENDED',

@@ -53,5 +53,4 @@ test('legacy gate [true,false,false,false,false,false]', () => {
     ['message', 'TypeError: button.click is not a function'],
   ].map(([field, value]) => ({ ...valid, [field]: value }))].map(eligible);
   assert.deepEqual(results, [true, false, false, false, false, false]);
-  console.log('legacy gate', results);
 });

@@ -49,7 +49,6 @@ test('archive click awaits both append and snapshot checkpoints', async () => {
   await new Promise(setImmediate);
   assert.deepEqual(trace, ['started', 'snapshot']);
   assert.equal(store.state.controllerConversationArchive.status, 'started');
-  console.log(`waiting ${trace.join(',')}`);
   snapshotGate.resolve();
   await new Promise(setImmediate);
   assert.deepEqual(trace, ['started', 'snapshot', 'click']);
@@ -57,5 +56,4 @@ test('archive click awaits both append and snapshot checkpoints', async () => {
   await settling;
   assert.deepEqual(trace, ['started', 'snapshot', 'click', 'archived', 'snapshot']);
   assert.equal(store.state.controllerConversationArchive.status, 'archived');
-  console.log(`released ${trace.join(',')}`);
 });

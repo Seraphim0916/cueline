@@ -27,7 +27,6 @@ for (const failingOperation of ['append', 'snapshot']) {
     };
     await assert.rejects(settleControllerConversationArchive(store, { browser }), error => {
       assert.strictEqual(error, failure);
-      console.log(`${failingOperation} sameError ${error === failure}`);
       return true;
     });
     assert.equal(browserAccesses, 0);

@@ -44,6 +44,5 @@ for (const failingOperation of ['append', 'snapshot']) {
       ? 'CONTROLLER_CONVERSATION_ARCHIVE_PREFLIGHT_FAILED' : 'CONTROLLER_CONVERSATION_ARCHIVE_AMBIGUOUS');
     assert.equal(snapshots, failingOperation === 'append' ? 1 : 2);
     assert.equal(store.state.controllerConversationArchive.status, failingOperation === 'append' ? 'pending' : 'ambiguous');
-    console.log(`${failingOperation} clicks ${clicks} status ${store.state.controllerConversationArchive.status}`);
   });
 }
