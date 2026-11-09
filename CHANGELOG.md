@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The Claude Desktop lane runner validates `maxUnclaimedTimeoutRetries` before any callback: it must be a non-negative safe integer, otherwise the run stops with `INVALID_RETRY_LIMIT` before a run is created or a browser is opened. Previously `Infinity` retried unclaimed bridge timeouts without end, `NaN` silently disabled retries, and negative or fractional values changed the retry count without an error (C2-B447).
+
+### Tests
+
+- Lane runner retry limit: every invalid value is rejected for both start and resume before any callback, and the retry loop is bounded by the test itself so a runaway runner fails instead of hanging (C2-B447, R168). Regression tests for start failure and progress-record failure keeping the original error (C2-B448, B449).
+
 ## 0.7.9 - 2026-11-09
 
 Maintenance release: 28 fixes and 65 test commits from the C2 review rounds since 0.7.8. No new features, no JSON Schema changes.

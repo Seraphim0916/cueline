@@ -24,6 +24,10 @@ export interface ClaudeDesktopLaneDependencies<Browser, Result extends LaneRunRe
 export async function runClaudeDesktopLane<Browser, Result extends LaneRunResult, Status extends CueLineLaneContinuationStatus>(
   deps: ClaudeDesktopLaneDependencies<Browser, Result, Status>,
 ): Promise<{ outcome: "finished" | "stopped"; runId: string; code?: string; status?: Status | Result }> {
+  const maxRetries = deps.maxUnclaimedTimeoutRetries ?? 3;
+  if (!Number.isSafeInteger(maxRetries) || maxRetries < 0) {
+    throw new CueLineError("INVALID_RETRY_LIMIT", "maxUnclaimedTimeoutRetries must be a non-negative safe integer.");
+  }
   let runId: string | undefined;
   try {
     if (deps.mode.kind === "resume") {
@@ -35,7 +39,6 @@ export async function runClaudeDesktopLane<Browser, Result extends LaneRunResult
       await deps.record({ event: "created", runId, status: result.status, result });
     }
     const browser = await deps.createBrowser(await deps.persistedConversationUrl(runId));
-    const maxRetries = deps.maxUnclaimedTimeoutRetries ?? 3;
     let unclaimedTimeoutRetries = 0;
     for (;;) {
       const status = await waitForCueLineLaneContinuation(runId, {
