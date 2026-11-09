@@ -28,21 +28,19 @@ CueLine 采用故障关闭（fail-closed）设计。如果一次发送可能成�
 
 这条边界很重要：ChatGPT 没有本地工具，控制器只返回文本指令；本地的 Codex 或 Claude Code 负责提供仓库证据、明确认领工作，并决定哪些操作可以在本地执行。
 
-## 最新版本：0.7.8
+## 最新版本：0.7.9
+
+- 维护版本，收录 0.7.8 之后审查轮次的 28 个修复：格式错误的输入（稀疏数组、路由参数中的 NUL、超过大小上限或字符串未结束的控制信封）会以具名错误拒绝，等待也不会超过期限。
+- 桥接与通道状态在并发时更安全：同一路径的桥接写入会排队，通道锁读取错误会向上传递，清理不会改动仍有工作中执行者的运行。没有新功能，JSON Schema 没有变更。
+
+完整内容请参阅 [0.7.9 changelog](CHANGELOG.md#079---2026-11-09)。
+
+### 保留的 0.7.8 变更
 
 - 运行目录被删除后再释放运行租约，现在会以 `RUN_NOT_FOUND` 失败，不会无限重试、让进程一直不结束。
 - 租约心跳正占用运行租约时提交调用方任务结果，会等待最多 10 秒，不再立即以 `RUN_ALREADY_ACTIVE` 失败。
 
-完整内容请参阅 [0.7.8 changelog](CHANGELOG.md#078---2026-10-03)。
-
-### 保留的 0.7.7 变更
-
-- Claude Desktop 主机通道：常驻进程可接续已保存的运行与对话，只重试尚未被认领的桥接超时（最多三次），遇到终止或过期的阶段即停止等待，并以 pid 锁确保每个桥接只有一个常驻进程。桥接请求带有有效期与常驻进程身份，过期或格式错误的请求会被隔离。
-- 找不到可用的 Codex 内置浏览器时，接续运行会在改动运行记录之前就失败。
-- 每个支持 `--json` 的命令都有严格的 JSON Schema；`cueline doctor` 在状态目录对组或其他用户开放时会警告，并附上确切的 `chmod` 修复命令。
-- 进程任务在超时或取消后，即使子孙进程仍持有输出管道也会结束；调用方工作的恢复与认领释放更加严谨。
-
-完整内容请查看 [changelog](CHANGELOG.md#077---2026-10-03) 或版本化的 [v0.7.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.7)。
+完整内容请查看 [changelog](CHANGELOG.md#078---2026-10-03) 或版本化的 [v0.7.8 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.8)。
 
 ## 一次运行实际是怎么走的
 
@@ -89,7 +87,7 @@ ChatGPT Pro 订阅套餐与“选定的 Pro 模型”是两回事。账号或个
 从 npm registry 安装：
 
 ```bash
-npm install -g cueline@0.7.8
+npm install -g cueline@0.7.9
 cueline install
 cueline doctor
 ```
@@ -97,7 +95,7 @@ cueline doctor
 作为备用安装方式，可安装版本化 tarball，并校验已发布的 `.sha256` 校验和：
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.8/cueline-0.7.8.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.9/cueline-0.7.9.tgz
 cueline install
 cueline doctor
 ```
@@ -107,7 +105,7 @@ cueline doctor
 ### Claude Code
 
 ```bash
-npm install -g cueline@0.7.8
+npm install -g cueline@0.7.9
 cueline install --claude-only
 cueline doctor
 export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
@@ -264,7 +262,7 @@ CLI 不驱动浏览器。执行写入状态的命令前，先用 `cueline help` 
 
 ```console
 $ cueline doctor
-CueLine 0.7.8
+CueLine 0.7.9
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -350,7 +348,7 @@ npm pack --dry-run
 
 `npm run smoke:fake` 用假的浏览器与假的 runner，离线跑完整个控制循环。它证明的是循环，而不是线上页面——只有通过内置浏览器真正完成一轮，才能证明后者。
 
-## 0.7.8 的已知限制
+## 0.7.9 的已知限制
 
 仅支持文本控制命令。一次运行只对应一个会话。选成 `Pro` 是 CueLine 唯一会做的模型切换。支持 ChatGPT 自动将长文本转为附件，但不支持主动文件上传、图片、Deep Research、Projects 或 Apps。Caller `work` 必须显式 claim/start，长工作需要 heartbeat；process 执行必须双重授权。模糊发送和已启动工作都不会被自动重试。macOS 是主要桌面目标、Linux 是 CI 目标；Windows 未验证。adapter 依赖当前 ChatGPT 网页 UI，UI 改版会被显式暴露，绝不会变成捏造的答案。
 

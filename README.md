@@ -28,21 +28,19 @@ CueLine is fail-closed. If a send may or may not have landed, a response names t
 
 That behavior matters because ChatGPT has no local tools. The controller only returns text instructions; the local Codex or Claude Code side supplies repository evidence, explicitly claims work, and decides what may run locally.
 
-## Latest release: 0.7.8
+## Latest release: 0.7.9
+
+- Maintenance release with 28 fixes from the review rounds since 0.7.8: malformed input (sparse arrays, NUL in router argv, oversized or unterminated control envelopes) is rejected with named errors, and waits never sleep past their deadline.
+- Bridge and lane state is safer under concurrency: same-path bridge writes are queued, lane-lock read errors propagate, and the sweep leaves runs with live workers untouched. No new features and no JSON Schema changes.
+
+Read the [0.7.9 changelog](CHANGELOG.md#079---2026-11-09).
+
+### 0.7.8 changes retained
 
 - Releasing a runtime lease after its run directory was removed now fails with `RUN_NOT_FOUND` instead of retrying forever and keeping the process alive.
 - Submitting a caller job result while a lease heartbeat holds the run waits up to 10 seconds instead of failing with `RUN_ALREADY_ACTIVE`.
 
-Read the [0.7.8 changelog](CHANGELOG.md#078---2026-10-03).
-
-### 0.7.7 changes retained
-
-- Claude Desktop host lane: the daemon resumes saved runs and conversations, retries only unclaimed bridge timeouts (up to three times), stops waiting on terminal or stale phases, and holds one daemon per bridge with a pid lock. Bridge requests carry an expiry and the daemon's identity; expired or malformed work is quarantined.
-- Continuing a run without a reachable Codex in-app Browser now fails before the run is touched.
-- Every `--json` command has a strict JSON Schema, and `cueline doctor` warns when the state home is readable by group or others, with the exact `chmod` fix.
-- Process jobs settle after a timeout or cancellation even when a descendant keeps the output pipes open; caller-work recovery and claim release are hardened.
-
-Read the full [changelog](CHANGELOG.md#077---2026-10-03) or the versioned [v0.7.7 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.7).
+Read the full [changelog](CHANGELOG.md#078---2026-10-03) or the versioned [v0.7.8 release](https://github.com/Seraphim0916/cueline/releases/tag/v0.7.8).
 
 ## How a run actually goes
 
@@ -91,15 +89,15 @@ You need Node.js 22+, Codex with its built-in Browser, and — for the bundled d
 Install from the npm registry:
 
 ```bash
-npm install -g cueline@0.7.8
+npm install -g cueline@0.7.9
 cueline install
 cueline doctor
 ```
 
-As a fallback after the 0.7.8 GitHub package is available, install its versioned tarball and verify the published `.sha256` checksum:
+As a fallback after the 0.7.9 GitHub package is available, install its versioned tarball and verify the published `.sha256` checksum:
 
 ```bash
-npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.8/cueline-0.7.8.tgz
+npm install -g https://github.com/Seraphim0916/cueline/releases/download/v0.7.9/cueline-0.7.9.tgz
 cueline install
 cueline doctor
 ```
@@ -109,7 +107,7 @@ cueline doctor
 ### Claude Code
 
 ```bash
-npm install -g cueline@0.7.8
+npm install -g cueline@0.7.9
 cueline install --claude-only
 cueline doctor
 export CUELINE_HOST_BRIDGE="/absolute/path/to/host-bridge"
@@ -294,7 +292,7 @@ The CLI does not drive the browser. Run `cueline help` for every positional argu
 
 ```console
 $ cueline doctor
-CueLine 0.7.8
+CueLine 0.7.9
 status	ok
 node	22.14.0	ok
 config	/usr/local/lib/node_modules/cueline/config/routing.default.json	valid
@@ -380,7 +378,7 @@ npm pack --dry-run
 
 `npm run smoke:fake` exercises the whole controller loop against a fake browser and fake runner, offline. It proves the loop, not the live page — only a real completed turn through the in-app Browser proves that.
 
-## Known limits in 0.7.8
+## Known limits in 0.7.9
 
 Text commands only. One conversation per run. Selecting `Pro` is the only model switch CueLine makes. Automatic long-text-to-attachment conversion is supported, but deliberate file upload, images, Deep Research, Projects, and Apps are not. Caller `work` requires an explicit durable claim/start, executor heartbeats, and executor-reported completed-progress checkpoints for long work; CueLine does not infer progress from LLM text. Process execution requires two explicit authorization fields. No automatic retry or fallback starts work twice. macOS is the primary desktop target and Linux is the CI target; Windows is unverified. The adapter depends on the current ChatGPT web UI, so a UI change surfaces explicitly, never as a fabricated answer.
 

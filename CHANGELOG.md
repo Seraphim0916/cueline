@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.9 - 2026-11-09
+
+Maintenance release: 28 fixes and 65 test commits from the C2 review rounds since 0.7.8. No new features, no JSON Schema changes.
+
+### Fixed
+
+- Input validation rejects malformed data with named errors instead of accepting it: sparse arrays in canonical JSON, routing, jobs, retirement records and pagination; arrays as host-mailbox params; NUL in router argv at config load; prototype-named actions; control envelopes over the parser size cap or with an unterminated string (previously the earlier command could be replayed).
+- Waits and deadlines: the final sleep in the file bridge and host mailbox never exceeds the remaining deadline, and non-finite or invalid wait arguments are rejected before any file operation. The lane waits for its notice before sleeping and keeps callback errors.
+- Concurrency and state: writes to the same bridge path are queued across instances; a lane-lock read error propagates instead of being read as a free lane; ending an MCP lease waits for its own in-flight start and close refuses new starts; concurrent lease starts for one job keep a single instance; registry lookups return copies; the sweep leaves runs with live workers untouched; atomic writes clean up only temp files they created.
+- Browser and page handling: the selected tab's URL is re-verified after load; action refs are never taken from quoted attribute text; accessibility disabled detection and escapes are corrected; an explicit `ok:false` paste result is reported as `IAB_PASTE_FAILED`.
+- Output: error, handoff and archive truncation keeps whole characters (surrogate-safe); run diffs keep `null`; status keeps nested fields and timeline progress; handoff renders bounded delivery and blocker text; the Bearer audit is case-insensitive.
+
+### Tests
+
+- 65 test commits lock the fixes above and cover the least-covered unit modules, lane retry and record-failure paths, bridge and host-mailbox races, skill-link install and uninstall failures, process liveness on Linux, and process-tree cleanup. `npm test` and `test:unit` now also run `test/unit/*.test.mjs`.
+
+### Docs, CI and dependencies
+
+- README reconciled with the `cueline-host` skill; zh-CN, ja and ko READMEs state which entry point owns caller-work renewal.
+- CI keys concurrency by event and PR number, cancels only superseded runs, and limits the push trigger to `main`.
+- `fast-uri` bumped to >=3.1.9 (GHSA-w74x-v6f9-j3xg).
+
 ## 0.7.8 - 2026-10-03
 
 ### Fixed
